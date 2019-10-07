@@ -176,13 +176,41 @@ def denoise(data):
 
     return make_pipeline(encoder, tree), recon
 
+def get_syllables(data):
+    '''
+    根据去噪结果返回音节表.
+
+    决策树每个叶节点代表祖语的一个独立音节
+    '''
+
+    def get_freq(row):
+        '''
+        统计祖语音节在现代方言点每个表现型的出现频率.
+        '''
+
+        pron, freq = np.unique(row, return_counts=True)
+        # 按频率从高到低排序，最多取前10个
+        idx = np.argsort(freq)[::-1]
+        return ','.join('{}:{}'.format(pron[i], freq[i]) for i in idx[:10])
+
+    # 根据自动编码器分类结果聚类
+    tmp = data.groupby('cluster')
+    cluster = tmp.first()
+    cluster['char'] = tmp['char'].agg(lambda c: ''.join(set(c)))
+    cluster['initial'] = cluster[[c for c in data.columns if '聲母' in c]].apply(get_freq, axis=1)
+    cluster['rhyme'] = cluster[[c for c in data.columns if '韻母' in c]].apply(get_freq, axis=1)
+    cluster['tone'] = cluster[[c for c in data.columns if '調值' in c]].apply(get_freq, axis=1)
+
+    return cluster
+
 def main():
     infile = sys.argv[1]
     original_file = sys.argv[2]
     clean_file = sys.argv[3]
     imputed_file = sys.argv[4]
     denoised_file = sys.argv[5]
-    model_file = sys.argv[6]
+    syllable_file = sys.argv[6]
+    model_file = sys.argv[7]
 
     # 加载方言字音数据
     data = load(infile)
@@ -203,9 +231,13 @@ def main():
     # 使用自动编码器去除数据噪音
     model, denoised = denoise(imputed)
 
+    # 按音节聚类
+    syllable = get_syllables(recon)
+
     # 输出结果
     imputed.to_hdf(imputed_file, key='imputed')
     denoised.to_hdf(denoised_file, key='denoised')
+    syllable.to_hdf(syllable_file, key='syllable')
     joblib.dump(model, model_file)
 
 
