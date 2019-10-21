@@ -80,7 +80,7 @@ def main():
                 logging.info('get {} characters'.format(count))
 
         except:
-            logging.error('error get character! id = {}'.format(count), exc_info=True)
+            logging.error('error get character! id = {}'.format(cid), exc_info=True)
 
         time.sleep(0.2)
 
