@@ -17,6 +17,7 @@ import json
 import re
 import numpy as np
 import pandas as pd
+import scipy.stats as st
 from sklearn.pipeline import make_pipeline
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
@@ -203,18 +204,65 @@ def get_syllables(data):
 
     return cluster
 
+def reconstruct(data, initial_mid=0.002, final_mid=0.002, tone_mid=0.01):
+    '''
+    使用决策树重构祖语的声韵调类.
+
+    分别对现代方言的声母、韵母、调类训练多输出、多分类器，配合剪枝，
+    实际上相当于单独针对声母、韵母、调类训练编码器。
+    训练出来的决策树每个叶节点大致相当于祖语的一个声母/韵母/调类。
+    '''
+
+    encoder = OneHotEncoder(dtype=np.int32)
+    features = encoder.fit_transform(data[[c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類')]])
+    initials = data[[c for c in data.columns if c.endswith('聲母')]]
+    finals = data[[c for c in data.columns if c.endswith('韻母')]]
+    tones = data[[c for c in data.columns if c.endswith('調類')]]
+
+    initial_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=initial_mid).fit(features, initials)
+    final_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=final_mid).fit(features, finals)
+    tone_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=tone_mid).fit(features, tones)
+
+    data['initial'] = initial_tree.apply(features)
+    data['final'] = final_tree.apply(features)
+    data['tone'] = tone_tree.apply(features)
+
+    return encoder, initial_tree, final_tree, tone_tree
+
+def get_stats(data):
+    '''
+    统计重构的声韵调的若干统计数据.
+
+    - 每个叶节点在现代方言的读音分布
+    - 每个叶节点现代方言读音的熵，及叶节点熵的均值
+    '''
+
+    def _get_stats(expanded, key, name):
+        locations = np.unique([c.partition('_')[0] for c in data.columns if c.endswith(name)])
+        tmp = expanded.groupby(key)
+
+        stats = tmp[[c for c in expanded.columns if name in c]].mean()
+        stats['char'] = tmp['char'].agg(lambda s: ''.join(set(s)))
+
+        for l in locations:
+            stats[l] = st.entropy(stats[[c for c in stats.columns if c.startswith(l)]].values.T)
+
+        stats['entropy'] = stats[locations].mean(axis=1)
+        return stats
+
+    expanded = pd.get_dummies(data, columns=[c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類')])
+    initial_stats = _get_stats(expanded, 'initial', '聲母')
+    final_stats = _get_stats(expanded, 'final', '韻母')
+    tone_stats = _get_stats(expanded, 'tone', '調類')
+
+    return initial_stats, final_stats, tone_stats
+
 def main():
-    infile = sys.argv[1]
-    original_file = sys.argv[2]
-    clean_file = sys.argv[3]
-    imputed_file = sys.argv[4]
-    denoised_file = sys.argv[5]
-    syllable_file = sys.argv[6]
-    model_file = sys.argv[7]
+    infile, clean_file, imputed_file, recon_file, encoder_file, initial_tree_file, final_tree_file, tone_tree_file, \
+        initial_stats_file, final_stats_file, tone_stats_file = sys.argv[1:]
 
     # 加载方言字音数据
     data = load(infile)
-    data.to_hdf(original_file, key='original')
 
     # 清洗
     data = clean(data)
@@ -223,22 +271,27 @@ def main():
     # 丢弃生僻字及缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
     data.dropna(axis=0, thresh=data.shape[1] * 0.5, inplace=True)
-    data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')]
+    data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index()
 
     # 分类器不能处理缺失值，先根据已有数据填充缺失读音
     imputed = impute(data)
+    imputed.to_hdf(imputed_file, key='imputed')
 
-    # 使用自动编码器去除数据噪音
-    model, denoised = denoise(imputed)
-
-    # 按音节聚类
-    syllable = get_syllables(recon)
+    # 使用自动编码器重构祖语声韵调类
+    encoder, initial_tree, final_tree, tone_tree = reconstruct(imputed)
+    data[['initial', 'final', 'tone']] = imputed[['initial', 'final', 'tone']]
 
     # 输出结果
-    imputed.to_hdf(imputed_file, key='imputed')
-    denoised.to_hdf(denoised_file, key='denoised')
-    syllable.to_hdf(syllable_file, key='syllable')
-    joblib.dump(model, model_file)
+    data.to_hdf(recon_file, key='recon')
+    joblib.dump(encoder, encoder_file)
+    joblib.dump(initial_tree, initial_tree_file)
+    joblib.dump(final_tree, final_tree_file)
+    joblib.dump(tone_tree, tone_tree_file)
+
+    initial_stats, final_stats, tone_stats = get_stats(data)
+    initial_stats.to_hdf(initial_stats_file, key='initial_stats')
+    final_stats.to_hdf(final_stats_file, key='final_stats')
+    tone_stats.to_hdf(tone_stats_file, key='tone_stats')
 
 
 if __name__ == '__main__':
