@@ -13,6 +13,7 @@ __author__ = '黄艺华 <lernanto.wong@gmail.com>'
 
 import sys
 import logging
+import argparse
 import json
 import re
 import numpy as np
@@ -39,69 +40,84 @@ def load(fname):
         try:
             obj = json.loads(line)
 
-            # 中古汉语数据
-            mc = {'id': obj['id'], 'char': obj['char'].strip()}
-            for k in ('攝', '聲調', '韻目', '字母', '開合', '等第', '清濁'):
-                mc['_'.join(('中古音', k))] = obj['middle_chinese'][k]
-
             if 'dialects' in obj:
+                # 中古音
+                row = {'id': obj['id'], 'char': obj['char'].strip()}
+                for k in ('攝', '聲調', '韻目', '字母', '開合', '等第', '清濁'):
+                    row['_'.join(('中古音', k))] = obj['middle_chinese'][k]
+
                 # 方言读音
-                tmp = {}
                 for d in obj['dialects']:
                     for k in ('聲母', '韻母', '調類', '調值'):
                         key = '_'.join((d['方言點'].strip(), k))
-                        # 有些字有多个读音，以斜杠分隔
-                        val = tuple(map(str.strip, d[k].split('/')))
-                        tmp[key] = val
+                        val = d[k].strip()
+                        row[key] = val
 
-                for i in range(max(map(len, tmp.values()))):
-                    row = mc.copy()
-                    for key, val in tmp.items():
-                        # 对于有些字有些方言点读音比其他点少的，以第一个读音填充
-                        v = val[i] if i < len(val) else val[0]
-                        # 不允许空韵母、空调值，但允许零声母
-                        if key.endswith('聲母') or v != '':
-                            row[key] = v
-
-                    data.append(row)
+                data.append(row)
 
         except:
             logging.error('error parsing line! {}'.format(line[:50]), exc_info=True)
 
-    return pd.DataFrame(data)
+    output = pd.DataFrame(data)
+    output.index = output.pop('id')
+    return output
 
 def clean(data):
     '''
     基于规则的数据清洗.
     '''
 
-    output = data.copy()
+    def get_rows(col, max_row):
+        rows = []
+        for i, r in enumerate(col):
+            if max_row[i] <= 1:
+                # 该行不包含多音字，直接追加
+                rows.append(r)
 
-    for c in output.columns:
-        if c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值'):
-            output[c][output[c].str.len() > 4] = np.nan
+            elif isinstance(r, str) and '/' in r:
+                # 包含多音字，展开
+                vals = r.split('/')
+                for j in range(max_row[i]):
+                    # 读音数量少于最大读音数的，缺少的部分以第一个读音填充
+                    rows.append(vals[j] if j < len(vals) else vals[0])
+
+            else:
+                # 该行包含多音字但该列不包含多音字，重复多次
+                rows.extend([r] * max_row[i])
+
+        return np.asarray(rows, dtype=np.object_)
+
+    # 原始数据中有些格子有多个读音，以斜杠分隔，需要展开
+    columns = [c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值')]
+    # 预先计算每行最多的读音数
+    max_row = np.asarray([(data[c].str.count('/') + 1).fillna(0) for c in columns], dtype=np.int32).max(axis=0)
+    output = data.reset_index().apply(get_rows, axis=0, max_row=max_row)
+
+    # 删除太长的读音
+    for c in columns:
+        output.loc[output[c].str.len() > 4, c] = np.NaN
 
     for c in output.columns:
         if c.endswith('聲母'):
             # 只允许国际音标
-            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.nan, inplace=True)
+            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.NaN, inplace=True)
             # 零声母统一用0填充
             output[c].replace('', '0', inplace=True)
 
         elif c.endswith('韻母'):
-            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.nan, inplace=True)
+            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.NaN, inplace=True)
 
         elif c.endswith('調類'):
-            output[c].replace(r'.*[^上中下變陰陽平去入].*', np.nan, inplace=True)
+            output[c].replace(r'.*[^上中下變陰陽平去入].*', np.NaN, inplace=True)
 
         elif c.endswith('調值'):
-            output[c].replace(r'.*[^0-9].*', np.nan, inplace=True)
+            output[c].replace(r'.*[^0-9].*', np.NaN, inplace=True)
 
     # 丢弃只出现一次的数据
     for c in output.columns:
         if c not in ('id', 'char'):
             count = output[c].value_counts()
-            output[c].replace(count[count <= 1].index, np.nan, inplace=True)
+            output[c].replace(count[count <= 1].index, np.NaN, inplace=True)
 
     return output
 
@@ -284,11 +300,33 @@ def get_stats(data):
     return initial_stats, final_stats, tone_stats
 
 def main():
-    infile, clean_file, imputed_file, recon_file, encoder_file, initial_tree_file, final_tree_file, tone_tree_file, \
-        initial_stats_file, final_stats_file, tone_stats_file = sys.argv[1:]
+    parser = argparse.ArgumentParser(globals().get('__doc__', ''))
+    parser.add_argument('--clean-output', help='去除噪音的数据的输出文件')
+    parser.add_argument('--imputed-output', help='填充缺失值的数据的输出文件')
+    parser.add_argument('--recon-output', help='根据自动编码器重构的读音的输出文件')
+    parser.add_argument('--encoder-output', help='输入读音编码器模型输出文件')
+    parser.add_argument('--initial-tree-output', help='声母决策树输出文件')
+    parser.add_argument('--final-tree-output', help='韵母决策树输出文件')
+    parser.add_argument('--tone-tree-output', help='声调决策树输出文件')
+    parser.add_argument('--initial-stats-output', help='声母聚类统计数据输出文件')
+    parser.add_argument('--final-stats-output', help='韵母聚类统计数据输出文件')
+    parser.add_argument('--tone-stats-output', help='声调聚类统计数据输出文件')
+    parser.add_argument('input', nargs='+', help='原始数据输入文件，JSON 格式')
+    args = parser.parse_args()
 
     # 加载方言字音数据
-    data = load(infile)
+    if (len(args.input) == 1):
+        # 只有一个输入文件，直接加载
+        data = load(args.input[0])
+
+    else:
+        # 多个输入文件，分别加载然后拼接
+        data = [load(f) for f in args.input]
+        data = pd.concat(
+            [data[0][['char'] + [c for c in data[0].columns if c.startswith('中古音')]]] \
+                + [df[[c for c in df.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值')]] for df in data],
+            axis=1
+        )
 
     # 清洗
     data = clean(data)
@@ -297,27 +335,27 @@ def main():
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
     data.dropna(axis=0, thresh=data.shape[1] * 0.5, inplace=True)
     data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index(drop=True)
-    data.to_hdf(clean_file, key='clean')
+    data.to_hdf(args.clean_output, key='clean')
 
     # 分类器不能处理缺失值，先根据已有数据填充缺失读音
     imputed = impute(data)
-    imputed.to_hdf(imputed_file, key='imputed')
+    imputed.to_hdf(args.imputed_output, key='imputed')
 
     # 使用自动编码器重构祖语声韵调类
     recon, encoder, initial_tree, final_tree, tone_tree = reconstruct(imputed)
     data[['initial', 'final', 'tone']] = recon[['initial', 'final', 'tone']]
 
     # 输出结果
-    recon.to_hdf(recon_file, key='recon')
-    joblib.dump(encoder, encoder_file)
-    joblib.dump(initial_tree, initial_tree_file)
-    joblib.dump(final_tree, final_tree_file)
-    joblib.dump(tone_tree, tone_tree_file)
+    recon.to_hdf(args.recon_output, key='recon')
+    joblib.dump(encoder, args.encoder_output)
+    joblib.dump(initial_tree, args.initial_tree_output)
+    joblib.dump(final_tree, args.final_tree_output)
+    joblib.dump(tone_tree, args.tone_tree_output)
 
     initial_stats, final_stats, tone_stats = get_stats(data)
-    initial_stats.to_hdf(initial_stats_file, key='initial_stats')
-    final_stats.to_hdf(final_stats_file, key='final_stats')
-    tone_stats.to_hdf(tone_stats_file, key='tone_stats')
+    initial_stats.to_hdf(args.initial_stats_output, key='initial_stats')
+    final_stats.to_hdf(args.final_stats_output, key='final_stats')
+    tone_stats.to_hdf(args.tone_stats_output, key='tone_stats')
 
 
 if __name__ == '__main__':
