@@ -204,7 +204,7 @@ def get_syllables(data):
 
     return cluster
 
-def reconstruct(data, initial_mid=0.002, final_mid=0.002, tone_mid=0.01):
+def reconstruct(data, min_sample=3, initial_mid=0.002, final_mid=0.002, tone_mid=0.01):
     '''
     使用决策树重构祖语的声韵调类.
 
@@ -215,19 +215,45 @@ def reconstruct(data, initial_mid=0.002, final_mid=0.002, tone_mid=0.01):
 
     encoder = OneHotEncoder(dtype=np.int32)
     features = encoder.fit_transform(data[[c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類')]])
-    initials = data[[c for c in data.columns if c.endswith('聲母')]]
-    finals = data[[c for c in data.columns if c.endswith('韻母')]]
-    tones = data[[c for c in data.columns if c.endswith('調類')]]
+    initial_cols = [c for c in data.columns if c.endswith('聲母')]
+    final_cols = [c for c in data.columns if c.endswith('韻母')]
+    tone_cols = [c for c in data.columns if c.endswith('調類')]
+    initials = data[initial_cols]
+    finals = data[final_cols]
+    tones = data[tone_cols]
 
-    initial_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=initial_mid).fit(features, initials)
-    final_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=final_mid).fit(features, finals)
-    tone_tree = DecisionTreeClassifier(criterion='entropy', min_impurity_decrease=tone_mid).fit(features, tones)
+    initial_tree = DecisionTreeClassifier(
+        criterion='entropy',
+        min_samples_leaf=min_sample,
+        min_impurity_decrease=initial_mid
+    ).fit(features, initials)
+    final_tree = DecisionTreeClassifier(
+        criterion='entropy',
+        min_samples_leaf=min_sample,
+        min_impurity_decrease=final_mid
+    ).fit(features, finals)
+    tone_tree = DecisionTreeClassifier(
+        criterion='entropy',
+        min_samples_leaf=min_sample,
+        min_impurity_decrease=tone_mid
+    ).fit(features, tones)
 
-    data['initial'] = initial_tree.apply(features)
-    data['final'] = final_tree.apply(features)
-    data['tone'] = tone_tree.apply(features)
+    # 根据决策树的预测结果重构方言读音
+    recon = pd.DataFrame(
+        columns=np.concatenate([initial_cols, final_cols, tone_cols]),
+        data=np.concatenate([
+            initial_tree.predict(features),
+            final_tree.predict(features),
+            tone_tree.predict(features)
+        ], axis=1)
+    )
 
-    return encoder, initial_tree, final_tree, tone_tree
+    recon['char'] = data['char'].values
+    recon['initial'] = initial_tree.apply(features)
+    recon['final'] = final_tree.apply(features)
+    recon['tone'] = tone_tree.apply(features)
+
+    return recon, encoder, initial_tree, final_tree, tone_tree
 
 def get_stats(data):
     '''
@@ -266,23 +292,23 @@ def main():
 
     # 清洗
     data = clean(data)
-    data.to_hdf(clean_file, key='clean')
 
     # 丢弃生僻字及缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
     data.dropna(axis=0, thresh=data.shape[1] * 0.5, inplace=True)
-    data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index()
+    data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index(drop=True)
+    data.to_hdf(clean_file, key='clean')
 
     # 分类器不能处理缺失值，先根据已有数据填充缺失读音
     imputed = impute(data)
     imputed.to_hdf(imputed_file, key='imputed')
 
     # 使用自动编码器重构祖语声韵调类
-    encoder, initial_tree, final_tree, tone_tree = reconstruct(imputed)
-    data[['initial', 'final', 'tone']] = imputed[['initial', 'final', 'tone']]
+    recon, encoder, initial_tree, final_tree, tone_tree = reconstruct(imputed)
+    data[['initial', 'final', 'tone']] = recon[['initial', 'final', 'tone']]
 
     # 输出结果
-    data.to_hdf(recon_file, key='recon')
+    recon.to_hdf(recon_file, key='recon')
     joblib.dump(encoder, encoder_file)
     joblib.dump(initial_tree, initial_tree_file)
     joblib.dump(final_tree, final_tree_file)
