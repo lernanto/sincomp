@@ -84,7 +84,7 @@ def main():
 
         time.sleep(0.2)
 
-    logging.info('successfully get {} characters'.format(count)))
+    logging.info('successfully get {} characters'.format(count))
 
 
 if __name__ == '__main__':
