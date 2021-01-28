@@ -45,15 +45,19 @@ def main():
             img = selector.xpath(r'//td[@class="ZiList"]/../td[2]/img/@src')[0]
             logging.debug(img)
             char = urllib.parse.parse_qs(urllib.parse.urlparse(img).query)['text'][0]
-            data = {'id': cid, 'char': char}
+            data = {'id': cid, '字形': char}
 
             # 中古汉语声韵调
             mc = selector.xpath(r'//table[2]/tr')
             logging.debug(lxml.etree.tostring(mc[2]))
-            data['middle_chinese'] = dict(zip(
+            data['中古音'] = dict(zip(
                 [c.xpath(r'string()').strip() for c in mc[1].xpath(r'td')[1:]],
                 [c.xpath(r'string()').strip() for c in mc[2].xpath(r'td')[1:]]
             ))
+
+            # 获取大方言名称
+            dialect = selector.xpath(r'//form[@id="HiddenFrom"]/p[@class="MessageTitle"]')[-1] \
+                    .xpath(r'string()').strip()
 
             # 现代方言读音表，每行一个方言点
             rows = selector.xpath(r'//table[@id="DialectTable"]/tr')
@@ -71,7 +75,7 @@ def main():
                     dialects.append(dict(zip(titles, [c.xpath(r'string()').strip() for c in cols])))
                     logging.debug(dialects[-1])
 
-                data['dialects'] = dialects
+                data[dialect] = dialects
 
             print(json.dumps(data, ensure_ascii=False))
 
