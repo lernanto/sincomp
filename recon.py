@@ -28,39 +28,28 @@ from sklearn.tree import DecisionTreeClassifier
 import joblib
 
 
-def load(fname):
-    '''
-    加载方言字音数据.
+def load(*files):
+    '''加载方言字音数据，CSV 格式.'''
 
-    JSON 格式，每行一个字
-    '''
+    if (len(files) == 1):
+        # 只有一个输入文件，直接加载
+        return pd.read_csv(files[0], comment='#', index_col='id', dtype=str)
 
-    data = []
-    for line in open(fname):
-        try:
-            obj = json.loads(line)
+    elif files > 1:
+        # 多个输入文件，分别加载然后拼接
+        data = []
+        for f in files:
+            if isinstance(f, str):
+                f = open(f)
 
-            if 'dialects' in obj:
-                # 中古音
-                row = {'id': obj['id'], 'char': obj['char'].strip()}
-                for k in ('攝', '聲調', '韻目', '字母', '開合', '等第', '清濁'):
-                    row['_'.join(('中古音', k))] = obj['middle_chinese'][k]
+            # CSV 文件的第一行是大方言名称
+            dialect = re.sub(r'^\s*#', '', next(f)).strip()
+            if dialect:
+                # 每个列名都加上大方言作为前缀
+                data.append(pd.read_csv(f, index_col='id', dtype=str) \
+                        .add_prefix('{}_'.format(dialect)))
 
-                # 方言读音
-                for d in obj['dialects']:
-                    for k in ('聲母', '韻母', '調類', '調值'):
-                        key = '_'.join((d['方言點'].strip(), k))
-                        val = d[k].strip()
-                        row[key] = val
-
-                data.append(row)
-
-        except:
-            logging.error('error parsing line! {}'.format(line[:50]), exc_info=True)
-
-    output = pd.DataFrame(data)
-    output.index = output.pop('id')
-    return output
+        return pd.concat(data, axis=1)
 
 def clean(data):
     '''
@@ -88,7 +77,7 @@ def clean(data):
         return np.asarray(rows, dtype=np.object_)
 
     # 原始数据中有些格子有多个读音，以斜杠分隔，需要展开
-    columns = [c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值')]
+    columns = [c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調類', '調值')]
     # 预先计算每行最多的读音数
     max_row = np.asarray([(data[c].str.count('/') + 1).fillna(0) for c in columns], dtype=np.int32).max(axis=0)
     output = data.reset_index().apply(get_rows, axis=0, max_row=max_row)
@@ -115,7 +104,7 @@ def clean(data):
 
     # 丢弃只出现一次的数据
     for c in output.columns:
-        if c not in ('id', 'char'):
+        if c.split('_')[-1] in ('聲母', '韻母', '調類', '調值'):
             count = output[c].value_counts()
             output[c].replace(count[count <= 1].index, np.NaN, inplace=True)
 
@@ -129,7 +118,7 @@ def impute(data):
     '''
 
     # 要填充的列
-    columns = [c for c in data.columns if c.startswith('中古音') or c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值')]
+    columns = [c for c in data.columns if c.startswith('中古音') or c.split('_')[-1] in ('聲母', '韻母', '調類', '調值')]
 
     # 先把读音字符串转成编码
     cat = pd.DataFrame()
@@ -174,7 +163,7 @@ def denoise(data):
     '''
 
     # 用于训练自动编码器的列
-    columns = [c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調值')]
+    columns = [c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調值')]
 
     # 训练基于决策树的自动编码器
     encoder = OneHotEncoder(categories='auto', dtype=np.int32)
@@ -213,9 +202,9 @@ def get_syllables(data):
     # 根据自动编码器分类结果聚类
     tmp = data.groupby('cluster')
     cluster = tmp.first()
-    cluster['char'] = tmp['char'].agg(lambda c: ''.join(set(c)))
+    cluster['中古音_字形'] = tmp['中古音_字形'].agg(lambda c: ''.join(set(c)))
     cluster['initial'] = cluster[[c for c in data.columns if '聲母' in c]].apply(get_freq, axis=1)
-    cluster['rhyme'] = cluster[[c for c in data.columns if '韻母' in c]].apply(get_freq, axis=1)
+    cluster['final'] = cluster[[c for c in data.columns if '韻母' in c]].apply(get_freq, axis=1)
     cluster['tone'] = cluster[[c for c in data.columns if '調值' in c]].apply(get_freq, axis=1)
 
     return cluster
@@ -230,7 +219,7 @@ def reconstruct(data, min_sample=3, initial_mid=0.002, final_mid=0.002, tone_mid
     '''
 
     encoder = OneHotEncoder(dtype=np.int32)
-    features = encoder.fit_transform(data[[c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類')]])
+    features = encoder.fit_transform(data[[c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調類')]])
     initial_cols = [c for c in data.columns if c.endswith('聲母')]
     final_cols = [c for c in data.columns if c.endswith('韻母')]
     tone_cols = [c for c in data.columns if c.endswith('調類')]
@@ -264,7 +253,7 @@ def reconstruct(data, min_sample=3, initial_mid=0.002, final_mid=0.002, tone_mid
         ], axis=1)
     )
 
-    recon['char'] = data['char'].values
+    recon['中古音_字形'] = data['中古音_字形'].values
     recon['initial'] = initial_tree.apply(features)
     recon['final'] = final_tree.apply(features)
     recon['tone'] = tone_tree.apply(features)
@@ -280,19 +269,19 @@ def get_stats(data):
     '''
 
     def _get_stats(expanded, key, name):
-        locations = np.unique([c.partition('_')[0] for c in data.columns if c.endswith(name)])
+        dialects = np.unique(['_'.join(c.split('_')[:-1]) for c in data.columns if c.endswith(name)])
         tmp = expanded.groupby(key)
 
         stats = tmp[[c for c in expanded.columns if name in c]].mean()
-        stats['char'] = tmp['char'].agg(lambda s: ''.join(set(s)))
+        stats['中古音_字形'] = tmp['中古音_字形'].agg(lambda s: ''.join(set(s)))
 
-        for l in locations:
-            stats[l] = st.entropy(stats[[c for c in stats.columns if c.startswith(l)]].values.T)
+        for d in dialects:
+            stats[d] = st.entropy(stats[[c for c in stats.columns if c.startswith(d)]].values.T)
 
-        stats['entropy'] = stats[locations].mean(axis=1)
+        stats['entropy'] = stats[dialects].mean(axis=1)
         return stats
 
-    expanded = pd.get_dummies(data, columns=[c for c in data.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類')])
+    expanded = pd.get_dummies(data, columns=[c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調類')])
     initial_stats = _get_stats(expanded, 'initial', '聲母')
     final_stats = _get_stats(expanded, 'final', '韻母')
     tone_stats = _get_stats(expanded, 'tone', '調類')
@@ -315,18 +304,7 @@ def main():
     args = parser.parse_args()
 
     # 加载方言字音数据
-    if (len(args.input) == 1):
-        # 只有一个输入文件，直接加载
-        data = load(args.input[0])
-
-    else:
-        # 多个输入文件，分别加载然后拼接
-        data = [load(f) for f in args.input]
-        data = pd.concat(
-            [data[0][['char'] + [c for c in data[0].columns if c.startswith('中古音')]]] \
-                + [df[[c for c in df.columns if c.partition('_')[-1] in ('聲母', '韻母', '調類', '調值')]] for df in data],
-            axis=1
-        )
+    data = load(*args.input)
 
     # 清洗
     data = clean(data)
@@ -334,7 +312,7 @@ def main():
     # 丢弃生僻字及缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
     data.dropna(axis=0, thresh=data.shape[1] * 0.5, inplace=True)
-    data = data[data['char'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index(drop=True)
+    data = data[data['中古音_字形'].str.match(r'^[\u4e00-\u9fa5]$')].reset_index(drop=True)
     data.to_hdf(args.clean_output, key='clean')
 
     # 分类器不能处理缺失值，先根据已有数据填充缺失读音
