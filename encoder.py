@@ -2,19 +2,12 @@
 # -*- encoding: utf-8 -*-
 
 import sys
+import os
+import datetime
 import numpy as np
 import tensorflow as tf
-import datetime
 import recon
 
-
-input_file = sys.argv[1]
-
-data = recon.clean(recon.load(input_file)
-
-for c in data.columns:
-    if c.partition('_')[2] in ('聲母', '韻母', '調值'):
-        data[c] = data[c].astype('category')
 
 class ContrastiveEncoder:
     def __init__(self, input_size, emb_size):
@@ -38,6 +31,7 @@ class ContrastiveEncoder:
         optimizer.apply_gradients(zip(grad, self.trainable_variables))
         return loss
 
+
 def gen_sample(data, sample=None):
     def gen():
         input_shapes = [len(d.categories) for d in data.dtypes]
@@ -51,29 +45,163 @@ def gen_sample(data, sample=None):
 
     return gen
 
-columns = [c for c in data.columns if c.endswith('聲母')]
-categories = [t.categories for t in data.dtypes[columns]]
 
-dataset = tf.data.Dataset.from_generator(
-    gen_sample(data[columns], sample=30),
-    output_types=(tf.int32, tf.int32)
-).batch(100, drop_remainder=True)
+class AutoEncoder:
+    def __init__(self, input_size, emb_size):
+        self.embedding = tf.Variable(tf.random_normal_initializer()(shape=(input_size, emb_size), dtype=tf.float32))
+        self.trainable_variables = (self.embedding,)
 
-emb_size = 100
-encoder = ContrastiveEncoder(sum(len(c) for c in categories), emb_size)
-optimizer = tf.optimizers.Adam()
+    def encode(self, *inputs):
+        embeddings = []
+        for i, input in enumerate(inputs):
+            weight = tf.cast(input != -1, tf.float32)
+            weight = weight / tf.maximum(tf.reduce_sum(weight, axis=1, keepdims=True), 1e-9)
+            embeddings.append(tf.reduce_sum(tf.nn.embedding_lookup(self.embedding, tf.maximum(input, 0)) * tf.expand_dims(weight, -1), axis=1))
 
-log_dir = 'tensorboard/{}'.format(
-    datetime.datetime.now().strftime('%Y%m%d%H%M')
-)
-summary_writer = tf.summary.create_file_writer(log_dir)
+        return embeddings[0] if len(embeddings) == 1 else tf.reduce_sum(embeddings, axis=0)
 
-loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
+    def loss(self, inputs, targets):
+        logits = tf.matmul(self.encode(*inputs), self.encode(*targets), transpose_b=True)
+        return tf.nn.sparse_softmax_cross_entropy_with_logits(tf.range(logits.shape[0], dtype=tf.int32), logits)
 
-for epoch in range(20):
-    for inputs, targets in dataset:
-        loss(encoder.update(inputs, targets, optimizer))
+    def update(self, inputs, targets, optimizer):
+        with tf.GradientTape() as tape:
+            loss = self.loss(inputs, targets)
+        grad = tape.gradient(loss, self.trainable_variables)
+        optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        return loss
 
-    with summary_writer.as_default():
-        tf.summary.scalar('loss', loss.result(), step=epoch)
-    loss.reset_states()
+
+class ContrastiveGenerator:
+    def __init__(self, *data):
+        self.data = data
+
+    def contrastive(self, sample):
+        try:
+            samples = list(sample)
+        except:
+            samples = [sample] * len(self.data)
+
+        for i, s in enumerate(samples):
+            if s < 1:
+                s = int(s * self.data[i].shape[1])
+            samples[i] = np.clip(s, 1, self.data[i].shape[1] - 1)
+
+        def gen():
+            for i in range(self.data[0].shape[0]):
+                inputs = []
+                targets = []
+
+                for j in range(len(self.data)):
+                    indices = self.data[j][i][self.data[j][i] != -1]
+                    if indices.shape[0] >= 2:
+                        m = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        n = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        inputs.append(np.random.choice(indices, m, replace=False))
+                        targets.append(np.random.choice(indices, n, replace=False))
+                    else:
+                        inputs.append(np.empty(0))
+                        targets.append(np.empty(0))
+
+                if sum(ip.shape[0] for ip in inputs) > 0 and sum(t.shape[0] for t in targets) > 0:
+                    yield tuple(inputs), tuple(targets)
+
+        return gen
+
+    def input(self):
+        for i in range(self.data[0].shape[0]):
+            inputs = []
+            for j in range(len(self.data)):
+                indices = self.data[j][i][self.data[j][i] != -1]
+                inputs.append(indices)
+
+            if sum(ip.shape[0] for ip in inputs) > 0:
+                yield tuple(inputs)
+
+
+if __name__ == '__main__':
+    input_file = sys.argv[1]
+
+    data = recon.clean(recon.load(input_file))
+
+    for c in data.columns:
+        if c.partition('_')[2] in ('聲母', '韻母', '調值'):
+            data[c] = data[c].astype('category')
+
+    initials = [c for c in data.columns if c.endswith('聲母')]
+    finals = [c for c in data.columns if c.endswith('韻母')]
+    tones = [c for c in data.columns if c.endswith('調值')]
+    columns = initials + finals + tones
+
+    data.dropna(how='all', subset=columns, inplace=True)
+
+    for c in columns:
+        data[c] = data[c].astype('category')
+
+    initial_categories = [t.categories for t in data.dtypes[initials]]
+    final_categories = [t.categories for t in data.dtypes[finals]]
+    tone_categories = [t.categories for t in data.dtypes[tones]]
+    categories = initial_categories + final_categories + tone_categories
+
+    bases = np.insert(np.cumsum([len(c) for c in categories])[:-1], 0, 0)
+    codes = np.empty(data[columns].shape, dtype=np.int32)
+    for i, c in enumerate(columns):
+        codes[:, i] = data[c].cat.codes
+
+    codes = pd.DataFrame(columns=columns, data=np.where(codes >= 0, codes + bases, -1))
+
+    generator = ContrastiveGenerator(codes[initials].values, codes[finals].values, codes[tones].values)
+
+    dataset = tf.data.Dataset.from_generator(
+        generator.contrastive(0.5),
+        output_types=((tf.int32, tf.int32, tf.int32), (tf.int32, tf.int32, tf.int32))
+    ).shuffle(1000).padded_batch(100, padded_shapes=(((None,), (None,), (None,)), ((None,), (None,), (None,))), padding_values=-1, drop_remainder=True)
+
+    emb_size = 10
+    encoder = AutoEncoder([sum(shape) for shape in input_shapes], emb_size)
+    optimizer = tf.optimizers.Adam()
+
+    output_prefix = os.path.join(
+        'tensorboard', 
+        datetime.datetime.now().strftime('%Y%m%d%H%M')
+    )
+
+    log_dir = output_prefix
+    summary_writer = tf.summary.create_file_writer(log_dir)
+    loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
+
+    checkpoint = tf.train.Checkpoint(embedding=encoder.embedding, optimizer=optimizer)
+    manager = tf.train.CheckpointManager(
+        checkpoint,
+        os.path.join(output_prefix, 'checkpoints'),
+        max_to_keep=10
+    )
+
+    for epoch in range(100):
+        for inputs, targets in dataset:
+            loss(encoder.update(inputs, targets, optimizer))
+
+        with summary_writer.as_default():
+                tf.summary.scalar('loss', loss.result(), step=epoch)
+        loss.reset_states()
+
+        if epoch % 10 == 9:
+            manager.save()
+
+    log_dir = 'tensorboard'
+    data[['id'] + columns].to_csv(os.path.join(log_dir, 'metadata.tsv'), sep='\t', index=False)
+
+    initial_emb = encoder.encode(codes[initials].values).numpy()
+    final_emb = encoder.encode(codes[finals].values).numpy()
+    tone_emb = encoder.encode(codes[tones].values).numpy()
+
+    cp = tf.train.Checkpoint(initial_embedding=tf.Variable(initial_emb), final_embedding=tf.Variable(final_emb), tone_embedding=tf.Variable(final_emb))
+    cp.save(os.path.join(log_dir, 'embedding.ckpt'))
+
+    config = projector.ProjectorConfig()
+    for key in ('initial', 'final', 'tone'):
+        embedding = config.embeddings.add()
+        embedding.tensor_name = '{}_embedding/.ATTRIBUTES/VARIABLE_VALUE'.format(key)
+        embedding.metadata_path = 'metadata.tsv'
+
+    projector.visualize_embeddings(log_dir, config)
