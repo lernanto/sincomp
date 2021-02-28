@@ -130,9 +130,14 @@ class DenoisingAutoEncoder:
     def encode(self, *inputs):
         embeddings = []
         for i, input in enumerate(inputs):
-            weight = tf.cast(input >= 0, tf.float32)
-            weight = weight / tf.maximum(tf.reduce_sum(weight, axis=1, keepdims=True), 1e-9)
-            embeddings.append(tf.reduce_sum(tf.nn.embedding_lookup(self.embedding, tf.maximum(input, 0)) * tf.expand_dims(weight, -1), axis=1))
+            embeddings.append(tf.where(
+                tf.math.reduce_any(input >= 0, axis=1, keepdims=True),
+                tf.reduce_mean(tf.nn.embedding_lookup(
+                    self.embedding,
+                    tf.ragged.boolean_mask(input, input >= 0)
+                ), axis=1),
+                tf.zeros((1, self.embedding.shape[1]), dtype=tf.float32)
+            ))
 
         return embeddings[0] if len(embeddings) == 1 else tf.reduce_sum(embeddings, axis=0)
 
@@ -163,12 +168,8 @@ class DenoisingAutoEncoder:
                 labels=tf.maximum(targets[:, i] - self.limits[i], 0),
                 logits=logits[:, self.limits[i]:self.limits[i + 1]]
             ))
-        loss = tf.stack(loss, axis=1)
-
-        weight = tf.cast(targets >= 0, tf.float32)
-        weight = weight / tf.maximum(tf.reduce_sum(weight, axis=0, keepdims=True), 1e-9)
-
-        return tf.reduce_sum(loss * weight)
+        loss = tf.stack(loss)
+        return tf.reduce_sum(tf.reduce_mean(tf.ragged.boolean_mask(loss, tf.transpose(targets >= 0)), axis=1))
 
     def update(self, inputs, targets, optimizer):
         with tf.GradientTape() as tape:
