@@ -62,14 +62,17 @@ class ContrastiveEncoder:
 
     def loss(self, inputs, targets):
         logits = tf.matmul(self.encode(*inputs), self.encode(*targets), transpose_b=True)
-        return tf.nn.sparse_softmax_cross_entropy_with_logits(tf.range(logits.shape[0], dtype=tf.int32), logits)
+        labels = tf.range(logits.shape[0], dtype=tf.int32)
+        loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels, logits)
+        acc = tf.cast(tf.argmax(logits, axis=1, output_type=tf.int32) == labels, tf.float32)
+        return loss, acc
 
     def update(self, inputs, targets, optimizer):
         with tf.GradientTape() as tape:
-            loss = self.loss(inputs, targets)
+            loss, acc = self.loss(inputs, targets)
         grad = tape.gradient(loss, self.trainable_variables)
         optimizer.apply_gradients(zip(grad, self.trainable_variables))
-        return loss
+        return loss, acc
 
 
 class ContrastiveGenerator:
