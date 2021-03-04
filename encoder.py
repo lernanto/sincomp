@@ -130,7 +130,13 @@ class DenoisingAutoEncoder:
         self.output_embedding = tf.Variable(tf.random_normal_initializer()(shape=(self.limits[-1], emb_size), dtype=tf.float32))
         self.trainable_variables = (self.embedding, self.output_embedding)
 
-    def encode(self, *inputs):
+    def encode(self, inputs):
+        emb = tf.reduce_mean(tf.nn.embedding_lookup(
+            self.embedding,
+            tf.ragged.boolean_mask(inputs, inputs >= 0)
+        ), axis=2).to_tensor()
+        return tf.reduce_sum(tf.where(tf.math.is_nan(emb), tf.zeros_like(emb), emb), axis=1)
+
         embeddings = []
         for i, input in enumerate(inputs):
             embeddings.append(tf.where(
@@ -144,8 +150,8 @@ class DenoisingAutoEncoder:
 
         return embeddings[0] if len(embeddings) == 1 else tf.reduce_sum(embeddings, axis=0)
 
-    def predict(self, *inputs):
-        logits = tf.matmul(self.encode(*inputs), self.output_embedding, transpose_b=True)
+    def predict(self, inputs):
+        logits = tf.matmul(self.encode(inputs), self.output_embedding, transpose_b=True)
 
         preds = []
         for i in range(self.limits.shape[0] - 1):
@@ -153,8 +159,8 @@ class DenoisingAutoEncoder:
 
         return tf.stack(preds, axis=1)
 
-    def predict_proba(self, *inputs):
-        logits = tf.matmul(self.encode(*inputs), self.output_embedding, transpose_b=True)
+    def predict_proba(self, inputs):
+        logits = tf.matmul(self.encode(inputs), self.output_embedding, transpose_b=True)
 
         probs = []
         for i in range(self.limits.shape[0] - 1):
@@ -163,7 +169,7 @@ class DenoisingAutoEncoder:
         return tf.concat(probs, axis=1)
 
     def loss(self, inputs, targets):
-        logits = tf.matmul(self.encode(*inputs), self.output_embedding, transpose_b=True)
+        logits = tf.matmul(self.encode(inputs), self.output_embedding, transpose_b=True)
 
         loss = []
         for i in range(targets.shape[1]):
