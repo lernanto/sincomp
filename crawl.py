@@ -30,16 +30,21 @@ def main():
 
     # 参数指定爬取的方言，如 yueyu
     lang = sys.argv[1]
-    url = r'http://xiaoxue.iis.sinica.edu.tw/{}/PageResult/PageResult'.format(lang)
+    url = r'https://xiaoxue.iis.sinica.edu.tw/{}/PageResult/PageResult'.format(lang)
+    agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36 Edg/92.0.902.62'
 
     # 从标准输入读入爬取的字 ID，范围1 - 25528
     count = 0
     for line in sys.stdin:
         try:
             cid = int(line)
-            rsp = requests.post(url, data={'ZiOrder': cid})
+            rsp = requests.post(
+                url,
+                headers={'user-agent': agent},
+                data={'ZiOrder': cid, 'DistinctCheck': False, 'X-Requested-With': 'XMLHttpRequest'}
+            )
             selector = lxml.etree.HTML(rsp.text)
-            assert int(selector.xpath(r'string(//span[@id="StartOrder"])')) == cid
+            assert selector.xpath(r'string(//span[@id="StartOrder"])') == str(cid)
 
             # 获取字形
             img = selector.xpath(r'//td[@class="ZiList"]/../td[2]/img/@src')[0]
@@ -56,11 +61,14 @@ def main():
             ))
 
             # 获取大方言名称
-            dialect = selector.xpath(r'//form[@id="HiddenFrom"]/p[@class="MessageTitle"]')[-1] \
-                    .xpath(r'string()').strip()
+            form = selector.xpath(r'//form[@id="HiddenFrom"]')[0]
+            dialect = form.xpath(r'p[@class="MessageTitle"]')[-1].xpath(r'string()').strip()
 
             # 现代方言读音表，每行一个方言点
-            rows = selector.xpath(r'//table[@id="DialectTable"]/tr')
+            rows = form.xpath(r'table[@id="DialectTable"]/tr')
+            if not rows:
+                # 官话的表没有标 ID，兼容一下
+                rows = form.xpath(r'table[4]/tr')
 
             if len(rows) > 3:
                 logging.debug(lxml.etree.tostring(rows[1]))
