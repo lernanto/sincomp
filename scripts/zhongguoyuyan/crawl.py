@@ -13,12 +13,14 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import sys
 import logging
 import os
+import datetime
+import time
 import requests
 import uuid
 import ddddocr
 import json
 import pandas
-import time
+import retrying
 
 
 site = 'https://zhongguoyuyan.cn'
@@ -122,6 +124,11 @@ def get_standard(session):
 
     return ret
 
+@retrying.retry(
+    retry_on_result=lambda ret: ret.get('status') != 'success',
+    stop_max_attempt_number=3,
+    wait_exponential_multiplier=delay
+)
 def get_survey(session):
     '''获取全部调查点'''
 
@@ -133,10 +140,16 @@ def get_survey(session):
     status = survey.get('status')
     if status == 'success':
         logging.info('get survey sucessful')
-        return survey
     else:
         logging.error('get survey failed, status = {}'.format(status))
 
+    return survey
+
+@retrying.retry(
+    retry_on_result=lambda ret: ret.get('code') not in {200, 408, 417},
+    stop_max_attempt_number=3,
+    wait_exponential_multiplier=delay
+)
 def get_data(session, id):
     '''获取方言点数据'''
 
@@ -151,13 +164,14 @@ def get_data(session, id):
     if code == 200:
         # 获取数据成功
         logging.debug('get data ID = {} successful, code = {}'.format(id, code))
-        return ret.get('data')
     else:
         logging.error('get data ID = {} failed, code = {}, {}'.format(
             id,
             code,
             ret.get('description')
         ))
+
+    return ret
 
 def try_login(email, password, retry=3):
     '''尝试登录，如果验证码错误，重试多次'''
@@ -216,13 +230,12 @@ def parse_survey(survey):
 
     objects = {}
     for name in ('dialect', 'minority'):
-        data = pandas.json_normalize(
+        obj = pandas.json_normalize(
             survey[name + 'Obj'],
             'cityList',
             'provinceCode'
-        )
-        data.index = data['_id']
-        objects[name] = data
+        ).set_index('_id')
+        objects[name] = obj
 
     return objects
 
@@ -276,7 +289,7 @@ def crawl_standard(session, prefix='.', update=False, retry=3):
             logging.info('save {} to {}'.format(name, fname))
             item.to_csv(fname, encoding='utf-8', index=False)
 
-def crawl_survey(session, prefix='.', update=False, retry=3):
+def crawl_survey(session, prefix='.', update=False):
     '''爬取调查点列表并保存到文件'''
 
     # 如果调查点列表文件已存在，且指定不更新，则使用现有文件中的数据
@@ -290,15 +303,9 @@ def crawl_survey(session, prefix='.', update=False, retry=3):
 
     else:
         # 调查点列表文件不存在，或指定更新文件，从网站获取最新调查点列表
-        for i in range(retry):
+        try:
             survey = get_survey(session)
-            time.sleep(delay)
-            if survey:
-                break
-
-        if survey is None:
-            # 超过最大重试次数
-            logging.error('cannot get survey after {} try, give up'.format(i + 1))
+        except:
             return
 
         logging.info('save survey data to {}'.format(survey_file))
@@ -307,33 +314,82 @@ def crawl_survey(session, prefix='.', update=False, retry=3):
 
     return parse_survey(survey)
 
-def crawl_data(session, id, prefix='.', update=False, retry=3):
+def crawl_data(session, id, insert_time, record, new_crawl, prefix='.'):
     '''爬取一个调查点的数据并保存到文件'''
 
+    try:
+        code = record.loc[id, 'code']
+        modify_time = record.loc[id, 'modify_time']
+    except KeyError:
+        code = None
+        modify_time = datetime.datetime.fromtimestamp(0)
+
     data_file = os.path.join(prefix, '{}.json'.format(id))
-    if os.path.exists(data_file) and not update:
-        # 数据文件已存在，且指定不更新，不再重复爬取
-        logging.info(
-            'data file {} already exists. do nothing'.format(data_file)
+
+    if code == 200 and os.path.exists(data_file) and (insert_time is None or modify_time > insert_time):
+        # 上次爬取时间晚于调查点数据加入时间，数据已是最新，不再重复爬取
+        logging.debug(
+            'data ID = {} is already present. do nothing, {}'.format(
+                id,
+                record.loc[id]
+            )
         )
         return
 
-    for i in range(retry):
-        # 请求调查点数据
-        data = get_data(session, id)
-        time.sleep(delay)
-        if data:
+    elif code is not None and code != 200:
+        # 由于资源的原因爬取不成功，暂时不再尝试
+        logging.debug('resource unavailable, code = {}, {}'.format(
+            code,
+            record.loc[id, 'description']
+        ))
+        return
+
+    else:
+        logging.info('get data ID = {}'.format(id))
+        try:
+            ret = get_data(session, id)
+        except retrying.RetryError as e:
+            ret = e.last_attempt
+
+        code = ret.get('code')
+        if code in {200, 417}:
+            # 记录爬取结果
+            new_crawl.append({
+                'id': id,
+                'modify_time': datetime.datetime.now(),
+                'code': code,
+                'description': ret.get('description')
+            })
+
+        if code == 200:
             logging.info('save data to {}'.format(data_file))
             with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
+                json.dump(ret.get('data'), f, ensure_ascii=False, indent=4)
             return True
+        else:
+            return False
 
-    # 超过最大重试次数
-    logging.error('cannot get data ID = {} after {} try, give up'.format(
-        id,
-        i + 1
-    ))
-    return False
+def load_record(fname):
+    '''加载之前的爬取记录'''
+
+    if os.path.exists(fname):
+        logging.info('load crawling records from {}'.format(fname))
+        record = pandas.read_csv(fname, index_col='id', encoding='utf-8')
+    else:
+        logging.info(
+            'crawling record file {} does not exist. assume empty'.format(fname)
+        )
+        record = pandas.DataFrame()
+        record.index.rename('id', inplace=True)
+
+    return record
+
+def save_record(fname, record):
+    '''保存爬取记录'''
+
+    logging.info('save crawling record to {}'.format(fname))
+    record.to_csv(fname, encoding='utf-8', line_terminator='\n')
+
 
 def crawl(
     email,
@@ -358,28 +414,29 @@ def crawl(
         crawl_standard(session, prefix)
 
         # 爬取调查点列表
-        ret = crawl_survey(session, prefix)
+        objects = crawl_survey(session, prefix)
 
-        if ret:
-            dialect, minority = ret
-            minority_dir = os.path.join(prefix, 'minority')
-            logging.info('try creating minority directory {}'.format(minority_dir))
-            os.makedirs(minority_dir, exist_ok=True)
+        if objects:
+            # 加载爬取记录
+            record_file = os.path.join(prefix, 'record.csv')
+            record = load_record(record_file)
+            new_crawl = []
 
             stop = False
-            for obj, name in ((dialect, 'dialect'), (minority, 'minority')):
+            for name, obj in objects.items():
                 dir = os.path.join(prefix, name)
                 logging.info('try creating directory {}'.format(dir))
                 os.makedirs(dir, exist_ok=True)
 
                 for id, row in obj.iterrows():
-                    # 爬取一个调查点的数据
-                    logging.info('get {} ID = {}, city = {}'.format(
-                        name,
+                    ret = crawl_data(
+                        session,
                         id,
-                        row['city'])
+                        row['insertDate'] if type(row['insertDate']) is datetime.datetime else None,
+                        record,
+                        new_crawl,
+                        dir
                     )
-                    ret = crawl_data(session, id, dir)
 
                     if ret is not None:
                         if ret:
@@ -396,6 +453,8 @@ def crawl(
                                 )
                                 stop = True
                                 break
+
+                            time.sleep(delay)
 
                         else:
                             fail_count += 1
@@ -418,6 +477,11 @@ def crawl(
                         success_count
                     )
                 )
+
+            # 把新的爬取记录写回文件
+            if new_crawl:
+                record = record.append(pandas.DataFrame(new_crawl).set_index('id'))
+                save_record(record_file, record)
 
         else:
             # 获取调查点列表失败
@@ -514,7 +578,7 @@ def parse(indir='.', outdir='.', update=False):
 def main():
     logging.getLogger().setLevel(logging.INFO)
 
-    email, password, prefix, update_survey, max_success = sys.argv[1:6]
+    email, password, prefix = sys.argv[1:4]
     crawl(email, password, prefix)
 
 
