@@ -214,34 +214,36 @@ def parse_standard(standard):
 def parse_survey(survey):
     '''解析调查点 JSON 数据，转换成表格'''
 
-    objects = []
-    for obj in ('dialectObj', 'minorityObj'):
-        data = pandas.json_normalize(survey[obj], 'cityList', 'provinceCode')
-        data.insert(1, 'proviceCode', data.pop('provinceCode'))
-        objects.append(data)
+    objects = {}
+    for name in ('dialect', 'minority'):
+        data = pandas.json_normalize(
+            survey[name + 'Obj'],
+            'cityList',
+            'provinceCode'
+        )
+        data.index = data['_id']
+        objects[name] = data
 
     return objects
 
-def parse_data(dialect):
+def parse_data(data):
     '''解析方言 JSON 数据，转换成表格'''
 
-    loc = dict(dialect['mapLocation']['point'])
-    loc.update(dialect['mapLocation']['location'])
-
     resources = []
-    for res in dialect.get('resourceList', []):
+    for res in data.get('resourceList', []):
         items = res.get('items')
         if items:
-            info = dict(loc)
-            info['sounder'] = res['sounder']
-            info['type'] = res['type']
-            info['oid'] = res['items'][0]['oid']
+            info = {
+                'sounder': res['sounder'],
+                'type': res['type'],
+                'oid': res['items'][0]['oid']
+            }
 
             record = pandas.json_normalize(items, 'records', ['iid', 'name'])
             record.insert(0, 'iid', record.pop('iid'))
             resources.append((info, record))
 
-    return resources
+    return data['mapLocation'], resources
 
 def crawl_standard(session, prefix='.', update=False, retry=3):
     '''爬取调查标准并保存到文件'''
@@ -265,13 +267,13 @@ def crawl_standard(session, prefix='.', update=False, retry=3):
 
     if standard:
         # 保存调查标准到文件
-        logging.info('save survey standard to file {}'.format(standard_file))
+        logging.info('save survey standard to {}'.format(standard_file))
         with open(standard_file, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(standard, f, ensure_ascii=False, indent=4)
 
         for name, item in parse_standard(standard).items():
             fname = os.path.join(prefix, '.'.join((name, '.csv')))
-            logging.info('save {} to file {}'.format(name, fname))
+            logging.info('save {} to {}'.format(name, fname))
             item.to_csv(fname, encoding='utf-8', index=False)
 
 def crawl_survey(session, prefix='.', update=False, retry=3):
@@ -285,8 +287,6 @@ def crawl_survey(session, prefix='.', update=False, retry=3):
         )
         with open(survey_file, encoding='utf-8') as f:
             survey = json.load(f)
-
-        dialect, minority = parse_survey(survey)
 
     else:
         # 调查点列表文件不存在，或指定更新文件，从网站获取最新调查点列表
@@ -305,16 +305,7 @@ def crawl_survey(session, prefix='.', update=False, retry=3):
         with open(survey_file, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(survey, f, ensure_ascii=False, indent=4)
 
-        # 分别保存方言列表和少数民族语言列表
-        dialect, minority = parse_survey(survey)
-        dialect_file = os.path.join(prefix, 'dialect.csv')
-        logging.info('save dialect list to {}'.format(dialect_file))
-        dialect.to_csv(dialect_file, encoding='utf-8', index=False)
-        minority_file = os.path.join(prefix, 'minority.csv')
-        logging.info('save minority list to {}'.format(minority_file))
-        minority.to_csv(minority_file, encoding='utf-8', index=False)
-
-    return dialect, minority
+    return parse_survey(survey)
 
 def crawl_data(session, id, prefix='.', update=False, retry=3):
     '''爬取一个调查点的数据并保存到文件'''
@@ -332,44 +323,30 @@ def crawl_data(session, id, prefix='.', update=False, retry=3):
         data = get_data(session, id)
         time.sleep(delay)
         if data:
-            break
+            logging.info('save data to {}'.format(data_file))
+            with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            return True
 
-    if data is None:
-        # 超过最大重试次数
-        logging.error('cannot get data ID = {} after {} try, give up'.format(
-            id,
-            i + 1
-        ))
-        return False
+    # 超过最大重试次数
+    logging.error('cannot get data ID = {} after {} try, give up'.format(
+        id,
+        i + 1
+    ))
+    return False
 
-    # 保存原始数据
-    logging.info('save data to {}'.format(data_file))
-    with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+def crawl(
+    email,
+    password,
+    prefix='.',
+    update_survey=False,
+    max_success=300,
+    max_fail=3
+):
+    '''爬取调查点数据'''
 
-    # 把单字、词汇、语法等数据分别保存成 CSV 文件
-    resources = parse_data(data)
-    for info, res in resources:
-        fname = os.path.join(prefix, '.'.join((info['oid'], 'csv')))
-        logging.info('save resource to {}'.format(fname))
-        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
-            for key, val in info.items():
-                print('# {} = {}'.format(key, val), file=f)
-
-            res.to_csv(f, index=False)
-
-    return True
-
-
-def main():
-    logging.getLogger().setLevel(logging.INFO)
-
-    email, password, prefix, update_survey, max_crawl = sys.argv[1:6]
-    # 是否重新爬取调查点列表并更新到本地
-    update_survey = bool(update_survey)
-    # 最大爬取的数量
-    max_crawl = int(max_crawl)
-    count = 0
+    success_count = 0
+    fail_count = 0
 
     logging.info('try creating directory {}'.format(prefix))
     os.makedirs(prefix, exist_ok=True)
@@ -395,9 +372,8 @@ def main():
                 logging.info('try creating directory {}'.format(dir))
                 os.makedirs(dir, exist_ok=True)
 
-                for _, row in obj.iterrows():
+                for id, row in obj.iterrows():
                     # 爬取一个调查点的数据
-                    id = row['_id']
                     logging.info('get {} ID = {}, city = {}'.format(
                         name,
                         id,
@@ -407,33 +383,39 @@ def main():
 
                     if ret is not None:
                         if ret:
-                            count += 1
-                            if count % 100 == 0:
-                                logging.info('crawled {} data'.format(count))
+                            success_count += 1
+                            if success_count % 100 == 0:
+                                logging.info('crawled {} data'.format(success_count))
 
-                            if count >= max_crawl:
+                            if success_count >= max_success:
                                 # 达到设置的最大爬取数量
                                 logging.info(
                                     'reached maximum crawl number = {}, have a rest'.format(
-                                        max_crawl
+                                        max_success
                                     )
                                 )
                                 stop = True
                                 break
 
                         else:
-                            # 多次爬取失败，不再尝试
-                            logging.error('error when getting data, abort')
-                            stop = True
-                            break
+                            fail_count += 1
+                            if fail_count >= max_fail:
+                                # 多次爬取失败，不再尝试
+                                logging.error(
+                                    'reached maximum failure number = {}, abort'.format(
+                                        max_fail
+                                    )
+                                )
+                                stop = True
+                                break
 
                 if stop:
                     break
 
             if not stop:
                 logging.info(
-                    'all data crawled, nothing else todo, count = {}'.format(
-                        count
+                    'all data crawled, nothing else todo, success_count = {}'.format(
+                        success_count
                     )
                 )
 
@@ -444,7 +426,97 @@ def main():
         # 退出登录
         logout(session)
 
-    logging.info('totally crawl {} data'.format(count))
+    logging.info('totally crawl {} data'.format(success_count))
+
+def parse(indir='.', outdir='.', update=False):
+    '''把 JSON 格式的原始数据转换成 CSV 格式'''
+
+    logging.info(
+        'parse data from JSON to CSV, input directory = {}, output directory = {}'.format(
+            indir,
+            outdir
+        )
+    )
+
+    # 如果输出目录不存在，先创建
+    logging.info('try creating directory {}'.format(outdir))
+    os.makedirs(outdir, exist_ok=True)
+
+    # 解析调查标准文件
+    standard_file = os.path.join(indir, 'standard.json')
+    logging.info('parse standard file {}'.format(standard_file))
+    with open(standard_file, encoding='utf-8') as f:
+        standard = json.load(f)
+
+    for name, item in parse_standard(standard).items():
+        fname = os.path.join(outdir, name + '.csv')
+        logging.info('save {} to {}'.format(name, fname))
+        item.to_csv(fname, index=False, encoding='utf-8', line_terminator='\n')
+
+    # 解析调查点列表文件
+    survey_file = os.path.join(indir, 'survey.json')
+    logging.info('parse survey data file {}'.format(survey_file))
+    with open(survey_file, encoding='utf-8') as f:
+        survey = json.load(f)
+
+    lists = parse_survey(survey)
+    for name, lst in lists.items():
+        # 保存调查点列表
+        fname = os.path.join(outdir, name + '.csv')
+        logging.info('save {} list to {}'.format(name, fname))
+        lst.to_csv(fname, encoding='utf-8', line_terminator='\n')
+
+        prefix = os.path.join(outdir, name)
+        logging.info('try creating directory {}'.format(prefix))
+        os.makedirs(prefix, exist_ok=True)
+
+        # 从文件读取解析所有调查点数据
+        ids = []
+        location = []
+
+        for id, row in lst.iterrows():
+            fname = os.path.join(indir, name, id + '.json')
+            if os.path.exists(fname):
+                logging.debug('parse data file {}'.format(fname))
+                with open(fname, encoding='utf-8') as f:
+                    data = json.load(f)
+
+                loc, resources = parse_data(data)
+                ids.append(id)
+                location.append(dict(**loc['point'], **loc['location']))
+
+                # 把单字、词汇、语法等数据分别保存成 CSV 文件
+                for info, res in resources:
+                    fname = os.path.join(prefix, info['oid'] + '.csv')
+                    if os.path.exists(fname) and not update:
+                        logging.info(
+                            'resource file {} already exists. do nothing'.format(
+                                fname
+                            )
+                        )
+                    else:
+                        logging.info('save resource to {}'.format(fname))
+                        res.to_csv(
+                            fname,
+                            index=False,
+                            encoding='utf-8',
+                            line_terminator='\n'
+                        )
+
+        location = pandas.DataFrame(location, index=ids)
+        logging.debug(location)
+
+        fname = os.path.join(prefix, 'location.csv')
+        logging.info('save location data to {}'.format(fname))
+        location.to_csv(fname, encoding='utf-8', line_terminator='\n')
+
+
+def main():
+    logging.getLogger().setLevel(logging.INFO)
+
+    email, password, prefix, update_survey, max_success = sys.argv[1:6]
+    crawl(email, password, prefix)
+
 
 if __name__ == '__main__':
     main()
