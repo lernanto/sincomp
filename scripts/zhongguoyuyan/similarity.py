@@ -361,22 +361,28 @@ def dist2sim(dist):
     max_sqrt = numpy.sqrt(numpy.max(dist, axis=0))
     return 1 - dist / max_sqrt[:, None] / max_sqrt[None, :]
 
-def plot_map(base, points, pc, boundary=None, **kwargs):
+def plot_map(
+    base,
+    points,
+    boundary=None,
+    pc=None,
+    ax=None,
+    figsize=None,
+    **kwargs
+):
     '''
     绘制指定地区的方言点地图
 
-    通过方言点的颜色来表示方言之间的相似度，方言点的颜色由相似度矩阵的主成分确定，可以近似表示相似度矩阵
+    如果指定了方言点主成分，通过方言点的颜色来表示方言之间的相似度，
+    方言点的颜色由相似度矩阵的主成分确定，可以近似表示相似度矩阵。
+    如果指定了方言点分类标签，则根据标签确定方言点颜色。
     '''
 
     if boundary is None:
         boundary = base.unary_union
 
-    # 缩放传入的颜色值使其接近高斯分布，标准差为0.4的高斯分布98%以上落在 [-1, 1] 区间
-    pc = StandardScaler().fit_transform(pc[:, :2]) * 0.4
-
     # 根据指定的地理边界筛选边界内部的点
     mask = points.within(boundary).values
-    inner_pc = pc[mask]
 
     # 根据筛选得到的点集确定绘制边界
     minx, miny, maxx, maxy = points[mask].total_bounds
@@ -388,37 +394,44 @@ def plot_map(base, points, pc, boundary=None, **kwargs):
     maxy += ymargin
 
     # 绘制地图底图
-    kwargs.setdefault('color', 'gray')
-    ax = base.boundary.plot(**kwargs)
+    ax = base.boundary.plot(color='gray', ax=ax, figsize=figsize)
     ax.set_xlim(minx, maxx)
     ax.set_ylim(miny, maxy)
 
-    # 根据相似度矩阵的主成分计算方言点颜色
-    # 降维后的相似度矩阵决定方言点的 Lab 色度
-    # 对绘制边界内的方言点稍微改变一下颜色分布，增加对比度，但保证变换后的均值不变
-    inner_mean = numpy.mean(inner_pc, axis=0)
-    scale = (pc - inner_mean) * 2 + inner_mean
-    weight = numpy.exp(-numpy.sum(numpy.square(pc - inner_mean), axis=1) * 3)
-    mix = weight[:, None] * scale + (1 - weight[:, None]) * pc
+    if pc is not None:
+        # 根据相似度矩阵的主成分计算方言点颜色，降维后的相似度矩阵决定方言点的 Lab 色度
+        # 缩放传入的颜色值使其接近高斯分布，标准差为0.4的高斯分布98%以上落在 [-1, 1] 区间
+        pc = StandardScaler().fit_transform(pc[:, :2]) * 0.4
 
-    # 把变换后的主成分拉伸到 Lab 色度的表示范围 [-100, 100]，亮度固定50
-    lab = numpy.empty((points.shape[0], 3), dtype=numpy.float32)
-    lab[:, 0] = 50
-    lab[:, 1:] = mix * 50
-    if numpy.any(numpy.abs(lab[mask, 1:]) > 50):
-        logging.warning(
-            '{}/{} points are out of [-50, 50], whose color may not show properly'.format(
-                numpy.count_nonzero(numpy.any(
-                    numpy.abs(lab[mask, 1:]) > 50,
-                    axis=1
-                )),
-                inner_pc.shape[0]
+        # 对绘制边界内的方言点稍微改变一下颜色分布，增加对比度，但保证变换后的均值不变
+        inner_pc = pc[mask]
+        inner_mean = numpy.mean(inner_pc, axis=0)
+        scale = (pc - inner_mean) * 2 + inner_mean
+        weight = numpy.exp(-numpy.sum(numpy.square(pc - inner_mean), axis=1) * 3)
+        mix = weight[:, None] * scale + (1 - weight[:, None]) * pc
+
+        # 把变换后的主成分拉伸到 Lab 色度的表示范围 [-100, 100]，亮度固定50
+        lab = numpy.empty((points.shape[0], 3), dtype=numpy.float32)
+        lab[:, 0] = 50
+        lab[:, 1:] = mix * 50
+        if numpy.any(numpy.abs(lab[mask, 1:]) > 50):
+            logging.warning(
+                '{}/{} points are out of [-50, 50], whose color may not show properly'.format(
+                    numpy.count_nonzero(numpy.any(
+                        numpy.abs(lab[mask, 1:]) > 50,
+                        axis=1
+                    )),
+                    inner_pc.shape[0]
+                )
             )
-        )
 
-    # Lab 色系转 RGB 色系用于显示
-    rgb = numpy.clip(colorspacious.cspace_convert(lab, 'CIELab', 'sRGB1'), 0, 1)
-    points.plot(ax=ax, color=rgb)
+        # Lab 色系转 RGB 色系用于显示
+        rgb = numpy.clip(colorspacious.cspace_convert(lab, 'CIELab', 'sRGB1'), 0, 1)
+        points.plot(ax=ax, color=rgb, **kwargs)
+
+    else:
+        # 根据标签确定方言点颜色
+        points.plot(ax=ax, **kwargs)
 
     return ax
 
