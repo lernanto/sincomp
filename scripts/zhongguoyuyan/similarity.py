@@ -308,6 +308,55 @@ def mutual_info(data, column=3, parallel=1):
     logging.info('done. finished {} locations'.format(location))
     return sim
 
+def normalize_sim(sim):
+    '''正则化相似度矩阵到取值 [-1, 1] 区间的对称阵'''
+
+    # 和转置取平均构造对称阵
+    sim = (sim + sim.T) / 2
+    # 除以对角线元素的平方根缩放到 [-1, 1] 区间，前提是对角线元素的相似度最大
+    d = numpy.sqrt(numpy.diagonal(sim))
+    sim /= d[:, None]
+    sim /= d[None, :]
+
+    # 如果有元素异常超出 [-1, 1] 区间，强制裁剪到 [-1, 1]
+    overflow = numpy.count_nonzero((sim < -1) | (sim > 1))
+    if overflow > 1:
+        logging.warning('{}/{} similarity out of [-1, 1], clip'.format(
+            overflow,
+            sim.size
+        ))
+        sim = numpy.clip(sim, -1, 1)
+
+    return sim
+
+def sim2dist(sim):
+    '''
+    相似度矩阵转换成距离矩阵.
+
+    假设相似阵的元素是欧氏空间向量的内积 sij = xi * xj，
+    因此 dij^2 = (xi - xj)^2 = xi^2 + xj^2 - 2xi * xj = sii^2 + sjj^2 - 2sij
+    '''
+
+    d2 = numpy.square(numpy.diagonal(sim))
+    d2 = -2 * sim + d2[:, None] + d2[None, :]
+
+    # 有少量元素 < 0 是由于计算相似度的时候取近似导致的，强制为0
+    minus = numpy.count_nonzero(d2 < 0)
+    if minus > 0:
+        logging.warning('{}/{} distance square < 0, clip to 0'.format(
+            minus,
+            d2.size
+        ))
+        d2 = numpy.maximum(d2, 0)
+
+    return numpy.sqrt(d2)
+
+def dist2sim(dist):
+    '''距离矩阵转换成相似度矩阵'''
+
+    max_sqrt = numpy.sqrt(numpy.max(dist, axis=0))
+    return 1 - dist / max_sqrt[:, None] / max_sqrt[None, :]
+
 def dendro_heat(
     dist,
     labels,
