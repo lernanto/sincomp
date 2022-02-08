@@ -76,7 +76,8 @@ def encode_targets(data):
     mask = MissingIndicator(missing_values='', features='all').fit_transform(data)
 
     # 把目标编码成数字，为了让编码器正常工作，先补全缺失值
-    targets = OrdinalEncoder().fit_transform(
+    encoder = OrdinalEncoder()
+    targets = encoder.fit_transform(
         SimpleImputer(
             missing_values='',
             strategy='most_frequent'
@@ -86,7 +87,7 @@ def encode_targets(data):
     # 重新删除缺失值
     targets[mask] = numpy.nan
     logging.info('done. totally {} targets'.format(targets.shape[1]))
-    return targets
+    return targets, numpy.asarray([len(c) for c in encoder.categories_])
 
 def cross_features(data, column=3):
     '''构造交叉特征'''
@@ -112,8 +113,8 @@ def chi2(data, column=3, parallel=1):
     卡方值越大表示越相似。遍历 A 方言及 B 方言的声母、韵母、声调，汇总后得到一个 A 方言对 B 方言预测能力的总评分。
 
     理论上由于自由度不同，卡方值不能直接比较，而应该比较相应的 p-value，但由于统计得出的卡方值非常大，
-    导致计算出的 p-value 下溢为0，不能比较，另一方面由于自由度都比较大，卡方值近似于高斯分布，
-    因此直接拿卡方值作为相似度来比较是可行的。
+    导致计算出的 p-value 下溢为0，不能比较，另一方面由于自由度都比较大，卡方值近似于正态分布，
+    可以把卡方值正则化到标准正态分布后进行比较。
 
     这种方式计算出来的相似度是单向的，即相似度矩阵不是对称阵，如果应用于要求对称的一些聚类算法，
     可以取相似度矩阵和其转置的平均为最终的相似度矩阵。直观的解释是如果 A 方言能预测 B 方言，
@@ -127,11 +128,12 @@ def chi2(data, column=3, parallel=1):
         column
     ))
 
-    targets = encode_targets(data)
+    targets, target_categories = encode_targets(data)
     features = cross_features(data, column)
 
     # 特征 one-hot 编码
     logging.info('encoding features ...')
+    feature_categories = []
     limits = []
     for i, fea in enumerate(features):
         # 先记录缺失特征的位置
@@ -148,11 +150,14 @@ def chi2(data, column=3, parallel=1):
         )
 
         # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
-        lim = numpy.cumsum([0] + [len(c) for c in onehot.categories_])
+        # TODO: 简单把缺失特征的 one-hot 置为0算出的卡方值是不准确的，应该把缺失样本从统计中剔除
+        cat = numpy.asarray([len(c) for c in onehot.categories_])
+        lim = numpy.concatenate([[0], numpy.cumsum(cat)])
         for j, f in enumerate(mi.features_):
             fea[mask[:, j], lim[f]:lim[f + 1]] = 0
 
         features[i] = fea
+        feature_categories.append(cat)
         limits.append(lim)
 
     logging.info('done. totally {} features'.format(sum(f.shape[1] for f in features)))
@@ -182,13 +187,17 @@ def chi2(data, column=3, parallel=1):
                     chi2 = sklearn.feature_selection.chi2(fea, target)[0]
                     chi2 = numpy.where(numpy.isnan(chi2), 0, chi2)
                     # 某个特征的卡方统计量是该特征所有取值的卡方统计量之和
-                    chi2s.append(numpy.asarray(
+                    chi2 = numpy.asarray(
                         [numpy.sum(chi2[limits[k][m]:limits[k][m + 1]]) \
                              for m in range(location)]
-                    ))
+                    )
+                    # 正则化卡方统计量至接近标准正态分布，自由度 k 的卡方分布期望为 k，方差为 2k
+                    df = (feature_categories[k] - 1) \
+                        * (target_categories[i * column + j] - 1)
+                    chi2s.append((chi2 - df) / numpy.sqrt(2 * df))
 
         # 多组特征预测同一个目标，取卡方统计量中最大的
-        return numpy.mean(
+        return numpy.sum(
             numpy.max(numpy.stack(chi2s).reshape(column, -1, location), axis=1),
             axis=0
         )
