@@ -106,8 +106,32 @@ def cross_features(data, column=3):
                 + data[:, numpy.arange(j, data.shape[1], column)]
         )
 
-    logging.info('done. totally {} cross features'.format(len(features)))
+    features = numpy.stack(features, axis=2)
+    logging.info('done. totally {} cross features'.format(features.shape[2]))
     return features
+
+def encode_features(features):
+    '''特征 one-hot 编码'''
+
+    logging.info('encoding features ...')
+
+    # 为了让编码器正常工作，先补全缺失特征
+    encoder = OneHotEncoder(
+        sparse=True,
+        dtype=numpy.float32,
+        handle_unknown='ignore'
+    )
+    features = encoder.fit(
+        SimpleImputer(
+            missing_values='',
+            strategy='most_frequent'
+        ).fit_transform(features)
+    ).transform(features)
+
+    categories = numpy.asarray([len(c) for c in encoder.categories_])
+
+    logging.info('done. totally {} features'.format(features.shape[1]))
+    return features, categories
 
 def chi2(data, column=3, parallel=1):
     '''
@@ -225,116 +249,171 @@ def chi2(data, column=3, parallel=1):
     logging.info('done. finished {} locations'.format(location))
     return sim
 
-def entropy(data, column=3, parallel=1):
-    '''
-    计算方言之间的条件熵
-    '''
+def joint_entropy(features, feature_limits, targets, target_limits):
+    '''分块计算方言间联合熵'''
 
-    location = data.shape[1] // column
-    logging.info('compute conditional entropy for {} locations {} characters {} columns'.format(
-        location,
-        data.shape[0],
-        column
-    ))
-
-    features = cross_features(data, column)
-    features = numpy.concatenate(features, axis=1)
-
-    # 特征编码
-    logging.info('encoding features ...')
-
-    # 先记录缺失特征的位置
-    mi = MissingIndicator(missing_values='')
-    mask = mi.fit_transform(features)
-
-    # 为了让编码器正常工作，先补全缺失特征
-    onehot = OneHotEncoder(sparse=True, dtype=numpy.float32)
-    features = onehot.fit_transform(
-        SimpleImputer(
-            missing_values='',
-            strategy='most_frequent'
-        ).fit_transform(features)
-    )
-
-    # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
-    cat = numpy.asarray([len(c) for c in onehot.categories_])
-    feature_limits = numpy.concatenate([[0], numpy.cumsum(cat)])
-    for j, f in enumerate(mi.features_):
-        features[mask[:, j], feature_limits[f]:feature_limits[f + 1]] = 0
-
-    logging.info('done. totally {} features'.format(features.shape[1]))
-
-    # 预测目标编码
-    logging.info('encoding targets ...')
-    targets = data
-
-    # 先记录缺失目标的位置
-    mi = MissingIndicator(missing_values='')
-    mask = mi.fit_transform(targets)
-
-    # 为了让编码器正常工作，先补全缺失特征
-    onehot = OneHotEncoder(sparse=True, dtype=numpy.float32)
-    targets = onehot.fit_transform(
-        SimpleImputer(
-            missing_values='',
-            strategy='most_frequent'
-        ).fit_transform(targets)
-    )
-
-    # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
-    cat = numpy.asarray([len(c) for c in onehot.categories_])
-    target_limits = numpy.concatenate([[0], numpy.cumsum(cat)])
-    for j, f in enumerate(mi.features_):
-        # TODO: 对稀疏矩阵置零效率不高，应把元素从稀疏矩阵中清除
-        targets[mask[:, j], target_limits[f]:target_limits[f + 1]] = 0
-
-    logging.info('done. totally {} targets'.format(targets.shape[1]))
-
-    # 计算特征到目标的条件熵
-    logging.info('computing conditional entropy ...')
-
-    # log P(y|x) = log f(x, y) / f(x) = log f(x, y) - log f(x)
-    # 分别计算共现频次和特征频次的对数，然后相减
+    # 计算共现频次及未归一化的信息量
     freq = features.T * targets
-    entropy = scipy.sparse.csc_matrix(freq)
-    entropy.data = numpy.where(freq.data == 0, 0, freq.data * -numpy.log(freq.data))
-
-    # 对共现矩阵的列分组求和，把目标不同取值的频次归并在一起
-    freq = numpy.asarray(numpy.column_stack([numpy.sum(
-        freq[:, target_limits[i]:target_limits[i + 1]],
-        axis=1
-    ) for i in range(target_limits.shape[0] - 1)]))
-    entropy = numpy.asarray(numpy.column_stack([numpy.sum(
-        entropy[:, target_limits[i]:target_limits[i + 1]],
-        axis=1
-    ) for i in range(target_limits.shape[0] - 1)]))
-
-    # 计算特征频次的对数，然后相减
-    feature_entropy = numpy.where(freq == 0, 0, freq * -numpy.log(freq))
-    entropy = entropy - feature_entropy
+    entropy = scipy.sparse.csr_matrix(freq)
+    entropy.data = numpy.where(
+        entropy.data == 0,
+        0,
+        entropy.data * numpy.log(entropy.data)
+    )
 
     # 对共现矩阵的行分组求和，把特征不同取值的频次归并在一起
     freq = numpy.stack([numpy.sum(
         freq[feature_limits[i]:feature_limits[i + 1]],
         axis=0
-    ) for i in range(feature_limits.shape[0] - 1)])
+    ) for i in range(feature_limits.shape[0] - 1)]).A
     entropy = numpy.stack([numpy.sum(
         entropy[feature_limits[i]:feature_limits[i + 1]],
         axis=0
+    ) for i in range(feature_limits.shape[0] - 1)]).A
+
+    # 对共现矩阵的列分组求和，把目标不同取值的频次归并在一起
+    freq = numpy.column_stack([numpy.sum(
+        freq[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)])
+    entropy = numpy.column_stack([numpy.sum(
+        entropy[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)])
+
+    # 根据总频次归一化信息量，得到真正的联合熵
+    return numpy.log(freq) - entropy / freq
+
+def marginal_entropy(features, feature_limits):
+    '''计算特征边缘熵'''
+
+    freq = features.sum(axis=0).A[0]
+    entropy = numpy.where(freq == 0, 0, freq * numpy.log(freq))
+
+    freq = numpy.stack([numpy.sum(
+        freq[feature_limits[i]:feature_limits[i + 1]]
     ) for i in range(feature_limits.shape[0] - 1)])
+    entropy = numpy.stack([numpy.sum(
+        entropy[feature_limits[i]:feature_limits[i + 1]]
+    ) for i in range(feature_limits.shape[0] - 1)])
+    return numpy.log(freq) - entropy / freq
 
-    # 频次对数除以样本总频次，得到真正的条件熵
-    # 然后归并同一组方言对多个特征和目标的条件熵
-    entropy = numpy.sum(numpy.min(
-        (entropy / freq).reshape(-1, location, location, column),
-        axis=0
-    ), axis=-1)
+def entropy(
+    src,
+    dest=None,
+    column=3,
+    blocksize=(100, 100),
+    parallel=1
+):
+    '''
+    计算方言之间的条件熵.
+    '''
 
+    if dest is None:
+        dest = src
+
+    src_num = src.shape[1] // column
+    dest_num = dest.shape[1] // column
+
+    logging.info(('compute joint entropy for {} sources {} destinations, ' \
+        + 'characters = {}, columns = {}, block size = {}, parallel = {}').format(
+        src_num,
+        dest_num,
+        src.shape[0],
+        column,
+        blocksize,
+        parallel
+    ))
+
+    # 特征交叉及编码
+    features = cross_features(src, column)
+    feature_column = features.shape[2]
+    features, feature_categories = encode_features(
+        features.reshape(features.shape[0], -1)
+    )
+    feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
+
+    # H(Y|X) = H(X, Y) - H(X)，分别计算联合熵和特征的边缘熵，然后相减
+    # 计算特征边缘熵
+    logging.info('computing marginal entropy for {} features ...'.format(
+        feature_limits.shape[0] - 1
+    ))
+    feature_entropy = marginal_entropy(features, feature_limits)
     logging.info('done.')
-    if numpy.any(numpy.isnan(entropy)):
-        logging.warning('result entropy contains NaN')
 
-    return entropy
+    # 预测目标编码
+    targets, target_categories = encode_features(dest)
+    target_limits = numpy.concatenate([[0], numpy.cumsum(target_categories)])
+
+    # 计算特征到目标的条件熵
+    row_block = (src_num + blocksize[0] - 1) // blocksize[0]
+    col_block = (dest_num + blocksize[1] - 1) // blocksize[1]
+
+    logging.info('computing joint entropy for {} x {} blocks, block size = {} ...'.format(
+        row_block,
+        col_block,
+        blocksize
+    ))
+
+    # 分块并行计算联合熵
+    feature_block = blocksize[0] * feature_column
+    target_block = blocksize[1] * column
+    gen = joblib.Parallel(n_jobs=parallel)(
+        joblib.delayed(joint_entropy)(
+            features[:, feature_limits[i]:feature_limits[min(
+                i + feature_block,
+                feature_limits.shape[0] - 1
+            )]],
+            feature_limits[i:i + feature_block + 1] - feature_limits[i],
+            targets[:, target_limits[j]:target_limits[min(
+                j + target_block,
+                target_limits.shape[0] - 1
+            )]],
+            target_limits[j:j + target_block + 1] - target_limits[j]
+        ) for i in range(0, src.shape[1], feature_block) \
+            for j in range(0, dest.shape[1], target_block)
+    )
+
+    ent = numpy.empty((src_num, dest_num), dtype=numpy.float32)
+    for i, e in enumerate(gen):
+        row = i // col_block * blocksize[0]
+        col = i % col_block * blocksize[1]
+
+        # H(y|x) = H(x, y) - H(x)
+        e -= feature_entropy[
+            row * feature_column:row * feature_column + feature_block,
+            None
+        ]
+        minus = numpy.count_nonzero(e < 0)
+        if minus > 0:
+            # 正常情况下计算出来的条件熵都大等于0，小于0可能是由于计算精度造成的
+            logging.warning('{}/{} conditional entropy < 0'.format(
+                minus,
+                e.size
+            ))
+
+        # 归并同一组方言对多个特征和目标的条件熵
+        ent[row:row + blocksize[0], col:col + blocksize[1]] = numpy.sum(
+            numpy.min(
+                e.reshape(
+                    min(blocksize[0], ent.shape[0] - row),
+                    feature_column,
+                    min(blocksize[1], ent.shape[1] - col),
+                    column
+                ),
+                axis=1
+            ),
+            axis=-1
+        )
+
+        if (i + 1) % 10 == 0:
+            logging.info('finished {} blocks'.format(i + 1))
+
+    logging.info('done. finished {} blocks'.format(i + 1))
+    if numpy.any(numpy.isnan(ent)):
+        logging.warning('result conditional entropy contains NaN')
+
+    return ent
 
 def normalize_sim(sim):
     '''正则化相似度矩阵到取值 [-1, 1] 区间的对称阵'''
