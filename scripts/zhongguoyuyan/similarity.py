@@ -16,6 +16,7 @@ import logging
 import pandas
 import geopandas
 import numpy
+import scipy.sparse
 import scipy.cluster.hierarchy
 import sklearn.feature_selection
 from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder, StandardScaler
@@ -224,93 +225,116 @@ def chi2(data, column=3, parallel=1):
     logging.info('done. finished {} locations'.format(location))
     return sim
 
-def mutual_info(data, column=3, parallel=1):
+def entropy(data, column=3, parallel=1):
     '''
-    计算方言音类之间互信息量
+    计算方言之间的条件熵
     '''
 
     location = data.shape[1] // column
-    logging.info('compute mutual information for {} locations {} characters {} columns'.format(
+    logging.info('compute conditional entropy for {} locations {} characters {} columns'.format(
         location,
         data.shape[0],
         column
     ))
 
-    targets = encode_targets(data)
     features = cross_features(data, column)
+    features = numpy.concatenate(features, axis=1)
 
     # 特征编码
     logging.info('encoding features ...')
-    limits = []
-    for i, fea in enumerate(features):
-        # 先记录缺失特征的位置
-        mi = MissingIndicator(missing_values='', features='all')
-        mask = mi.fit_transform(fea)
 
-        # 为了让编码器正常工作，先补全缺失特征
-        fea = OrdinalEncoder().fit_transform(
-            SimpleImputer(
-                missing_values='',
-                strategy='most_frequent'
-            ).fit_transform(fea)
-        )
+    # 先记录缺失特征的位置
+    mi = MissingIndicator(missing_values='')
+    mask = mi.fit_transform(features)
 
-        # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
-        fea[mask] = numpy.nan
-        features[i] = fea
+    # 为了让编码器正常工作，先补全缺失特征
+    onehot = OneHotEncoder(sparse=True, dtype=numpy.float32)
+    features = onehot.fit_transform(
+        SimpleImputer(
+            missing_values='',
+            strategy='most_frequent'
+        ).fit_transform(features)
+    )
 
-    logging.info('done. totally {} features'.format(sum(f.shape[1] for f in features)))
+    # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
+    cat = numpy.asarray([len(c) for c in onehot.categories_])
+    feature_limits = numpy.concatenate([[0], numpy.cumsum(cat)])
+    for j, f in enumerate(mi.features_):
+        features[mask[:, j], feature_limits[f]:feature_limits[f + 1]] = 0
 
-    def compute_mi(i):
-        '''计算所有其他方言对 i 方言的相似度'''
+    logging.info('done. totally {} features'.format(features.shape[1]))
 
-        mis = []
-        # 对声母、韵母、声调分别执行统计
-        for j in range(column):
-            target = targets[:, i * column + j]
+    # 预测目标编码
+    logging.info('encoding targets ...')
+    targets = data
 
-            # 对其他方言的每一种交叉特征，也要分别统计
-            for k, fea in enumerate(features):
-                # 注意当特征包含预测目标的时候才执行预测，如声母 + 韵母预测声母
-                # 否则受目标方言音系影响，即使同个方言的声母 + 韵母预测自己的声调相似度也不高
-                l = (k + 1) % column
-                if k == j or l == j:
-                    mi = numpy.empty(fea.shape[1])
-                    for m in range(fea.shape[1]):
-                        # 需要剔除特征和目标中的缺失样本
-                        mask = ~(numpy.isnan(fea[:, m]) | numpy.isnan(target))
-                        f = fea[mask, m]
-                        t = target[mask]
+    # 先记录缺失目标的位置
+    mi = MissingIndicator(missing_values='')
+    mask = mi.fit_transform(targets)
 
-                        # 计算特征和目标的互信息量
-                        # 由于样本缺失偶然有些组合会统计出 NaN，填充为0
-                        mi[m] = sklearn.feature_selection.mutual_info_classif(f[:, None], t)
+    # 为了让编码器正常工作，先补全缺失特征
+    onehot = OneHotEncoder(sparse=True, dtype=numpy.float32)
+    targets = onehot.fit_transform(
+        SimpleImputer(
+            missing_values='',
+            strategy='most_frequent'
+        ).fit_transform(targets)
+    )
 
-                    mis.append(numpy.where(numpy.isnan(mi), 0, mi))
+    # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
+    cat = numpy.asarray([len(c) for c in onehot.categories_])
+    target_limits = numpy.concatenate([[0], numpy.cumsum(cat)])
+    for j, f in enumerate(mi.features_):
+        # TODO: 对稀疏矩阵置零效率不高，应把元素从稀疏矩阵中清除
+        targets[mask[:, j], target_limits[f]:target_limits[f + 1]] = 0
 
-        # 多组特征预测同一个目标，取卡方统计量中最大的
-        return numpy.mean(
-            numpy.max(numpy.stack(mis).reshape(column, -1, location), axis=1),
-            axis=0
-        )
+    logging.info('done. totally {} targets'.format(targets.shape[1]))
 
-    # 计算所有方言组合的互信息量
-    logging.info('computing mutual information ...')
-    if parallel > 1:
-        gen = joblib.Parallel(n_jobs=parallel)(
-            joblib.delayed(compute_mi)(i) for i in range(location)
-        )
-    else:
-        gen = (compute_mi(i) for i in range(location))
+    # 计算特征到目标的条件熵
+    logging.info('computing conditional entropy ...')
 
-    sim = numpy.empty((location, location))
-    for i, mi in enumerate(gen):
-        sim[:, i] = mi
-        if (i + 1) % 10 == 0:
-            logging.info('finished {} locations'.format(i + 1))
+    # log P(y|x) = log f(x, y) / f(x) = log f(x, y) - log f(x)
+    # 分别计算共现频次和特征频次的对数，然后相减
+    freq = features.T * targets
+    entropy = scipy.sparse.csc_matrix(freq)
+    entropy.data = numpy.where(freq.data == 0, 0, freq.data * -numpy.log(freq.data))
 
-    logging.info('done. finished {} locations'.format(location))
-    return sim
+    # 对共现矩阵的列分组求和，把目标不同取值的频次归并在一起
+    freq = numpy.asarray(numpy.column_stack([numpy.sum(
+        freq[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)]))
+    entropy = numpy.asarray(numpy.column_stack([numpy.sum(
+        entropy[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)]))
+
+    # 计算特征频次的对数，然后相减
+    feature_entropy = numpy.where(freq == 0, 0, freq * -numpy.log(freq))
+    entropy = entropy - feature_entropy
+
+    # 对共现矩阵的行分组求和，把特征不同取值的频次归并在一起
+    freq = numpy.stack([numpy.sum(
+        freq[feature_limits[i]:feature_limits[i + 1]],
+        axis=0
+    ) for i in range(feature_limits.shape[0] - 1)])
+    entropy = numpy.stack([numpy.sum(
+        entropy[feature_limits[i]:feature_limits[i + 1]],
+        axis=0
+    ) for i in range(feature_limits.shape[0] - 1)])
+
+    # 频次对数除以样本总频次，得到真正的条件熵
+    # 然后归并同一组方言对多个特征和目标的条件熵
+    entropy = numpy.sum(numpy.min(
+        (entropy / freq).reshape(-1, location, location, column),
+        axis=0
+    ), axis=-1)
+
+    logging.info('done.')
+    if numpy.any(numpy.isnan(entropy)):
+        logging.warning('result entropy contains NaN')
+
+    return entropy
 
 def normalize_sim(sim):
     '''正则化相似度矩阵到取值 [-1, 1] 区间的对称阵'''
@@ -546,4 +570,9 @@ if __name__ == '__main__':
     ids, data = load_data(prefix, location.index)
 
     chisq = chi2(data.values, parallel=4)
-    pandas.DataFrame(chisq, index=ids, columns=ids).to_csv(sys.stdout)
+    pandas.DataFrame(chisq, index=ids, columns=ids) \
+        .to_csv('chi2.csv', line_terminator='\n')
+
+    ent = entropy(data.values)
+    pandas.DataFrame(ent, index=ids, columns=ids) \
+        .to_csv('entropy.csv', line_terminator='\n')
