@@ -18,9 +18,8 @@ import geopandas
 import numpy
 import scipy.sparse
 import scipy.cluster.hierarchy
-import sklearn.feature_selection
-from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder, StandardScaler
-from sklearn.impute import SimpleImputer, MissingIndicator
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
 import joblib
 import colorspacious
 import matplotlib
@@ -73,27 +72,6 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     logging.info('load data of {} characters'.format(data.shape[0]))
     return load_ids, data
 
-def encode_targets(data):
-    '''编码预测目标'''
-
-    logging.info('encoding targets ...')
-    # 先记录缺失值的位置
-    mask = MissingIndicator(missing_values='', features='all').fit_transform(data)
-
-    # 把目标编码成数字，为了让编码器正常工作，先补全缺失值
-    encoder = OrdinalEncoder()
-    targets = encoder.fit_transform(
-        SimpleImputer(
-            missing_values='',
-            strategy='most_frequent'
-        ).fit_transform(data)
-    )
-
-    # 重新删除缺失值
-    targets[mask] = numpy.nan
-    logging.info('done. totally {} targets'.format(targets.shape[1]))
-    return targets, numpy.asarray([len(c) for c in encoder.categories_])
-
 def cross_features(data, column=3):
     '''构造交叉特征'''
 
@@ -133,7 +111,86 @@ def encode_features(features):
     logging.info('done. totally {} features'.format(features.shape[1]))
     return features, categories
 
-def chi2(data, column=3, parallel=1):
+def freq2prob(freqs, limits):
+    '''根据出现频次估算概率'''
+
+    return numpy.concatenate(
+        [freqs[limits[i]:limits[i + 1]] \
+            / numpy.sum(freqs[limits[i]:limits[i + 1]]) \
+            for i in range(limits.shape[0] - 1)]
+    )
+
+def chi2_block(
+    features,
+    feature_categories,
+    feature_probs,
+    targets,
+    target_categories,
+    target_probs
+):
+    '''
+    分块计算卡方.
+
+    x2 = sum((o - e)^2 / e) = sum(o^2 / e) + n
+    其中 e = n * pi * pj，因此 sum(o^2 / e) = sum(o^2 / n / pi / pj)
+    = 1/n sum(1/pi * sum(o^2 / pj))
+    只需要计算求和中观察数 o 非零的项，因此也只需处理对应的概率 pj
+    '''
+
+    logging.debug('features = {}, feature categories = {} feature probs = {}, targets = {}, target categories = {}, target probs = {}'.format(
+        features,
+        feature_categories,
+        feature_probs,
+        targets,
+        target_categories,
+        target_probs
+    ))
+
+    freq = features.T * targets
+    chisq = scipy.sparse.csr_matrix(freq)
+    # 利用 CSR 矩阵的内部结构，只计算非0项的期望数
+    chisq.data = numpy.square(chisq.data) / target_probs[chisq.indices]
+
+    # 按列归并目标取值
+    target_limits = numpy.concatenate([[0], numpy.cumsum(target_categories)])
+    freq = numpy.column_stack([numpy.sum(
+        freq[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)]).A
+    chisq = numpy.column_stack([numpy.sum(
+        chisq[:, target_limits[i]:target_limits[i + 1]],
+        axis=1
+    ) for i in range(target_limits.shape[0] - 1)]).A
+
+    chisq /= feature_probs[:, None]
+
+    # 按行归并特征取值
+    feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
+    freq = numpy.stack([numpy.sum(
+        freq[feature_limits[i]:feature_limits[i + 1]],
+        axis=0
+    ) for i in range(feature_limits.shape[0] - 1)])
+    chisq = numpy.stack([numpy.sum(
+        chisq[feature_limits[i]:feature_limits[i + 1]],
+        axis=0
+    ) for i in range(feature_limits.shape[0] - 1)])
+
+    # 得到真正的卡方值
+    chisq = chisq / freq - freq
+
+    # 计算自由度
+    dof = numpy.outer(feature_categories - 1, target_categories - 1) \
+        .astype(numpy.float32)
+    # 标准化卡方值使之接近标准正态分布
+    return (chisq - dof) / numpy.sqrt(2 * dof)
+
+def chi2(
+    src,
+    dest=None,
+    column=3,
+    blocksize=(100, 100),
+    parallel=1
+):
     '''
     使用卡方检验计算方言之间的相似度
 
@@ -150,104 +207,99 @@ def chi2(data, column=3, parallel=1):
     同时 B 方言也能预测 A 方言，那么两个方言是相似的。
     '''
 
-    location = data.shape[1] // column
-    logging.info('compute Chi square for {} locations {} characters {} columns'.format(
-        location,
-        data.shape[0],
-        column
+    if dest is None:
+        dest = src
+
+    src_num = src.shape[1] // column
+    dest_num = dest.shape[1] // column
+
+    logging.info(('compute chi square for {} sources {} destinations, ' \
+        + 'characters = {}, columns = {}, block size = {}, parallel = {}').format(
+        src_num,
+        dest_num,
+        src.shape[0],
+        column,
+        blocksize,
+        parallel
     ))
 
-    targets, target_categories = encode_targets(data)
-    features = cross_features(data, column)
+    # 特征交叉及编码
+    features = cross_features(src, column)
+    feature_column = features.shape[2]
+    features, feature_categories = encode_features(
+        features.reshape(features.shape[0], -1)
+    )
+    feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
 
-    # 特征 one-hot 编码
-    logging.info('encoding features ...')
-    feature_categories = []
-    limits = []
-    for i, fea in enumerate(features):
-        # 先记录缺失特征的位置
-        mi = MissingIndicator(missing_values='')
-        mask = mi.fit_transform(fea)
+    # 预测目标编码
+    targets, target_categories = encode_features(dest)
+    target_limits = numpy.concatenate([[0], numpy.cumsum(target_categories)])
 
-        # 为了让编码器正常工作，先补全缺失特征
-        onehot = OneHotEncoder()
-        fea = onehot.fit_transform(
-            SimpleImputer(
-                missing_values='',
-                strategy='most_frequent'
-            ).fit_transform(fea)
-        )
+    # 根据特征和目标的出现频率估算概率
+    feature_probs = freq2prob(features.sum(axis=0).A.flatten(), feature_limits)
+    target_probs = freq2prob(targets.sum(axis=0).A.flatten(), target_limits)
 
-        # 根据先前记录的缺失特征位置，把补全的特征从转换后的编码删除
-        # TODO: 简单把缺失特征的 one-hot 置为0算出的卡方值是不准确的，应该把缺失样本从统计中剔除
-        cat = numpy.asarray([len(c) for c in onehot.categories_])
-        lim = numpy.concatenate([[0], numpy.cumsum(cat)])
-        for j, f in enumerate(mi.features_):
-            fea[mask[:, j], lim[f]:lim[f + 1]] = 0
+    # 分块并行计算特征到目标的卡方
+    row_block = (src_num + blocksize[0] - 1) // blocksize[0]
+    col_block = (dest_num + blocksize[1] - 1) // blocksize[1]
 
-        features[i] = fea
-        feature_categories.append(cat)
-        limits.append(lim)
+    logging.info('computing chi square for {} x {} blocks, block size = {} ...'.format(
+        row_block,
+        col_block,
+        blocksize
+    ))
 
-    logging.info('done. totally {} features'.format(sum(f.shape[1] for f in features)))
+    feature_block = blocksize[0] * feature_column
+    target_block = blocksize[1] * column
+    gen = joblib.Parallel(n_jobs=parallel)(
+        joblib.delayed(chi2_block)(
+            features[:, feature_limits[i]:feature_limits[min(
+                i + feature_block,
+                feature_limits.shape[0] - 1
+            )]],
+            feature_categories[i:i + feature_block],
+            feature_probs[feature_limits[i]:feature_limits[min(
+                i + feature_block,
+                feature_limits.shape[0] - 1
+            )]],
+            targets[:, target_limits[j]:target_limits[min(
+                j + target_block,
+                target_limits.shape[0] - 1
+            )]],
+            target_categories[j:j + target_block],
+            target_probs[target_limits[j]:target_limits[min(
+                j + target_block,
+                target_limits.shape[0] - 1
+            )]]
+        ) for i in range(0, src.shape[1], feature_block) \
+            for j in range(0, dest.shape[1], target_block)
+    )
 
-    def compute_chi2(i):
-        '''计算所有其他方言对 i 方言的相似度'''
+    chisq = numpy.empty((src_num, dest_num), dtype=numpy.float32)
+    for i, ch in enumerate(gen):
+        row = i // col_block * blocksize[0]
+        col = i % col_block * blocksize[1]
 
-        chi2s = []
-        # 对声母、韵母、声调分别执行统计
-        for j in range(column):
-            # 需要剔除目标方言中的缺失样本
-            target = targets[:, i * column + j]
-            mask = ~numpy.isnan(target)
-            target = target[mask]
-
-            # 对其他方言的每一种交叉特征，也要分别统计
-            for k, fea in enumerate(features):
-                # 注意当特征包含预测目标的时候才执行预测，如声母 + 韵母预测声母
-                # 否则受目标方言音系影响，即使同个方言的声母 + 韵母预测自己的声调相似度也不高
-                l = (k + 1) % column
-                if k == j or l == j:
-                    if target.shape[0] < fea.shape[0]:
-                        fea = fea[mask]
-
-                    # 计算特征和目标的卡方统计量
-                    # 由于样本缺失偶然有些组合会统计出 NaN，填充为0
-                    chi2 = sklearn.feature_selection.chi2(fea, target)[0]
-                    chi2 = numpy.where(numpy.isnan(chi2), 0, chi2)
-                    # 某个特征的卡方统计量是该特征所有取值的卡方统计量之和
-                    chi2 = numpy.asarray(
-                        [numpy.sum(chi2[limits[k][m]:limits[k][m + 1]]) \
-                             for m in range(location)]
-                    )
-                    # 正则化卡方统计量至接近标准正态分布，自由度 k 的卡方分布期望为 k，方差为 2k
-                    df = (feature_categories[k] - 1) \
-                        * (target_categories[i * column + j] - 1)
-                    chi2s.append((chi2 - df) / numpy.sqrt(2 * df))
-
+        # 归并同一组方言对多个特征和目标的卡方
         # 多组特征预测同一个目标，取卡方统计量中最大的
-        return numpy.sum(
-            numpy.max(numpy.stack(chi2s).reshape(column, -1, location), axis=1),
-            axis=0
+        chisq[row:row + blocksize[0], col:col + blocksize[1]] = numpy.sum(
+            numpy.max(
+                ch.reshape(
+                    min(blocksize[0], chisq.shape[0] - row),
+                    feature_column,
+                    min(blocksize[1], chisq.shape[1] - col),
+                    column
+                ),
+                axis=1
+            ),
+            axis=-1
         )
 
-    # 计算所有方言组合的卡方统计量
-    logging.info('computing Chi square ...')
-    if parallel > 1:
-        gen = joblib.Parallel(n_jobs=parallel)(
-            joblib.delayed(compute_chi2)(i) for i in range(location)
-        )
-    else:
-        gen = (compute_chi2(i) for i in range(location))
-
-    sim = numpy.empty((location, location))
-    for i, chi2 in enumerate(gen):
-        sim[:, i] = chi2
         if (i + 1) % 10 == 0:
-            logging.info('finished {} locations'.format(i + 1))
+            logging.info('finished {} blocks'.format(i + 1))
 
-    logging.info('done. finished {} locations'.format(location))
-    return sim
+    logging.info('done. finished {} blocks'.format(i + 1))
+    return chisq
 
 def joint_entropy(features, feature_limits, targets, target_limits):
     '''分块计算方言间联合熵'''
