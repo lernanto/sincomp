@@ -15,10 +15,14 @@ import os
 import logging
 import pandas
 import numpy
+import scipy.cluster.hierarchy
 from sklearn.preprocessing import OrdinalEncoder, OneHotEncoder
 from sklearn.impute import SimpleImputer, MissingIndicator
 import sklearn.feature_selection
 import joblib
+import plotly.express
+import plotly.figure_factory
+import folium
 
 
 def load_data(prefix, ids, suffix='mb01dz.csv'):
@@ -206,6 +210,83 @@ def chi2(data, column=3, parallel=1):
 
     logging.info('done. finished {} locations'.format(location))
     return sim
+
+def dendro_heat(
+    dist,
+    labels,
+    linkagefun=scipy.cluster.hierarchy.average,
+    width=1000,
+    height=1000
+):
+    '''
+    根据距离矩阵绘制带热度图的树状图
+    '''
+
+    # 绘制树状图
+    # 由于 Plotly 不接受预计算的距离矩阵，需要使用自定义距离函数，这个函数的返回值是距离矩阵的上三角阵
+    dendro = plotly.figure_factory.create_dendrogram(
+        dist,
+        distfun=lambda x: x[numpy.triu_indices_from(x, 1)],
+        linkagefun=linkagefun
+    )
+    for d in dendro.data:
+        d.yaxis = 'y2'
+
+    # 绘制热度图
+    leaves = dendro.layout.xaxis.ticktext.astype(numpy.int32)
+    heat = plotly.express.imshow(
+        dist[leaves][:, leaves],
+        x=labels[leaves],
+        y=labels[leaves],
+    )
+    heat.data[0].x = dendro.layout.xaxis.tickvals
+    heat.data[0].y = dendro.layout.xaxis.tickvals
+
+    # 合并树状图和热度图，并调整大小占比
+    fig = dendro
+    fig.add_trace(heat.data[0])
+    fig.update_layout(width=width, height=height)
+    fig.update_layout(xaxis={'ticktext': labels[leaves]})
+    fig.update_layout(yaxis={'domain': [0, 0.8], 'ticktext': labels[leaves]})
+    fig.update_layout(yaxis2={'domain': [0.8, 1]})
+
+    return fig
+
+def label_map(
+    latitudes,
+    longitudes,
+    labels,
+    tips,
+    zoom=5,
+    tiles='https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}',
+    attr='AutoNavi'
+):
+    '''绘制带分类坐标点的地图'''
+
+    # 绘制底图
+    mp = folium.Map(
+        location=(numpy.mean(latitudes), numpy.mean(longitudes)),
+        zoom_start=zoom,
+        tiles=tiles,
+        attr=attr
+    )
+
+    # 添加坐标点
+    for i in range(latitudes.shape[0]):
+        # 根据标签序号分配一个颜色
+        r = (labels[i] * 79 + 31) & 0xff
+        g = (labels[i] * 37 + 43) & 0xff
+        b = (labels[i] * 73 + 17) & 0xff
+
+        folium.CircleMarker(
+            (latitudes[i], longitudes[i]),
+            radius=5,
+            tooltip='{} {}'.format(labels[i], tips[i]),
+            color='#{:02x}{:02x}{:02x}'.format(r, g, b),
+            fill=True
+        ).add_to(mp)
+
+    return mp
 
 
 if __name__ == '__main__':
