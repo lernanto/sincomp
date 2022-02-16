@@ -124,7 +124,7 @@ def get_survey(session):
 
     return data
 
-def get_dialect(session, id):
+def get_data(session, id):
     '''获取方言点数据'''
 
     referer = '{}/area_details.html?id={}'.format(site, id)
@@ -198,15 +198,24 @@ def parse_survey(survey):
 
     return objects
 
-def parse_dialect(dialect):
+def parse_data(dialect):
     '''解析方言 JSON 数据，转换成表格'''
 
-    resources = {}
+    meta = dict(dialect['mapLocation']['point'])
+    meta.update(dialect['mapLocation']['location'])
+
+    resources = []
     for res in dialect.get('resourceList', []):
-        oid = res['items'][0]['oid']
-        record = pandas.json_normalize(res.get('items'), 'records', ['iid', 'name'])
-        record.insert(0, 'iid', record.pop('iid'))
-        resources[oid] = record
+        items = res.get('items')
+        if items:
+            info = dict(meta)
+            info['sounder'] = res['sounder']
+            info['type'] = res['type']
+            info['oid'] = res['items'][0]['oid']
+
+            record = pandas.json_normalize(items, 'records', ['iid', 'name'])
+            record.insert(0, 'iid', record.pop('iid'))
+            resources.append((info, record))
 
     return resources
 
@@ -231,32 +240,36 @@ def crawl_survey(session, prefix='.'):
 
     return dialect, minority
 
-def crawl_dialect(session, id, prefix='.'):
+def crawl_data(session, id, prefix='.'):
     '''爬取一个方言点的数据并保存到文件'''
 
-    dialect_file = os.path.join(prefix, '{}.json'.format(id))
-    if os.path.exists(dialect_file):
+    data_file = os.path.join(prefix, '{}.json'.format(id))
+    if os.path.exists(data_file):
         # 数据文件已存在，认为之前已经爬取过，不再重复爬取
         logging.info(
-            'dialect data file {} already exists, do nothing'.format(dialect_file)
+            'data file {} already exists. do nothing'.format(data_file)
         )
         return None
 
     # 请求方言数据
-    data = get_dialect(session, id)
+    data = get_data(session, id)
 
     if data:
         # 保存原始数据
-        logging.info('save dialect data to {}'.format(dialect_file))
-        with open(dialect_file, 'w', encoding='utf-8') as f:
+        logging.info('save data to {}'.format(data_file))
+        with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
 
         # 把单字音、词汇等数据分别保存成 CSV 文件
-        resources = parse_dialect(data)
-        for oid, res in resources.items():
-            fname = os.path.join(prefix, '{}_{}.csv'.format(id, oid))
+        resources = parse_data(data)
+        for info, res in resources:
+            fname = os.path.join(prefix, '.'.join((info['oid'], 'csv')))
             logging.info('save resource to {}'.format(fname))
-            res.to_csv(fname, encoding='utf-8', index=False)
+            with open(fname, 'w', encoding='utf-8', newline='\n') as f:
+                for key, val in info.items():
+                    print('# {} = {}'.format(key, val), file=f)
+
+                res.to_csv(f, index=False)
 
         return True
     else:
@@ -266,9 +279,17 @@ def crawl_dialect(session, id, prefix='.'):
 def main():
     logging.getLogger().setLevel(logging.INFO)
 
-    email, password, prefix, max_crawl = sys.argv[1:5]
-    max_crawl = int(max_crawl)
-    crawl = 0
+    email, password, prefix, update_survey, max_success = sys.argv[1:6]
+    # 是否重新爬取调查点列表并更新到本地
+    update_survey = bool(update_survey)
+    # 最大爬取的数量
+    max_success = int(max_success)
+    max_fail = 3
+    success_count = 0
+    fail_count = 0
+
+    logging.info('try creating directory {}'.format(prefix))
+    os.makedirs(prefix, exist_ok=True)
 
     # 登录网站
     session = try_login(email, password)
@@ -276,29 +297,66 @@ def main():
         # 爬取调查点列表
         dialect, minority = crawl_survey(session, prefix)
 
-        # 当前只处理方言数据
-        for _, row in dialect.iterrows():
-            # 爬取一个方言调查点的数据
-            id = row['_id']
-            logging.info('crawl dialect ID = {}, city = {}'.format(id, row['city']))
-            ret = crawl_dialect(session, id, prefix)
+        minority_dir = os.path.join(prefix, 'minority')
+        logging.info('try creating minority directory {}'.format(minority_dir))
+        os.makedirs(minority_dir, exist_ok=True)
 
-            # 无论爬取成功还是失败，都算一次
-            crawl += (0 if ret is None else 1)
-            if crawl >= max_crawl:
-                logging.info('reach maximum crawl number = {}, have a rest'.format(crawl))
+        for obj, name in ((dialect, 'dialect'), (minority, 'minority')):
+            dir = os.path.join(prefix, name)
+            logging.info('try creating directory {}'.format(dir))
+            os.makedirs(dir, exist_ok=True)
+
+            for _, row in obj.iterrows():
+                # 爬取一个调查点的数据
+                id = row['_id']
+                logging.info('crawl dialect ID = {}, city = {}'.format(
+                    id,
+                    row['city'])
+                )
+                ret = crawl_data(session, id, dir)
+
+                # 无论爬取成功还是失败，都算一次
+                if ret is not None:
+                    if ret:
+                        success_count += 1
+                        if success_count % 100 == 0:
+                            logging.info('crawled {} data'.format(success_count))
+                        if success_count >= max_success:
+                            logging.info(
+                                'reached maximum crawl number = {}, have a rest'.format(
+                                    max_success
+                                )
+                            )
+                            break
+
+                    else:
+                        fail_count += 1
+                        if fail_count >= max_fail:
+                            logging.error(
+                                'reached maximum failure number {}, exit'.format(
+                                    max_fail
+                                )
+                            )
+                            break
+
+                    # 延迟一段时间，降低吞吐量
+                    time.sleep(1)
+
+
+            if success_count >= max_success or fail_count >= max_fail:
                 break
 
-            # 延迟一段时间，降低吞吐量
-            time.sleep(1)
-
-        if crawl < max_crawl:
-            logging.info('all data crawled, nothing else todo, crawl = {}'.format(crawl))
+        if success_count < max_success:
+            logging.info(
+                'all data crawled, nothing else todo, count = {}'.format(
+                    success_count
+                )
+            )
 
         # 退出登录
         logout(session)
 
-    logging.info('totally crawl {} data'.format(crawl))
+    logging.info('totally crawl {} data'.format(success_count))
 
 if __name__ == '__main__':
     main()
