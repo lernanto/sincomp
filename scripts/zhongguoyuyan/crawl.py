@@ -26,6 +26,7 @@ verify_code_url = '{}/svc/common/create/verifyCode'.format(site)
 login_url = '{}/svc/user/login'.format(site)
 logout_url = '{}/svc/user/logout'.format(site)
 logged_url = '{}/svc/common/validate/logged'.format(site)
+standard_url = '{}/svc/api/media/standard'.format(site)
 survey_url = '{}/svc/mongo/query/latestSurveyMongo'.format(site)
 data_url = '{}/svc/mongo/resource/normal'.format(site)
 
@@ -111,6 +112,16 @@ def validate_login(session):
         logging.info('user not logged in')
         return False
 
+def get_standard(session):
+    '''获取调查标准'''
+
+    logging.info('get survey standard from {}'.format(standard_url))
+    rsp = session.get(standard_url)
+    ret = rsp.json()
+    logging.debug(ret)
+
+    return ret
+
 def get_survey(session):
     '''获取全部调查点'''
 
@@ -190,6 +201,16 @@ def try_login(email, password, retry=3):
     else:
         logging.error('login failed after {} try, give up'.format(i + 1))
 
+def parse_standard(standard):
+    '''解析调查标准 JSON 数据，转换成表格'''
+
+    items = {}
+    for key, val in standard.items():
+        data = pandas.json_normalize(val)
+        items[key] = data
+
+    return items
+
 def parse_survey(survey):
     '''解析调查点 JSON 数据，转换成表格'''
 
@@ -221,6 +242,37 @@ def parse_data(dialect):
             resources.append((info, record))
 
     return resources
+
+def crawl_standard(session, prefix='.', update=False, retry=3):
+    '''爬取调查标准并保存到文件'''
+
+    # 如果调查标准文件已存在，且指定不更新，则不再重新爬取
+    standard_file = os.path.join(prefix, 'standard.json')
+    if os.path.exists(standard_file) and not update:
+        logging.info(
+            'survey standard file {} already exists. do nothing'.format(
+                standard_file
+            )
+        )
+        return
+
+    # 调查标准文件不存在，或指定更新文件，从网站获取最新标准
+    for i in range(retry):
+        standard = get_standard(session)
+        time.sleep(delay)
+        if standard:
+            break
+
+    if standard:
+        # 保存调查标准到文件
+        logging.info('save survey standard to file {}'.format(standard_file))
+        with open(standard_file, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(standard, f, ensure_ascii=False, indent=4)
+
+        for name, item in parse_standard(standard).items():
+            fname = os.path.join(prefix, '.'.join((name, '.csv')))
+            logging.info('save {} to file {}'.format(name, fname))
+            item.to_csv(fname, encoding='utf-8', index=False)
 
 def crawl_survey(session, prefix='.', update=False, retry=3):
     '''爬取调查点列表并保存到文件'''
@@ -325,6 +377,9 @@ def main():
     # 登录网站
     session = try_login(email, password)
     if session:
+        # 爬取调查标准
+        crawl_standard(session, prefix)
+
         # 爬取调查点列表
         ret = crawl_survey(session, prefix)
 
