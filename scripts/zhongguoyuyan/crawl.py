@@ -219,24 +219,35 @@ def parse_data(dialect):
 
     return resources
 
-def crawl_survey(session, prefix='.'):
+def crawl_survey(session, prefix='.', update=False):
     '''爬取调查点列表并保存到文件'''
 
-    # 获取调查点列表
-    survey = get_survey(session)
-    fname = os.path.join(prefix, 'survey.json')
-    logging.info('save survey data to {}'.format(fname))
-    with open(fname, 'w', encoding='utf-8') as f:
-        json.dump(survey, f, ensure_ascii=False, indent=4)
+    # 如果调查点列表文件已存在，且指定不更新，则使用现有文件中的数据
+    survey_file = os.path.join(prefix, 'survey.json')
+    if os.path.exists(survey_file) and not update:
+        logging.info(
+            'survey data file {} exits. load without crawling'.format(survey_file)
+        )
+        with open(survey_file, encoding='utf-8') as f:
+            survey = json.load(f)
 
-    # 分别保存方言列表和少数民族语言列表
-    dialect, minority = parse_survey(survey)
-    dialect_file = os.path.join(prefix, 'dialect.csv')
-    logging.info('save dialect list to {}'.format(dialect_file))
-    dialect.to_csv(dialect_file, index=False)
-    minority_file = os.path.join(prefix, 'minority.csv')
-    logging.info('save minority list to {}'.format(minority_file))
-    minority.to_csv(minority_file, index=False)
+        dialect, minority = parse_survey(survey)
+
+    else:
+        # 调查点列表文件不存在，或指定更新文件，从网站获取最新调查点列表
+        survey = get_survey(session)
+        logging.info('save survey data to {}'.format(survey_file))
+        with open(survey_file, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(survey, f, ensure_ascii=False, indent=4)
+
+        # 分别保存方言列表和少数民族语言列表
+        dialect, minority = parse_survey(survey)
+        dialect_file = os.path.join(prefix, 'dialect.csv')
+        logging.info('save dialect list to {}'.format(dialect_file))
+        dialect.to_csv(dialect_file, encoding='utf-8', index=False)
+        minority_file = os.path.join(prefix, 'minority.csv')
+        logging.info('save minority list to {}'.format(minority_file))
+        minority.to_csv(minority_file, encoding='utf-8', index=False)
 
     return dialect, minority
 
