@@ -29,6 +29,9 @@ logged_url = '{}/svc/common/validate/logged'.format(site)
 survey_url = '{}/svc/mongo/query/latestSurveyMongo'.format(site)
 data_url = '{}/svc/mongo/resource/normal'.format(site)
 
+# 请求一次资源之后的延迟时间
+delay = 2
+
 
 def get_verify_code(session):
     '''请求验证码'''
@@ -113,23 +116,22 @@ def get_survey(session):
 
     logging.info('get survey from {}'.format(survey_url))
     rsp = session.post(survey_url)
-    data = rsp.json()
-    logging.debug(data)
+    survey = rsp.json()
+    logging.debug(survey)
 
-    status = data.get('status')
+    status = survey.get('status')
     if status == 'success':
         logging.info('get survey sucessful')
+        return survey
     else:
         logging.error('get survey failed, status = {}'.format(status))
-
-    return data
 
 def get_data(session, id):
     '''获取方言点数据'''
 
     referer = '{}/area_details.html?id={}'.format(site, id)
 
-    logging.info('get dialect data from {}, ID = {}'.format(data_url, id))
+    logging.info('get data from {}, ID = {}'.format(data_url, id))
     rsp = session.post(data_url, headers={'referer': referer}, data={'id': id})
     ret = rsp.json()
     logging.debug(ret)
@@ -137,10 +139,11 @@ def get_data(session, id):
     code = ret.get('code')
     if code == 200:
         # 获取数据成功
-        logging.debug('get data successful, code = {}'.format(code))
+        logging.debug('get data ID = {} successful, code = {}'.format(id, code))
         return ret.get('data')
     else:
-        logging.error('get data failed, code = {}, {}'.format(
+        logging.error('get data ID = {} failed, code = {}, {}'.format(
+            id,
             code,
             ret.get('description')
         ))
@@ -201,14 +204,14 @@ def parse_survey(survey):
 def parse_data(dialect):
     '''解析方言 JSON 数据，转换成表格'''
 
-    meta = dict(dialect['mapLocation']['point'])
-    meta.update(dialect['mapLocation']['location'])
+    loc = dict(dialect['mapLocation']['point'])
+    loc.update(dialect['mapLocation']['location'])
 
     resources = []
     for res in dialect.get('resourceList', []):
         items = res.get('items')
         if items:
-            info = dict(meta)
+            info = dict(loc)
             info['sounder'] = res['sounder']
             info['type'] = res['type']
             info['oid'] = res['items'][0]['oid']
@@ -219,7 +222,7 @@ def parse_data(dialect):
 
     return resources
 
-def crawl_survey(session, prefix='.', update=False):
+def crawl_survey(session, prefix='.', update=False, retry=3):
     '''爬取调查点列表并保存到文件'''
 
     # 如果调查点列表文件已存在，且指定不更新，则使用现有文件中的数据
@@ -235,7 +238,17 @@ def crawl_survey(session, prefix='.', update=False):
 
     else:
         # 调查点列表文件不存在，或指定更新文件，从网站获取最新调查点列表
-        survey = get_survey(session)
+        for i in range(retry):
+            survey = get_survey(session)
+            time.sleep(delay)
+            if survey:
+                break
+
+        if survey is None:
+            # 超过最大重试次数
+            logging.error('cannot get survey after {} try, give up'.format(i + 1))
+            return
+
         logging.info('save survey data to {}'.format(survey_file))
         with open(survey_file, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(survey, f, ensure_ascii=False, indent=4)
@@ -251,53 +264,60 @@ def crawl_survey(session, prefix='.', update=False):
 
     return dialect, minority
 
-def crawl_data(session, id, prefix='.'):
-    '''爬取一个方言点的数据并保存到文件'''
+def crawl_data(session, id, prefix='.', update=False, retry=3):
+    '''爬取一个调查点的数据并保存到文件'''
 
     data_file = os.path.join(prefix, '{}.json'.format(id))
-    if os.path.exists(data_file):
-        # 数据文件已存在，认为之前已经爬取过，不再重复爬取
+    if os.path.exists(data_file) and not update:
+        # 数据文件已存在，且指定不更新，不再重复爬取
         logging.info(
             'data file {} already exists. do nothing'.format(data_file)
         )
-        return None
+        return
 
-    # 请求方言数据
-    data = get_data(session, id)
+    for i in range(retry):
+        # 请求调查点数据
+        data = get_data(session, id)
+        time.sleep(delay)
+        if data:
+            break
 
-    if data:
-        # 保存原始数据
-        logging.info('save data to {}'.format(data_file))
-        with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-
-        # 把单字音、词汇等数据分别保存成 CSV 文件
-        resources = parse_data(data)
-        for info, res in resources:
-            fname = os.path.join(prefix, '.'.join((info['oid'], 'csv')))
-            logging.info('save resource to {}'.format(fname))
-            with open(fname, 'w', encoding='utf-8', newline='\n') as f:
-                for key, val in info.items():
-                    print('# {} = {}'.format(key, val), file=f)
-
-                res.to_csv(f, index=False)
-
-        return True
-    else:
+    if data is None:
+        # 超过最大重试次数
+        logging.error('cannot get data ID = {} after {} try, give up'.format(
+            id,
+            i + 1
+        ))
         return False
+
+    # 保存原始数据
+    logging.info('save data to {}'.format(data_file))
+    with open(data_file, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+    # 把单字、词汇、语法等数据分别保存成 CSV 文件
+    resources = parse_data(data)
+    for info, res in resources:
+        fname = os.path.join(prefix, '.'.join((info['oid'], 'csv')))
+        logging.info('save resource to {}'.format(fname))
+        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
+            for key, val in info.items():
+                print('# {} = {}'.format(key, val), file=f)
+
+            res.to_csv(f, index=False)
+
+    return True
 
 
 def main():
     logging.getLogger().setLevel(logging.INFO)
 
-    email, password, prefix, update_survey, max_success = sys.argv[1:6]
+    email, password, prefix, update_survey, max_crawl = sys.argv[1:6]
     # 是否重新爬取调查点列表并更新到本地
     update_survey = bool(update_survey)
     # 最大爬取的数量
-    max_success = int(max_success)
-    max_fail = 3
-    success_count = 0
-    fail_count = 0
+    max_crawl = int(max_crawl)
+    count = 0
 
     logging.info('try creating directory {}'.format(prefix))
     os.makedirs(prefix, exist_ok=True)
@@ -306,68 +326,70 @@ def main():
     session = try_login(email, password)
     if session:
         # 爬取调查点列表
-        dialect, minority = crawl_survey(session, prefix)
+        ret = crawl_survey(session, prefix)
 
-        minority_dir = os.path.join(prefix, 'minority')
-        logging.info('try creating minority directory {}'.format(minority_dir))
-        os.makedirs(minority_dir, exist_ok=True)
+        if ret:
+            dialect, minority = ret
+            minority_dir = os.path.join(prefix, 'minority')
+            logging.info('try creating minority directory {}'.format(minority_dir))
+            os.makedirs(minority_dir, exist_ok=True)
 
-        for obj, name in ((dialect, 'dialect'), (minority, 'minority')):
-            dir = os.path.join(prefix, name)
-            logging.info('try creating directory {}'.format(dir))
-            os.makedirs(dir, exist_ok=True)
+            stop = False
+            for obj, name in ((dialect, 'dialect'), (minority, 'minority')):
+                dir = os.path.join(prefix, name)
+                logging.info('try creating directory {}'.format(dir))
+                os.makedirs(dir, exist_ok=True)
 
-            for _, row in obj.iterrows():
-                # 爬取一个调查点的数据
-                id = row['_id']
-                logging.info('crawl dialect ID = {}, city = {}'.format(
-                    id,
-                    row['city'])
-                )
-                ret = crawl_data(session, id, dir)
+                for _, row in obj.iterrows():
+                    # 爬取一个调查点的数据
+                    id = row['_id']
+                    logging.info('get {} ID = {}, city = {}'.format(
+                        name,
+                        id,
+                        row['city'])
+                    )
+                    ret = crawl_data(session, id, dir)
 
-                # 无论爬取成功还是失败，都算一次
-                if ret is not None:
-                    if ret:
-                        success_count += 1
-                        if success_count % 100 == 0:
-                            logging.info('crawled {} data'.format(success_count))
-                        if success_count >= max_success:
-                            logging.info(
-                                'reached maximum crawl number = {}, have a rest'.format(
-                                    max_success
+                    if ret is not None:
+                        if ret:
+                            count += 1
+                            if count % 100 == 0:
+                                logging.info('crawled {} data'.format(count))
+
+                            if count >= max_crawl:
+                                # 达到设置的最大爬取数量
+                                logging.info(
+                                    'reached maximum crawl number = {}, have a rest'.format(
+                                        max_crawl
+                                    )
                                 )
-                            )
+                                stop = True
+                                break
+
+                        else:
+                            # 多次爬取失败，不再尝试
+                            logging.error('error when getting data, abort')
+                            stop = True
                             break
 
-                    else:
-                        fail_count += 1
-                        if fail_count >= max_fail:
-                            logging.error(
-                                'reached maximum failure number {}, exit'.format(
-                                    max_fail
-                                )
-                            )
-                            break
+                if stop:
+                    break
 
-                    # 延迟一段时间，降低吞吐量
-                    time.sleep(1)
-
-
-            if success_count >= max_success or fail_count >= max_fail:
-                break
-
-        if success_count < max_success:
-            logging.info(
-                'all data crawled, nothing else todo, count = {}'.format(
-                    success_count
+            if not stop:
+                logging.info(
+                    'all data crawled, nothing else todo, count = {}'.format(
+                        count
+                    )
                 )
-            )
+
+        else:
+            # 获取调查点列表失败
+            logging.error('cannot get survey. exit')
 
         # 退出登录
         logout(session)
 
-    logging.info('totally crawl {} data'.format(success_count))
+    logging.info('totally crawl {} data'.format(count))
 
 if __name__ == '__main__':
     main()
