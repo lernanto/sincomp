@@ -197,6 +197,159 @@ class ContrastiveGenerator:
                 yield tuple(inputs)
 
 
+class DenoisingAutoEncoder:
+    '''
+    降噪自编码器进行方言音系编码.
+
+    输入为多个方言点的声母、韵母、声调，随机删除其中部分数据，输出为还原的数据。
+    分声母、韵母、声调分别求 embedding，多个方言的声母、韵母、声调分别求平均，
+    然后把声母、韵母、声调 embedding 相加得到音节 embedding。
+    使用音节 embedding 预测各方言的声母、韵母、声调。
+    '''
+
+    def __init__(self, input_shapes, emb_size, symetric=True):
+        self.input_shapes = tuple(input_shapes)
+        self.limits = np.cumsum((0,) + self.input_shapes)
+        self.embedding = tf.Variable(tf.random_normal_initializer()(
+            shape=(self.limits[-1], emb_size),
+            dtype=tf.float32
+        ))
+        if symetric:
+            self.output_embedding = self.embedding
+            self.trainable_variables = (self.embedding,)
+        else:
+            self.output_embedding = tf.Variable(tf.random_normal_initializer()(
+                shape=(self.limits[-1], emb_size),
+                dtype=tf.float32
+            ))
+            self.trainable_variables = (self.embedding, self.output_embedding)
+
+    @tf.function
+    def encode(self, *inputs):
+        embeddings = []
+        for i, input in enumerate(inputs):
+            weight = tf.cast(input >= 0, tf.float32)
+            weight = weight / tf.maximum(tf.reduce_sum(weight, axis=1, keepdims=True), 1e-9)
+            embeddings.append(tf.reduce_sum(tf.nn.embedding_lookup(self.embedding, tf.maximum(input, 0)) * tf.expand_dims(weight, -1), axis=1))
+
+        return embeddings[0] if len(embeddings) == 1 else tf.reduce_sum(embeddings, axis=0)
+
+    @tf.function
+    def predict(self, *inputs):
+        logits = tf.matmul(
+            self.encode(*inputs),
+            self.output_embedding,
+            transpose_b=True
+        )
+
+        preds = []
+        for i in range(self.limits.shape[0] - 1):
+            preds.append(tf.math.argmax(
+                logits[:, self.limits[i]:self.limits[i + 1]],
+                axis=1
+            ) + self.limits[i])
+
+        return tf.stack(preds, axis=1)
+
+    @tf.function
+    def predict_proba(self, *inputs):
+        logits = tf.matmul(
+            self.encode(*inputs),
+            self.output_embedding,
+            transpose_b=True
+        )
+
+        probs = []
+        for i in range(self.limits.shape[0] - 1):
+            probs.append(
+                tf.nn.softmax(logits[:, self.limits[i]:self.limits[i + 1]])
+            )
+
+        return tf.concat(probs, axis=1)
+
+    @tf.function
+    def loss(self, inputs, targets):
+        logits = tf.matmul(
+            self.encode(*inputs),
+            self.output_embedding,
+            transpose_b=True
+        )
+
+        loss = []
+        for i in range(targets.shape[1]):
+            loss.append(tf.nn.sparse_softmax_cross_entropy_with_logits(
+                labels=tf.maximum(targets[:, i] - self.limits[i], 0),
+                logits=logits[:, self.limits[i]:self.limits[i + 1]]
+            ))
+        loss = tf.stack(loss, axis=1)
+
+        weight = tf.cast(targets >= 0, tf.float32)
+        weight = weight / tf.maximum(
+            tf.reduce_sum(weight, axis=0, keepdims=True),
+            1e-9
+        )
+
+        return tf.reduce_sum(loss * weight)
+
+    @tf.function
+    def update(self, inputs, targets, optimizer):
+        with tf.GradientTape() as tape:
+            loss = self.loss(inputs, targets)
+        grad = tape.gradient(loss, self.trainable_variables)
+        optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        return loss
+
+
+class NoiseGenerator:
+    '''
+    生成降噪自编码器的训练样本.
+
+    可以为声母、韵母、声调分别指定采样的比例，按指定的比例随机选择若干个方言的声母、韵母、声调作为输入。
+    '''
+
+    def __init__(self, *data):
+        self.data = data
+
+    def noise(self, sample):
+        try:
+            samples = list(sample)
+        except:
+            samples = [sample] * len(self.data)
+
+        for i, s in enumerate(samples):
+            if isinstance(s, float):
+                s = int(s * self.data[i].shape[1])
+            samples[i] = np.clip(s, 1, self.data[i].shape[1] - 1)
+
+        def gen():
+            for i in range(self.data[0].shape[0]):
+                inputs = []
+
+                for j in range(len(self.data)):
+                    indices = self.data[j][i][self.data[j][i] >= 0]
+                    if indices.shape[0] >= 2:
+                        m = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        n = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        inputs.append(np.random.choice(indices, m, replace=False))
+                    else:
+                        inputs.append(np.empty(0))
+
+                if sum(ip.shape[0] for ip in inputs) > 0:
+                    yield tuple(inputs), np.concatenate([self.data[j][i] for j in range(len(self.data))])
+
+        return gen
+
+    def input(self):
+        for i in range(self.data[0].shape[0]):
+            inputs = []
+            for j in range(len(self.data)):
+                indices = self.data[j][i][self.data[j][i] >= 0]
+                inputs.append(indices)
+
+            if sum(ip.shape[0] for ip in inputs) > 0:
+                yield tuple(inputs)
+
+
 if __name__ == '__main__':
     input_file = sys.argv[1]
 
