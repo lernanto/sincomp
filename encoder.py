@@ -228,24 +228,22 @@ class DenoisingAutoEncoder:
             self.trainable_variables = (self.embedding, self.output_embedding)
 
     @tf.function
-    def encode(self, *inputs):
-        embeddings = []
-        for i, input in enumerate(inputs):
-            embeddings.append(tf.where(
-                tf.math.reduce_any(input >= 0, axis=1, keepdims=True),
-                tf.reduce_mean(tf.nn.embedding_lookup(
-                    self.embedding,
-                    tf.ragged.boolean_mask(input, input >= 0)
-                ), axis=1),
-                tf.zeros((1, self.embedding.shape[1]), dtype=tf.float32)
-            ))
-
-        return embeddings[0] if len(embeddings) == 1 else tf.reduce_sum(embeddings, axis=0)
+    def encode(self, inputs):
+        # -1 为删除的数据，使用 ragged tensor 表示不定长的数据
+        emb = tf.reduce_mean(tf.nn.embedding_lookup(
+            self.embedding,
+            tf.ragged.boolean_mask(inputs, inputs >= 0)
+        ), axis=2).to_tensor()
+        # 对方言求平均，再把声母、韵母、声调相加
+        return tf.reduce_sum(
+            tf.where(tf.math.is_nan(emb), tf.zeros_like(emb), emb),
+            axis=1
+        )
 
     @tf.function
-    def predict(self, *inputs):
+    def predict(self, inputs):
         logits = tf.matmul(
-            self.encode(*inputs),
+            self.encode(inputs),
             self.output_embedding,
             transpose_b=True
         )
@@ -260,9 +258,9 @@ class DenoisingAutoEncoder:
         return tf.stack(preds, axis=1)
 
     @tf.function
-    def predict_proba(self, *inputs):
+    def predict_proba(self, inputs):
         logits = tf.matmul(
-            self.encode(*inputs),
+            self.encode(inputs),
             self.output_embedding,
             transpose_b=True
         )
@@ -278,7 +276,7 @@ class DenoisingAutoEncoder:
     @tf.function
     def loss(self, inputs, targets):
         logits = tf.matmul(
-            self.encode(*inputs),
+            self.encode(inputs),
             self.output_embedding,
             transpose_b=True
         )
