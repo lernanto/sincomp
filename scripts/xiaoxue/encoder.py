@@ -211,8 +211,8 @@ class DenoisingAutoEncoder:
     '''
 
     def __init__(self, input_shapes, emb_size, symetric=True):
-        self.input_shapes = tuple(input_shapes)
-        self.limits = np.cumsum((0,) + self.input_shapes)
+        self.input_shapes = np.asarray(input_shapes)
+        self.limits = np.concatenate([[0], self.input_shapes.flatten()])
         self.embedding = tf.Variable(tf.random_normal_initializer()(
             shape=(self.limits[-1], emb_size),
             dtype=tf.float32
@@ -255,7 +255,8 @@ class DenoisingAutoEncoder:
                 axis=1
             ) + self.limits[i])
 
-        return tf.stack(preds, axis=1)
+        preds = tf.stack(preds, axis=1)
+        return tf.reshape(preds, (preds.shape[0], self.input_shapes.shape[0], -1))
 
     @tf.function
     def predict_proba(self, inputs):
@@ -271,10 +272,13 @@ class DenoisingAutoEncoder:
                 tf.nn.softmax(logits[:, self.limits[i]:self.limits[i + 1]])
             )
 
+        # TODO: 使用 ragged tensor，使返回形状和 predict() 一致
         return tf.concat(probs, axis=1)
 
     @tf.function
     def loss(self, inputs, targets):
+        targets = tf.reshape(targets, (targets.shape[0], -1))
+
         logits = tf.matmul(
             self.encode(inputs),
             self.output_embedding,
