@@ -285,7 +285,7 @@ def crawl_standard(session, prefix='.', update=False, retry=3):
             json.dump(standard, f, ensure_ascii=False, indent=4)
 
         for name, item in parse_standard(standard).items():
-            fname = os.path.join(prefix, '.'.join((name, '.csv')))
+            fname = os.path.join(prefix, name + '.csv')
             logging.info('save {} to {}'.format(name, fname))
             item.to_csv(fname, encoding='utf-8', index=False)
 
