@@ -223,12 +223,17 @@ def chi2(
         parallel
     ))
 
-    # 特征交叉及编码
-    features = cross_features(src, column)
-    feature_column = features.shape[2]
-    features, feature_categories = encode_features(
-        features.reshape(features.shape[0], -1)
-    )
+    # 特征交叉
+    if column > 1:
+        features = cross_features(src, column)
+        feature_column = features.shape[2]
+        features = features.reshape(features.shape[0], -1)
+    else:
+        features = src
+        feature_column = 1
+
+    # 特征 one-hot 编码
+    features, feature_categories = encode_features(features)
     feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
 
     # 预测目标编码
@@ -377,12 +382,17 @@ def entropy(
         parallel
     ))
 
-    # 特征交叉及编码
-    features = cross_features(src, column)
-    feature_column = features.shape[2]
-    features, feature_categories = encode_features(
-        features.reshape(features.shape[0], -1)
-    )
+    # 特征交叉
+    if column > 1:
+        features = cross_features(src, column)
+        feature_column = features.shape[2]
+        features = features.reshape(features.shape[0], -1)
+    else:
+        features = src
+        feature_column = 1
+
+    # 特征 one-hot 编码
+    features, feature_categories = encode_features(features)
     feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
 
     # H(Y|X) = H(X, Y) - H(X)，分别计算联合熵和特征的边缘熵，然后相减
