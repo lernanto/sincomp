@@ -194,26 +194,22 @@ def chi2(
     '''
     使用卡方检验计算方言之间的相似度
 
-    思路为，如果 A 方言的声母加韵母能很大程度预测 B 方言的声母，说明 B 方言单向地接近 A 方言。
-    这种预测能力通过卡方检验来衡量，即以 A 方言的声母加韵母为特征、B 方言的声母为目标执行卡方检验，
-    卡方值越大表示越相似。遍历 A 方言及 B 方言的声母、韵母、声调，汇总后得到一个 A 方言对 B 方言预测能力的总评分。
+    思路为，如果 A 方言的声母 + 韵母能很大程度预测 B 方言的声母 + 韵母，说明 B 方言接近 A 方言。
+    这种预测能力通过卡方检验来衡量，卡方值越大表示越相似。
+    遍历 A 方言及 B 方言的声母、韵母、声调组合，取平均得到 A、B 方言之间的相似度评分。
 
     理论上由于自由度不同，卡方值不能直接比较，而应该比较相应的 p-value，但由于统计得出的卡方值非常大，
     导致计算出的 p-value 下溢为0，不能比较，另一方面由于自由度都比较大，卡方值近似于正态分布，
     可以把卡方值正则化到标准正态分布后进行比较。
 
-    这种方式计算出来的相似度是单向的，即相似度矩阵不是对称阵，如果应用于要求对称的一些聚类算法，
-    可以取相似度矩阵和其转置的平均为最终的相似度矩阵。直观的解释是如果 A 方言能预测 B 方言，
-    同时 B 方言也能预测 A 方言，那么两个方言是相似的。
+    卡方检验对于 A、B 方言是对称的，即理论上相似度矩阵是对称阵，但由于计算精度的原因可能出现极小的误差导致不对称。
+    可以取相似度矩阵和其转置的平均来强制保证对称性。
     '''
 
-    if dest is None:
-        dest = src
-
     src_num = src.shape[1] // column
-    dest_num = dest.shape[1] // column
+    dest_num = src_num if dest is None else dest.shape[1] // column
 
-    logging.info(('compute chi square for {} sources {} destinations, ' \
+    logging.info(('compute chi square for {} x {} dialects, ' \
         + 'characters = {}, columns = {}, block size = {}, parallel = {}').format(
         src_num,
         dest_num,
@@ -227,7 +223,7 @@ def chi2(
     if column > 1:
         features = cross_features(src, column)
         feature_column = features.shape[2]
-        features = features.reshape(features.shape[0], -1)
+        features = numpy.swapaxes(features, 1, 2).reshape(features.shape[0], -1)
     else:
         features = src
         feature_column = 1
@@ -235,75 +231,75 @@ def chi2(
     # 特征 one-hot 编码
     features, feature_categories = encode_features(features)
     feature_limits = numpy.concatenate([[0], numpy.cumsum(feature_categories)])
-
-    # 预测目标编码
-    targets, target_categories = encode_features(dest)
-    target_limits = numpy.concatenate([[0], numpy.cumsum(target_categories)])
-
-    # 根据特征和目标的出现频率估算概率
+    # 根据特征的出现频率估算概率
     feature_probs = freq2prob(features.sum(axis=0).A.flatten(), feature_limits)
-    target_probs = freq2prob(targets.sum(axis=0).A.flatten(), target_limits)
+
+    if dest is None:
+        targets = features
+        target_categories = feature_categories
+        target_limits = feature_limits
+        target_probs = feature_probs
+    else:
+        # 由于卡方统计的对称性，对预测目标做和特征相同处理
+        if column > 1:
+            targets = cross_features(dest, column)
+            targets = numpy.swapaxes(targets, 1, 2).reshape(targets.shape[0], -1)
+        else:
+            targets = dest
+
+        targets, target_categories = encode_features(targets)
+        target_limits = numpy.concatenate([[0], numpy.cumsum(target_categories)])
+        target_probs = freq2prob(targets.sum(axis=0).A.flatten(), target_limits)
 
     # 分块并行计算特征到目标的卡方
     row_block = (src_num + blocksize[0] - 1) // blocksize[0]
     col_block = (dest_num + blocksize[1] - 1) // blocksize[1]
 
-    logging.info('computing chi square for {} x {} blocks, block size = {} ...'.format(
+    logging.info('computing chi square for {} x {} x {} blocks, block size = {} ...'.format(
+        feature_column,
         row_block,
         col_block,
         blocksize
     ))
 
-    feature_block = blocksize[0] * feature_column
-    target_block = blocksize[1] * column
-    gen = joblib.Parallel(n_jobs=parallel)(
-        joblib.delayed(chi2_block)(
-            features[:, feature_limits[i]:feature_limits[min(
-                i + feature_block,
-                feature_limits.shape[0] - 1
-            )]],
-            feature_categories[i:i + feature_block],
-            feature_probs[feature_limits[i]:feature_limits[min(
-                i + feature_block,
-                feature_limits.shape[0] - 1
-            )]],
-            targets[:, target_limits[j]:target_limits[min(
-                j + target_block,
-                target_limits.shape[0] - 1
-            )]],
-            target_categories[j:j + target_block],
-            target_probs[target_limits[j]:target_limits[min(
-                j + target_block,
-                target_limits.shape[0] - 1
-            )]]
-        ) for i in range(0, src.shape[1], feature_block) \
-            for j in range(0, dest.shape[1], target_block)
-    )
+    chisq = numpy.zeros((src_num, dest_num), dtype=numpy.float32)
 
-    chisq = numpy.empty((src_num, dest_num), dtype=numpy.float32)
-    for i, ch in enumerate(gen):
-        row = i // col_block * blocksize[0]
-        col = i % col_block * blocksize[1]
+    count = 0
+    for i in range(feature_column):
+        feature_base = i * src_num
+        target_base = i * dest_num
+        fc = feature_categories[feature_base:feature_base + src_num]
+        fl = feature_limits[feature_base:feature_base + src_num + 1]
+        tc = target_categories[target_base:target_base + dest_num]
+        tl = target_limits[target_base:target_base + dest_num + 1]
 
-        # 归并同一组方言对多个特征和目标的卡方
-        # 多组特征预测同一个目标，取卡方统计量中最大的
-        chisq[row:row + blocksize[0], col:col + blocksize[1]] = numpy.sum(
-            numpy.max(
-                ch.reshape(
-                    min(blocksize[0], chisq.shape[0] - row),
-                    feature_column,
-                    min(blocksize[1], chisq.shape[1] - col),
-                    column
-                ),
-                axis=1
-            ),
-            axis=-1
+        gen = joblib.Parallel(n_jobs=parallel)(
+            joblib.delayed(chi2_block)(
+                features[:, fl[j]:fl[min(j + blocksize[0], fl.shape[0] - 1)]],
+                fc[j:j + blocksize[0]],
+                feature_probs[fl[j]:fl[min(j + blocksize[0], fl.shape[0] - 1)]],
+                targets[:, tl[k]:tl[min(k + blocksize[1], tl.shape[0] - 1)]],
+                tc[k:k + blocksize[1]],
+                target_probs[tl[k]:tl[min(k + blocksize[1], tl.shape[0] - 1)]]
+            ) for j in range(0, src_num, blocksize[0]) \
+                for k in range(0, dest_num, blocksize[1])
         )
 
-        if (i + 1) % 10 == 0:
-            logging.info('finished {} blocks'.format(i + 1))
+        for j, ch in enumerate(gen):
+            row = j // col_block * blocksize[0]
+            col = j % col_block * blocksize[1]
+            chisq[row:row + blocksize[0], col:col + blocksize[1]] += ch
 
-    logging.info('done. finished {} blocks'.format(i + 1))
+            count += 1
+            if count % 10 == 0:
+                logging.info('finished {} blocks'.format(count))
+
+        logging.info('done. finished {} blocks'.format(count))
+
+    # 取多组特征卡方的均值
+    if feature_column > 1:
+        chisq /= feature_column
+
     return chisq
 
 def joint_entropy(features, feature_limits, targets, target_limits):
