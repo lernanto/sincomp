@@ -499,10 +499,10 @@ def sim2dist(sim):
     相似度矩阵转换成距离矩阵.
 
     假设相似阵的元素是欧氏空间向量的内积 sij = xi * xj，
-    因此 dij^2 = (xi - xj)^2 = xi^2 + xj^2 - 2xi * xj = sii^2 + sjj^2 - 2sij
+    因此 dij^2 = (xi - xj)^2 = xi^2 + xj^2 - 2xi * xj = sii + sjj - 2sij
     '''
 
-    d2 = numpy.square(numpy.diagonal(sim))
+    d2 = numpy.diagonal(sim)
     d2 = -2 * sim + d2[:, None] + d2[None, :]
 
     # 有少量元素 < 0 是由于计算相似度的时候取近似导致的，强制为0
