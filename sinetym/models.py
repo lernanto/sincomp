@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 
 """
-方言字音编码器模型.
+多种方言字音编码器模型.
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import logging
+import os
+import datetime
 import numpy
 import tensorflow as tf
 
@@ -343,3 +346,425 @@ class NoiseGenerator:
 
             if sum(ip.shape[0] for ip in inputs) > 0:
                 yield tuple(inputs)
+
+
+class EncoderBase(tf.Module):
+    """
+    方言编码器的基类，输入方言点和字，输出改字在该点的读音.
+
+    模型预测方言读音分为3个步骤：
+        1. encode: 把输入编码为输入向量
+        2. transform: 输入向量变换为输出向量
+        3. decode: 根据输出向量预测读音
+
+    子类需实现函数 transform(self, dialect_emb, input_emb)，其中 dialect_emb 为方言向量，
+    input_emb 为输入向量，返回值为变换得到的输出向量。
+    """
+
+    def __init__(
+        self,
+        dialect_num,
+        input_nums,
+        output_nums,
+        dialect_emb_size=20,
+        input_emb_size=20,
+        output_emb_sizes=20,
+        output_bias=True,
+        name='encoder'
+    ):
+        """
+        Parameters:
+            dialect_num (int): 方言点数
+            input_nums (array-like of int): 每个输入的取值数，如字数
+            output_nums (array-like of int): 每个输出的取值数，如声韵调数
+            dialect_emb_size (int): 方言向量长度
+            input_emb_size (int): 输入向量长度
+            output_emb_sizes (int): 输出向量长度
+            output_bias (bool): 是否为输出添加偏置
+            name (str): 生成的模型名字
+        """
+
+        super().__init__(name=name)
+
+        self.dialect_num = dialect_num
+        self.input_nums = tuple(input_nums)
+        self.output_nums = tuple(output_nums)
+        self.dialect_emb_size = dialect_emb_size
+        self.input_emb_size = input_emb_size
+        self.output_emb_sizes = tuple(output_emb_sizes)
+
+        init = tf.random_normal_initializer()
+
+        self.dialect_emb = tf.Variable(init(
+            shape=(self.dialect_num, self.dialect_emb_size),
+            dtype=tf.float32
+        ), name='dialect_emb')
+
+        self.input_embs = [tf.Variable(
+            init(shape=(n, self.input_emb_size), dtype=tf.float32),
+            name=f'input_emb{i}'
+        ) for i, n in enumerate(self.input_nums)]
+
+        self.output_embs = [tf.Variable(
+            init(shape=(n, s), dtype=tf.float32),
+            name=f'output_emb{i}'
+        ) for i, (n, s) in enumerate(zip(self.output_nums, self.output_emb_sizes))]
+
+        if output_bias:
+            self.output_biases = [tf.Variable(
+                init(shape=(n,), dtype=tf.float32),
+                name=f'output_bias{i}'
+            ) for i, n in enumerate(self.output_nums)]
+
+    def encode(self, inputs):
+        """
+        把输入编码成向量.
+
+        Parameters:
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+
+        Returns:
+            input_emb (tensorflow.Tensor):
+                编码的输入向量，形状为 inputs.shape[0] * self.input_emb_size
+        """
+
+        return tf.reduce_mean(tf.stack(
+            [tf.nn.embedding_lookup(self.input_embs[i], inputs[:, i]) \
+                for i in range(len(self.input_embs))],
+            axis=2
+        ), axis=-1)
+
+    def decode(self, output_emb):
+        """
+        根据输出向量预测输出的对数几率.
+
+        Parameters:
+            output_emb (tensorflow.Tensor): 由输入向量变换成的输出向量
+
+        Returns:
+            logits (list of tensorflow.Tensor):
+                输出张量的数组，每个张量形状为 output_emb.shape[0] * self.output_nums[i]，
+                内容为对数几率
+        """
+
+        logits = [tf.matmul(output_emb, e, transpose_b=True) \
+            for e in self.output_embs]
+        if hasattr(self, 'output_biases'):
+            logits = [l + b[None, :] \
+                for l, b in zip(logits, self.output_biases)]
+
+        return logits
+
+    def forward(self, dialect, inputs):
+        """
+        正向传播，根据方言编码和输入输出对数几率.
+
+        Parameters:
+            dialect (tensorflow.Tensor): 方言编码，形状为批大小
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+
+        Returns:
+            logits (list of tensorflow.Tensor):
+                输出张量的数组，每个张量形状为 dialect.shape[0] * self.output_nums[i]，
+                内容为对数几率
+        """
+
+        dialect_emb = tf.nn.embedding_lookup(self.dialect_emb, dialect)
+        input_emb = self.encode(inputs)
+        output_emb = self.transform(dialect_emb, input_emb)
+        return self.decode(output_emb)
+
+    def predict(self, dialect, inputs):
+        """
+        根据方言编码和输入预测输出编码.
+
+        Parameters:
+            dialect (tensorflow.Tensor): 方言编码，形状为批大小
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+
+        Returns:
+            outputs (list of tensorflow.Tensor):
+                输出张量的数组，每个张量的形状为 dialect.shape[0]，内容为输出编码
+        """
+
+        logits = self.forward(dialect, inputs)
+        return tf.stack(
+            [tf.argmax(l, axis=1, output_type=tf.int32) for l in logits],
+            axis=1
+        )
+
+    def predict_proba(self, dialect, inputs):
+        """
+        根据方言编码和输入预测输出的概率.
+
+        Parameters:
+            dialect (tensorflow.Tensor): 方言编码，形状为批大小
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+
+        Returns:
+            probs (list of tensorflow.Tensor):
+                输出张量的数组，每个张量的形状为 dialect.shape[0] * self.output_nums[i]，
+                内容为输出的概率
+        """
+
+        logits = self.forward(dialect, inputs)
+        return [tf.nn.softmax(l) for l in logits]
+
+    @tf.function
+    def loss(self, dialect, inputs, targets):
+        """
+        根据方言编码、输入和目标输出计算损失.
+
+        Parameters:
+            dialect (tensorflow.Tensor): 方言编码，形状为批大小
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            targets (list of tensorflow.Tensor):
+                目标输出张量的数组，每个张量的形状为批大小，内容为输出编码
+
+        Returns:
+            loss (tensorflow.Tensor): 每个样本的损失，形状为 dialect.shape[0]
+            acc (tensorflow.Tensor): 每个样本的预测是否等于目标，
+                形状为 dialect.shape[0] * len(self.output_nums)
+        """
+
+        logits = self.forward(dialect, inputs)
+
+        loss = tf.stack(
+            [tf.nn.sparse_softmax_cross_entropy_with_logits(
+                labels=tf.maximum(targets[:, i], 0),
+                logits=l
+            ) for i, l in enumerate(logits)],
+            axis=1
+        )
+
+        pred = tf.stack(
+            [tf.argmax(l, axis=1, output_type=tf.int32) for l in logits],
+            axis=1
+        )
+        acc = tf.cast(targets == pred, tf.float32)
+
+        return loss, acc
+
+    @tf.function
+    def update(self, optimizer, dialect, inputs, targets):
+        """
+        反向传播更新模型参数.
+
+        Parameters:
+            optimizer (tensorflow.optimizers.Optimizer): 用于更新的优化器
+            dialect (tensorflow.Tensor): 方言编码，形状为批大小
+            inputs (array-like of tensorflow.Tensor):
+                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            targets (list of tensorflow.Tensor):
+                目标输出张量的数组，每个张量的形状为批大小，内容为输出编码
+
+        Returns:
+            loss, acc: self.loss 的返回值
+        """
+
+        with tf.GradientTape() as tape:
+            loss, acc = self.loss(dialect, inputs, targets)
+            loss = tf.reduce_sum(tf.reduce_mean(
+                loss * tf.cast(targets >= 0, tf.float32),
+                axis=0
+            ))
+            acc = tf.reduce_mean(acc, axis=0)
+            grad = tape.gradient(loss, self.trainable_variables)
+
+        optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        return loss, acc
+
+    def train(self, optimizer, data):
+        """
+        使用数据集训练模型.
+
+        Parameters:
+            optimizer (tensorflow.optimizers.Optimizer): 用于更新的优化器
+            data (tensorflow.data.Dataset): 训练数据集
+
+        Returns:
+            loss, acc (tensorflow.Tensor): 模型在训练数据集上的损失及精确度
+        """
+
+        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
+        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+
+        for dialect, inputs, targets in data:
+            loss, acc = self.update(optimizer, dialect, inputs, targets)
+            loss_stat.update_state(loss)
+            acc_stat.update_state(acc)
+
+        return loss_stat.result(), acc_stat.result()
+
+    def evaluate(self, data):
+        """
+        使用测试数据集评估模型.
+
+        Parameters:
+            data (tensorflow.data.Dataset): 测试数据集
+
+        Returns:
+            loss, acc (tensorflow.Tensor): 模型在测试数据集上的损失及精确度
+        """
+
+        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
+        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+
+        for dialect, inputs, targets in data:
+            loss, acc = self.loss(dialect, inputs, targets)
+            loss = tf.reduce_sum(tf.reduce_mean(
+                loss * tf.cast(targets >= 0, tf.float32), axis=0
+            ))
+            loss_stat.update_state(loss)
+            acc_stat.update_state(tf.reduce_mean(acc, axis=0))
+
+        return loss_stat.result(), acc_stat.result()
+
+    def fit(
+        self,
+        optimizer,
+        train_data,
+        eval_data=None,
+        epochs=20,
+        batch_size=100,
+        output_path=None
+    ):
+        """
+        训练模型.
+
+        Parameters:
+            optimizer (tensorflow.optimizers.Optimizer): 用于训练的优化器
+            train_data (tensorflow.data.Dataset): 训练数据集
+            eval_data (tensorflow.data.Dataset): 测试数据集
+            epochs (int): 训练轮次
+            batch_size (int): 批大小
+            output_path (str): 检查点及统计数据输出路径
+
+        训练过程中的检查点及统计数据输出到 output_path，如果 output_path 已有数据，
+        先从最近一次检查点恢复训练状态。
+        """
+
+        if output_path is None:
+            output_path = os.path.join(
+                self.name,
+                f'{datetime.datetime.now():%Y%m%d%H%M}'
+            )
+
+        logging.info(
+            f'train {self.name}, epochs = {epochs}, batch size = {batch_size}, '
+            f'output path = {output_path}'
+        )
+
+        train_writer = tf.summary.create_file_writer(os.path.join(output_path, 'train'))
+        if eval_data is not None:
+            eval_writer = tf.summary.create_file_writer(os.path.join(output_path, 'eval'))
+
+        manager = tf.train.CheckpointManager(
+            tf.train.Checkpoint(model=self, optimizer=optimizer),
+            os.path.join(output_path, 'checkpoints'),
+            max_to_keep=epochs
+        )
+
+        # 如果目标路径已包含检查点，先从检查点恢复
+        if manager.restore_or_initialize() is not None:
+            logging.info(f'restored from checkpoint {manager.latest_checkpoint}')
+
+        while manager.checkpoint.save_counter < epochs:
+            epoch = manager.checkpoint.save_counter.numpy()
+            loss, acc = self.train(optimizer, train_data.batch(batch_size))
+            logging.info(
+                f'epoch {epoch}/{epochs}: '
+                f'train loss = {loss}, train accuracy = {acc}'
+            )
+
+            with train_writer.as_default():
+                tf.summary.scalar('loss', loss, step=epoch)
+                for i in range(acc.shape[0]):
+                    tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
+
+                for v in self.variables:
+                    tf.summary.histogram(v.name, v, step=epoch)
+
+            if eval_data is not None:
+                loss, acc = self.evaluate(eval_data.batch(batch_size))
+                logging.info(
+                    f'epoch {epoch}/{epochs}: '
+                    f'eval loss = {loss}, eval accuracy = {acc}'
+                )
+
+                with eval_writer.as_default():
+                    tf.summary.scalar('loss', loss, step=epoch)
+                    for i in range(acc.shape[0]):
+                        tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
+
+            manager.save()
+
+class LinearEncoder(EncoderBase):
+    """
+    线性编码器.
+
+    输入向量经过以方言向量为参数的线性变换得到输出向量。
+    """
+
+    def __init__(
+        self,
+        dialect_num,
+        input_nums,
+        output_nums,
+        output_emb_size=20,
+        name='linear_encoder',
+        **kwargs
+    ):
+        """
+        Parameters:
+            output_emb_size (int): 输出向量的长度
+        """
+
+        super().__init__(
+            dialect_num,
+            input_nums,
+            output_nums,
+            output_emb_sizes=(output_emb_size,) * len(output_nums),
+            name=name,
+            **kwargs
+        )
+
+        self.output_emb_size = output_emb_size
+
+        init = tf.random_normal_initializer()
+        self.weight = tf.Variable(
+            init(
+                shape=(
+                    self.dialect_emb_size,
+                    self.input_emb_size,
+                    self.output_emb_size
+                ),
+                dtype=tf.float32
+            ),
+            name='weight'
+        )
+
+    def transform(self, dialect_emb, input_emb):
+        """
+        把输入向量变换为输出向量.
+
+        Parameters:
+            dialect_emb (tensorflow.Tensor): 方言向量
+            input_emb (tensorflow.Tensor): 输出向量
+
+        Returns:
+            output_emb (tensorflow.Tensor):
+                输出向量，形状为 dialect_emb.shape[0] * self.output_emb_size
+
+        输出向量为输入向量的线性变换，该变换的参数由方言向量经模型参数线性变换而来。
+        """
+
+        return tf.reshape(tf.matmul(
+            input_emb[:, None, :],
+            tf.tensordot(dialect_emb, self.weight, axes=[[-1], [0]])
+        ), (input_emb.shape[0], self.weight.shape[-1]))
