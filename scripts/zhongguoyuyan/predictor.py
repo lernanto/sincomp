@@ -25,9 +25,8 @@ class DialectPredictor:
         emb_size=20,
         dialect_emb_size=None,
         char_emb_size=None,
-        output_emb_size=None,
-        hidden_layer=2,
-        hidden_size=100,
+        residual_layer=2,
+        residual_size=100,
         activation=tf.nn.relu,
         output_bias=False,
         l2=0
@@ -36,8 +35,6 @@ class DialectPredictor:
             dialect_emb_size = emb_size
         if char_emb_size is None:
             char_emb_size = emb_size
-        if output_emb_size is None:
-            output_emb_size = char_emb_size
 
         self.dialects = tf.convert_to_tensor(dialects)
         self.chars = tf.convert_to_tensor(chars)
@@ -70,21 +67,22 @@ class DialectPredictor:
             dtype=tf.float32
         ), name='char_emb')
 
-        self.mlp_weights = []
-        self.mlp_biases = []
-        output_shape = dialect_emb_size + char_emb_size
-        for i in range(hidden_layer):
-            input_shape = output_shape
-            output_shape = output_emb_size if i == hidden_layer - 1 else hidden_size
-
-            self.mlp_weights.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(input_shape, output_shape),
+        self.res_weights1 = []
+        self.res_biases = []
+        self.res_weights2 = []
+        for i in range(residual_layer):
+            self.res_weights1.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(dialect_emb_size + char_emb_size, residual_size),
                 dtype=tf.float32
-            ), name='mlp{}'.format(i)))
-            self.mlp_biases.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(output_shape,),
+            ), name='res_weight{}_1'.format(i)))
+            self.res_biases.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(residual_size,),
                 dtype=tf.float32
-            )))
+            ), name='res_bias{}'.format(i)))
+            self.res_weights2.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(residual_size, char_emb_size),
+                dtype=tf.float32
+            ), name='res_weight{}_2'.format(i)))
 
         self.output_tables = []
         for output in outputs:
@@ -100,13 +98,12 @@ class DialectPredictor:
         self.output_biases = []
         for i, output in enumerate(outputs):
             self.output_embs.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(output_shape, output.shape[0]),
+                shape=(char_emb_size, output.shape[0]),
                 dtype=tf.float32
             ), name='output{}'.format(i)))
 
         self.trainable_variables = [self.dialect_emb, self.char_emb] \
-            + self.mlp_weights \
-            + self.mlp_biases \
+            + self.res_weights1 + self.res_biases + self.res_weights2 \
             + self.output_embs
 
         if self.output_bias:
@@ -153,12 +150,13 @@ class DialectPredictor:
 
     @tf.function
     def transform(self, dialect_emb, char_emb):
+        emb = char_emb
+        for w1, b, w2 in zip(self.res_weights1, self.res_biases, self.res_weights2):
+            x = tf.concat([dialect_emb, emb], axis=1)
+            x = self.activation(tf.matmul(x, w1) + b)
+            emb = emb + tf.matmul(x, w2)
 
-        x = tf.concat([dialect_emb, char_emb], axis=1)
-        for w, b in zip(self.mlp_weights, self.mlp_biases):
-            x = self.activation(tf.matmul(x, w) + b)
-
-        return x
+        return emb
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
@@ -340,10 +338,9 @@ if __name__ == '__main__':
         data['iid'].unique(),
         (data['initial'].unique(), data['finals'].unique(), data['tone'].unique()),
         emb_size=emb_size,
-        hidden_layer=1,
-        hidden_size=100,
+        residual_layer=2,
+        residual_size=100,
         activation=tf.nn.relu,
-        output_emb_size=emb_size,
         output_bias=False,
         l2=0
     )
