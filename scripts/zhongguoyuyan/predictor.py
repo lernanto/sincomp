@@ -66,17 +66,12 @@ class DialectPredictor:
         ), name='char_emb')
 
         self.res_weights1 = []
-        self.res_biases = []
         self.res_weights2 = []
         for i in range(residual_layer):
             self.res_weights1.append(tf.Variable(tf.random_normal_initializer()(
                 shape=(dialect_emb_size + char_emb_size, residual_size),
                 dtype=tf.float32
             ), name='res_weight{}_1'.format(i)))
-            self.res_biases.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(residual_size,),
-                dtype=tf.float32
-            ), name='res_bias{}'.format(i)))
             self.res_weights2.append(tf.Variable(tf.random_normal_initializer()(
                 shape=(residual_size, char_emb_size),
                 dtype=tf.float32
@@ -101,8 +96,7 @@ class DialectPredictor:
             ), name='output{}'.format(i)))
 
         self.trainable_variables = [self.dialect_emb, self.char_emb] \
-            + self.res_weights1 + self.res_biases + self.res_weights2 \
-            + self.output_embs
+            + self.res_weights1 + self.res_weights2 + self.output_embs
 
         if self.output_bias:
             self.output_biases = []
@@ -149,9 +143,9 @@ class DialectPredictor:
     @tf.function
     def transform(self, dialect_emb, char_emb):
         emb = char_emb
-        for w1, b, w2 in zip(self.res_weights1, self.res_biases, self.res_weights2):
+        for w1, w2 in zip(self.res_weights1, self.res_weights2):
             x = tf.concat([dialect_emb, emb], axis=1)
-            x = self.activation(tf.matmul(x, w1) + b)
+            x = self.activation(tf.matmul(x, w1))
             emb = emb + tf.matmul(x, w2)
 
         return emb
