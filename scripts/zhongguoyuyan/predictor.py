@@ -27,7 +27,9 @@ class DialectPredictor:
         residual_size=100,
         activation=tf.nn.relu,
         output_bias=False,
-        l2=0
+        emb_l2=0.01,
+        l2=0,
+        optimizer=None
     ):
         if dialect_emb_size is None:
             dialect_emb_size = emb_size
@@ -39,6 +41,7 @@ class DialectPredictor:
         self.outputs = [tf.convert_to_tensor(o) for o in outputs]
         self.activation = activation
         self.output_bias = output_bias
+        self.emb_l2 = emb_l2
         self.l2 = l2
 
         self.dialect_table = tf.lookup.StaticVocabularyTable(
@@ -91,7 +94,7 @@ class DialectPredictor:
         self.output_biases = []
         for i, output in enumerate(outputs):
             self.output_embs.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(char_emb_size, output.shape[0]),
+                shape=(output.shape[0], char_emb_size),
                 dtype=tf.float32
             ), name='output{}'.format(i)))
 
@@ -108,7 +111,7 @@ class DialectPredictor:
 
             self.trainable_variables += self.output_biases
 
-        self.optimizer = tf.optimizers.Adam()
+        self.optimizer = tf.optimizers.Adam() if optimizer is None else optimizer
 
     def dialect_to_id(self, dialect):
         return self.dialect_table.lookup(tf.convert_to_tensor(dialect))
@@ -136,7 +139,7 @@ class DialectPredictor:
 
     def get_target_emb(self, index, target):
         return tf.nn.embedding_lookup(
-            tf.transpose(self.output_embs[index]),
+            self.output_embs[index],
             self.target_to_id(index, target)
         )
 
@@ -146,13 +149,13 @@ class DialectPredictor:
         for w1, w2 in zip(self.res_weights1, self.res_weights2):
             x = tf.concat([dialect_emb, emb], axis=1)
             x = self.activation(tf.matmul(x, w1))
-            emb = emb + tf.matmul(x, w2)
+            emb += tf.matmul(x, w2)
 
         return emb
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [tf.matmul(emb, e) for e in self.output_embs]
+        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.output_embs]
         if self.output_bias:
             logits = [l + b for l, b in zip(logits, self.output_biases)]
 
@@ -213,7 +216,12 @@ class DialectPredictor:
 
         dialect_emb = self.get_dialect_emb(inputs[:, 0])
         char_emb = self.get_char_emb(inputs[:, 1])
-        logits = self.logits(dialect_emb, char_emb)
+        output_emb = self.transform(dialect_emb, char_emb)
+
+        logits = [tf.matmul(output_emb, e, transpose_b=True) for e in self.output_embs]
+        if self.output_bias:
+            logits = [l + b for l, b in zip(logits, self.output_biases)]
+
         pred_ids = tf.stack(
             [tf.argmax(l, axis=1, output_type=tf.int32) for i, l in enumerate(logits)],
             axis=1
@@ -231,6 +239,12 @@ class DialectPredictor:
                 logits=l
             ))
         loss = tf.reduce_sum(tf.stack(loss, axis=1), axis=1)
+
+        if self.emb_l2 > 0:
+            loss += self.emb_l2 * tf.reduce_sum(
+                tf.square(output_emb - char_emb),
+                axis=1
+            )
 
         if self.l2 > 0:
             for v in self.trainable_variables:
