@@ -1,2 +1,6 @@
 *.pyc
 *.pyo
+*-checkpoint.ipynb
+checkpoint
+ckpt-*
+events.out.*
