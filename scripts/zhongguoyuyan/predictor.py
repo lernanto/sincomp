@@ -22,38 +22,44 @@ class DialectPredictor:
         self,
         dialects,
         chars,
-        outputs,
+        targets,
         emb_size=20,
         dialect_emb_size=None,
         char_emb_size=None,
-        residual_layer=2,
-        residual_size=100,
-        activation=tf.nn.relu,
-        output_bias=False,
-        l2=0
+        target_emb_size=None,
+        transform_heads=1,
+        transform_size=100,
+        activation=tf.nn.softmax,
+        target_bias=False,
+        emb_l2=0.01,
+        l2=0,
+        optimizer=None
     ):
         if dialect_emb_size is None:
             dialect_emb_size = emb_size
         if char_emb_size is None:
             char_emb_size = emb_size
+        if target_emb_size is None:
+            target_emb_size = char_emb_size
 
         self.dialects = tf.convert_to_tensor(dialects)
         self.chars = tf.convert_to_tensor(chars)
-        self.outputs = [tf.convert_to_tensor(o) for o in outputs]
+        self.targets = [tf.convert_to_tensor(o) for o in targets]
         self.activation = activation
-        self.output_bias = output_bias
+        self.target_bias = target_bias
+        self.emb_l2 = emb_l2
         self.l2 = l2
 
         self.dialect_table = tf.lookup.StaticVocabularyTable(
             initializer=tf.lookup.KeyValueTensorInitializer(
-                keys=dialects,
+                keys=self.dialects,
                 values=tf.range(dialects.shape[0], dtype=tf.int64)
             ),
             num_oov_buckets=1
         )
         self.char_table = tf.lookup.StaticVocabularyTable(
             initializer=tf.lookup.KeyValueTensorInitializer(
-                keys=chars,
+                keys=self.chars,
                 values=tf.range(chars.shape[0], dtype=tf.int64)
             ),
             num_oov_buckets=1
@@ -68,56 +74,65 @@ class DialectPredictor:
             dtype=tf.float32
         ), name='char_emb')
 
-        self.res_weights1 = []
-        self.res_biases = []
-        self.res_weights2 = []
-        for i in range(residual_layer):
-            self.res_weights1.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(dialect_emb_size + char_emb_size, residual_size),
-                dtype=tf.float32
-            ), name='res_weight{}_1'.format(i)))
-            self.res_biases.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(residual_size,),
-                dtype=tf.float32
-            ), name='res_bias{}'.format(i)))
-            self.res_weights2.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(residual_size, char_emb_size),
-                dtype=tf.float32
-            ), name='res_weight{}_2'.format(i)))
+        self.dialect_att_weight = tf.Variable(tf.random_normal_initializer()(
+            shape=(dialect_emb_size, transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='dialect_att_weight')
+        self.dialect_att_bias = tf.Variable(tf.random_normal_initializer()(
+            shape=(transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='dialect_att_bias')
+        self.char_att_weight = tf.Variable(tf.random_normal_initializer()(
+            shape=(char_emb_size, transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='char_att_weight')
+        self.char_att_bias = tf.Variable(tf.random_normal_initializer()(
+            shape=(transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='char_bias')
+        self.trans_weight = tf.Variable(tf.random_normal_initializer()(
+            shape=(transform_heads, transform_size, char_emb_size),
+            dtype=tf.float32
+        ), name='trans_weight')
 
-        self.output_tables = []
-        for output in outputs:
-            self.output_tables.append(tf.lookup.StaticVocabularyTable(
+        self.target_tables = []
+        for target in self.targets:
+            self.target_tables.append(tf.lookup.StaticVocabularyTable(
                 tf.lookup.KeyValueTensorInitializer(
-                    keys=output,
-                    values=tf.range(output.shape[0], dtype=tf.int64)
+                    keys=target,
+                    values=tf.range(target.shape[0], dtype=tf.int64)
                 ),
                 num_oov_buckets=1
             ))
 
-        self.output_embs = []
-        self.output_biases = []
-        for i, output in enumerate(outputs):
-            self.output_embs.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(char_emb_size, output.shape[0]),
+        self.target_embs = []
+        for i, target in enumerate(self.targets):
+            self.target_embs.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(target.shape[0], target_emb_size),
                 dtype=tf.float32
-            ), name='output{}'.format(i)))
+            ), name='target_emb{}'.format(i)))
 
-        self.trainable_variables = [self.dialect_emb, self.char_emb] \
-            + self.res_weights1 + self.res_biases + self.res_weights2 \
-            + self.output_embs
+        self.trainable_variables = [
+            self.dialect_emb,
+            self.char_emb,
+            self.dialect_att_weight,
+            self.dialect_att_bias,
+            self.char_att_weight,
+            self.char_att_bias,
+            self.trans_weight
+        ] + self.target_embs
 
-        if self.output_bias:
-            self.output_biases = []
-            for output in outputs:
-                self.output_biases.append(tf.Variable(tf.random_normal_initializer()(
-                    shape=(output.shape[0],),
+        if self.target_bias:
+            self.target_biases = []
+            for target in self.targets:
+                self.target_biases.append(tf.Variable(tf.random_normal_initializer()(
+                    shape=(target.shape[0],),
                     dtype=tf.float32
                 )))
 
-            self.trainable_variables += self.output_biases
+            self.trainable_variables += self.target_biases
 
-        self.optimizer = tf.optimizers.Adam()
+        self.optimizer = tf.optimizers.Adam() if optimizer is None else optimizer
 
     def dialect_to_id(self, dialect):
         return self.dialect_table.lookup(tf.convert_to_tensor(dialect))
@@ -132,10 +147,10 @@ class DialectPredictor:
         return tf.gather(self.chars, char_id)
 
     def target_to_id(self, index, target):
-        return self.output_tables[index].lookup(tf.convert_to_tensor(target))
+        return self.target_tables[index].lookup(tf.convert_to_tensor(target))
 
     def id_to_target(self, index, target_id):
-        return tf.gather(self.outputs[index], target_id)
+        return tf.gather(self.targets[index], target_id)
 
     def get_dialect_emb(self, dialect):
         return tf.nn.embedding_lookup(self.dialect_emb, self.dialect_to_id(dialect))
@@ -145,25 +160,35 @@ class DialectPredictor:
 
     def get_target_emb(self, index, target):
         return tf.nn.embedding_lookup(
-            tf.transpose(self.output_embs[index]),
+            self.target_embs[index],
             self.target_to_id(index, target)
         )
 
+    def dialect_att(self, dialect_emb):
+        return tf.nn.sigmoid(tf.tensordot(
+            dialect_emb,
+            self.dialect_att_weight,
+            [1, 0]
+        ) + self.dialect_att_bias[None, :, :])
+
+    def char_att(self, char_emb):
+        return self.activation(tf.tensordot(
+            char_emb,
+            self.char_att_weight,
+            [1, 0]
+        ) + self.char_att_bias[None, :, :])
+
     @tf.function
     def transform(self, dialect_emb, char_emb):
-        emb = char_emb
-        for w1, b, w2 in zip(self.res_weights1, self.res_biases, self.res_weights2):
-            x = tf.concat([dialect_emb, emb], axis=1)
-            x = self.activation(tf.matmul(x, w1) + b)
-            emb = emb + tf.matmul(x, w2)
-
-        return emb
+        att = self.dialect_att(dialect_emb) * self.char_att(char_emb)
+        return char_emb + tf.tensordot(att, self.trans_weight, [[1, 2], [0, 1]])
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [tf.matmul(emb, e) for e in self.output_embs]
-        if self.output_bias:
-            logits = [l + b for l, b in zip(logits, self.output_biases)]
+        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
+
+        if self.target_bias:
+            logits = [l + b for l, b in zip(logits, self.target_biases)]
 
         return logits
 
@@ -223,6 +248,7 @@ class DialectPredictor:
         dialect_emb = self.get_dialect_emb(inputs[:, 0])
         char_emb = self.get_char_emb(inputs[:, 1])
         logits = self.logits(dialect_emb, char_emb)
+
         pred_ids = tf.stack(
             [tf.argmax(l, axis=1, output_type=tf.int32) for i, l in enumerate(logits)],
             axis=1
@@ -240,6 +266,13 @@ class DialectPredictor:
                 logits=l
             ))
         loss = tf.reduce_sum(tf.stack(loss, axis=1), axis=1)
+
+        if self.emb_l2 > 0:
+            emb = self.transform(dialect_emb, char_emb)
+            loss += self.emb_l2 * tf.reduce_sum(
+                tf.square(emb - char_emb),
+                axis=1
+            )
 
         if self.l2 > 0:
             for v in self.trainable_variables:
@@ -295,10 +328,10 @@ if __name__ == '__main__':
         data['iid'].unique(),
         (data['initial'].unique(), data['finals'].unique(), data['tone'].unique()),
         emb_size=emb_size,
-        residual_layer=2,
-        residual_size=100,
-        activation=tf.nn.relu,
-        output_bias=False,
+        transform_layer=1,
+        transform_size=100,
+        activation=tf.nn.softmax,
+        target_bias=False,
         l2=0
     )
 
