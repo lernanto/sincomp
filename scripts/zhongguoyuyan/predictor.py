@@ -95,7 +95,7 @@ class DialectPredictor:
         self.target_embs = []
         for i, target in enumerate(self.targets):
             self.target_embs.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(target.shape[0], char_emb_size),
+                shape=(target.shape[0], dialect_emb_size + char_emb_size),
                 dtype=tf.float32
             ), name='target_emb{}'.format(i)))
 
@@ -158,7 +158,11 @@ class DialectPredictor:
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
+        logits = [tf.matmul(
+            tf.concat([dialect_emb, emb], axis=1),
+            e,
+            transpose_b=True
+        ) for e in self.target_embs]
         if self.target_bias:
             logits = [l + b for l, b in zip(logits, self.target_biases)]
 
@@ -221,7 +225,11 @@ class DialectPredictor:
         char_emb = self.get_char_emb(inputs[:, 1])
         emb = self.transform(dialect_emb, char_emb)
 
-        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
+        logits = [tf.matmul(
+            tf.concat([dialect_emb, emb], axis=1),
+                e,
+                transpose_b=True
+            ) for e in self.target_embs]
         if self.target_bias:
             logits = [l + b for l, b in zip(logits, self.target_biases)]
 
