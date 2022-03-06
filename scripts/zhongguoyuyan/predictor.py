@@ -9,8 +9,10 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import os
+import logging
 import datetime
-import pandas as pd
+import pandas
+import numpy
 import tensorflow as tf
 
 
@@ -260,20 +262,83 @@ class DialectPredictor:
         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
         return loss, target_ids, pred_ids
 
+def load_data(prefix, ids, suffix='mb01dz.csv'):
+    '''加载方言字音数据'''
+
+    data = []
+    for id in ids:
+        fname = os.path.join(prefix, id + suffix)
+        try:
+            d = pandas.read_csv(fname, encoding='utf-8', dtype=str)
+            d['oid'] = id
+            data.append(d)
+        except Exception as e:
+            logging.error(f'cannot load file {fname}: {e}')
+
+    data = pandas.concat(data, ignore_index=True)
+
+    # 读音数据中有些输入错误，清洗
+    ipa = 'A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\U00010780-\U000107ba\U0001df00-\U0001df1e'
+
+    # 有些符号使用了多种写法，统一成较常用的一种
+    clean = data['initial'].fillna('').str.lower() \
+        .str.replace(f'[^{ipa}]', '') \
+        .str.replace('[\u00f8\u01ff]', '\u2205') \
+        .str.replace('\u02a3', 'dz') \
+        .str.replace('\u02a4', 'dʒ') \
+        .str.replace('\u02a5', 'dʑ') \
+        .str.replace('\u02a6', 'ts') \
+        .str.replace('\u02a7', 'tʃ') \
+        .str.replace('\u02a8', 'tɕ') \
+        .str.replace('[\u02b0\u02b1]', 'h') \
+        .str.replace('g', 'ɡ')
+
+    # 删除出现次数少的读音
+    clean[clean.groupby(clean).transform('count') <= 2] = ''
+    mask = data['initial'] != clean
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'initial'],
+            'clean': clean[mask]
+        }).value_counts().iteritems():
+            logging.warn(f'replace {r} -> {c} {cnt}')
+
+    data['initial'] = clean
+
+    clean = data['finals'].fillna('').str.lower().str.replace(f'[^{ipa}]', '')
+    clean[clean.groupby(clean).transform('count') <= 2] = ''
+    mask = data['finals'] != clean
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'finals'],
+            'clean': clean[mask]
+        }).value_counts().iteritems():
+            logging.warn(f'replace {r} -> {c} {cnt}')
+
+    data['finals'] = clean
+
+    clean = data['tone'].fillna('').str.lower().str.replace(f'[^1-5]', '')
+    clean[clean.groupby(clean).transform('count') <= 2] = ''
+    mask = data['tone'] != clean
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'tone'],
+            'clean': clean[mask]
+        }).value_counts().iteritems():
+            logging.warn(f'replace {r} -> {c} {cnt}')
+
+    data['tone'] = clean
+
+    return data
+
 
 if __name__ == '__main__':
     prefix = r'D:\git\zhongguoyuyan\csv\dialect'
-    location = pd.read_csv(os.path.join(prefix, 'location.csv'), index_col=0)
-    char = pd.read_csv(r'D:\git\zhongguoyuyan\csv\words.csv', index_col=0)
+    location = pandas.read_csv(os.path.join(prefix, 'location.csv'), index_col=0)
+    char = pandas.read_csv(r'D:\git\zhongguoyuyan\csv\words.csv', index_col=0)
     sample = location.sample(100)
 
-    data = []
-    for id in sample.index:
-        d = pd.read_csv(os.path.join(prefix, id + 'mb01dz.csv'), dtype=str)
-        d['oid'] = id
-        data.append(d)
-
-    data = pd.concat(data, ignore_index=True).fillna('')
+    data = load_data(prefix, sample.index)
 
     emb_size = 20
     encoder = DialectPredictor(
