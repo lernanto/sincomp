@@ -30,7 +30,6 @@ class DialectPredictor:
         transform_heads=1,
         transform_size=100,
         activation=tf.nn.softmax,
-        target_bias=False,
         emb_l2=0.01,
         l2=0,
         optimizer=None
@@ -46,7 +45,6 @@ class DialectPredictor:
         self.chars = tf.convert_to_tensor(chars)
         self.targets = [tf.convert_to_tensor(o) for o in targets]
         self.activation = activation
-        self.target_bias = target_bias
         self.emb_l2 = emb_l2
         self.l2 = l2
 
@@ -131,16 +129,6 @@ class DialectPredictor:
             + self.char_att_weights + self.char_att_biases \
             + self.trans_weights + self.target_embs
 
-        if self.target_bias:
-            self.target_biases = []
-            for target in self.targets:
-                self.target_biases.append(tf.Variable(tf.random_normal_initializer()(
-                    shape=(target.shape[0],),
-                    dtype=tf.float32
-                )))
-
-            self.trainable_variables += self.target_biases
-
         self.optimizer = tf.optimizers.Adam() if optimizer is None else optimizer
 
     def dialect_to_id(self, dialect):
@@ -205,10 +193,10 @@ class DialectPredictor:
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
-
-        if self.target_bias:
-            logits = [l + b for l, b in zip(logits, self.target_biases)]
+        logits = [-tf.reduce_sum(
+            tf.square(emb[:, None] - e[None, :]),
+            axis=-1
+        ) for e in self.target_embs]
 
         return logits
 
@@ -395,7 +383,6 @@ if __name__ == '__main__':
         transform_layer=1,
         transform_size=100,
         activation=tf.nn.softmax,
-        target_bias=False,
         l2=0
     )
 
