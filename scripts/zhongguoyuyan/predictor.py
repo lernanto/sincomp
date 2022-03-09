@@ -27,6 +27,7 @@ class DialectPredictor:
         char_emb_size=None,
         target_emb_size=None,
         transform_layer=1,
+        transform_heads=1,
         transform_size=100,
         activation=tf.nn.softmax,
         target_bias=False,
@@ -74,19 +75,29 @@ class DialectPredictor:
         ), name='char_emb')
 
         self.dialect_att_weights = []
+        self.dialect_att_biases = []
         self.char_att_weights = []
+        self.char_att_biases = []
         self.trans_weights = []
         for i in range(transform_layer):
             self.dialect_att_weights.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(dialect_emb_size, transform_size),
+                shape=(dialect_emb_size, transform_heads, transform_size),
                 dtype=tf.float32
             ), name='dialect_att_weight{}'.format(i)))
+            self.dialect_att_biases.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(transform_heads, transform_size),
+                dtype=tf.float32
+            ), name=f'dialect_att_bias{i}'))
             self.char_att_weights.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(char_emb_size, transform_size),
+                shape=(char_emb_size, transform_heads, transform_size),
                 dtype=tf.float32
             ), name='char_att_weight{}'.format(i)))
+            self.char_att_biases.append(tf.Variable(tf.random_normal_initializer()(
+                shape=(transform_heads, transform_size),
+                dtype=tf.float32
+            ), name=f'char_bias{i}'))
             self.trans_weights.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(transform_size, char_emb_size),
+                shape=(transform_heads, transform_size, char_emb_size),
                 dtype=tf.float32
             ), name='trans_weight{}'.format(i)))
 
@@ -116,7 +127,9 @@ class DialectPredictor:
             self.dialect_emb,
             self.char_emb,
             self.weight
-        ] + self.dialect_att_weights + self.char_att_weights + self.trans_weights + self.target_embs
+        ] + self.dialect_att_weights + self.dialect_att_biases \
+            + self.char_att_weights + self.char_att_biases \
+            + self.trans_weights + self.target_embs
 
         if self.target_bias:
             self.target_biases = []
@@ -160,18 +173,30 @@ class DialectPredictor:
             self.target_to_id(index, target)
         )
 
-    def dialect_att(self, dialect_emb, dialect_att_weight):
-        return 1 - 1 / (tf.nn.relu(tf.matmul(dialect_emb, dialect_att_weight)) + 1)
+    def dialect_att(self, dialect_emb, dialect_att_weight, dialect_att_bias):
+        return tf.nn.sigmoid(tf.tensordot(
+            dialect_emb,
+            dialect_att_weight,
+            [1, 0]
+        ) + dialect_att_bias[None, :, :])
 
-    def char_att(self, char_emb, char_att_weight):
-        return self.activation(tf.matmul(char_emb, char_att_weight))
+    def char_att(self, char_emb, char_att_weight, char_att_bias):
+        return self.activation(tf.tensordot(char_emb, char_att_weight, [1, 0]) \
+            + char_att_bias[None, :, :])
 
     @tf.function
     def transform(self, dialect_emb, char_emb):
         emb = char_emb
-        for daw, caw, tw in zip(self.dialect_att_weights, self.char_att_weights, self.trans_weights):
-            att = self.dialect_att(dialect_emb, daw) * self.char_att(emb, caw)
-            emb += tf.matmul(att, tw)
+        for daw, dab, caw, cab, tw in zip(
+            self.dialect_att_weights,
+            self.dialect_att_biases,
+            self.char_att_weights,
+            self.char_att_biases,
+            self.trans_weights
+        ):
+            att = self.dialect_att(dialect_emb, daw, dab) \
+                * self.char_att(emb, caw, cab)
+            emb += tf.tensordot(att, tw, [[1, 2], [0, 1]])
 
         return emb
 
