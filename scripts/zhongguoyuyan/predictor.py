@@ -8,6 +8,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import sys
 import os
 import logging
 import datetime
@@ -16,38 +17,32 @@ import numpy
 import tensorflow as tf
 
 
-class DialectPredictor:
+class Predictor(tf.train.Checkpoint):
+    '''预测指定方言点的字音.'''
+
     def __init__(
         self,
         dialects,
         chars,
         targets,
-        emb_size=20,
-        dialect_emb_size=None,
-        char_emb_size=None,
-        target_emb_size=None,
-        transform_heads=1,
-        transform_size=100,
-        activation=tf.nn.softmax,
-        target_bias=False,
-        emb_l2=0.01,
+        dialect_emb_size=20,
+        char_emb_size=20,
+        target_sim='inner_product',
         l2=0,
-        optimizer=None
+        optimizer=None,
+        name='predictor'
     ):
-        if dialect_emb_size is None:
-            dialect_emb_size = emb_size
-        if char_emb_size is None:
-            char_emb_size = emb_size
-        if target_emb_size is None:
-            target_emb_size = char_emb_size
+        super().__init__(epoch=tf.Variable(0, dtype=tf.int64))
 
         self.dialects = tf.convert_to_tensor(dialects)
         self.chars = tf.convert_to_tensor(chars)
-        self.targets = [tf.convert_to_tensor(o) for o in targets]
-        self.activation = activation
-        self.target_bias = target_bias
-        self.emb_l2 = emb_l2
+        self.targets = [tf.convert_to_tensor(t) for t in targets]
+        self.dialect_emb_size = dialect_emb_size
+        self.char_emb_size = char_emb_size
+        self.target_sim = target_sim
         self.l2 = l2
+        self.name = name
+        self.variables = []
 
         self.dialect_table = tf.lookup.StaticVocabularyTable(
             initializer=tf.lookup.KeyValueTensorInitializer(
@@ -64,35 +59,16 @@ class DialectPredictor:
             num_oov_buckets=1
         )
 
-        self.dialect_emb = tf.Variable(tf.random_normal_initializer()(
-            shape=(self.dialect_table.size(), dialect_emb_size),
+        init = tf.random_normal_initializer()
+
+        self.dialect_emb = tf.Variable(init(
+            shape=(self.dialect_table.size(), self.dialect_emb_size),
             dtype=tf.float32
         ), name='dialect_emb')
-        self.char_emb = tf.Variable(tf.random_normal_initializer()(
-            shape=(self.char_table.size(), char_emb_size),
+        self.char_emb = tf.Variable(init(
+            shape=(self.char_table.size(), self.char_emb_size),
             dtype=tf.float32
         ), name='char_emb')
-
-        self.dialect_att_weight = tf.Variable(tf.random_normal_initializer()(
-            shape=(dialect_emb_size, transform_heads, transform_size),
-            dtype=tf.float32
-        ), name='dialect_att_weight')
-        self.dialect_att_bias = tf.Variable(tf.random_normal_initializer()(
-            shape=(transform_heads, transform_size),
-            dtype=tf.float32
-        ), name='dialect_att_bias')
-        self.char_att_weight = tf.Variable(tf.random_normal_initializer()(
-            shape=(char_emb_size, transform_heads, transform_size),
-            dtype=tf.float32
-        ), name='char_att_weight')
-        self.char_att_bias = tf.Variable(tf.random_normal_initializer()(
-            shape=(transform_heads, transform_size),
-            dtype=tf.float32
-        ), name='char_bias')
-        self.trans_weight = tf.Variable(tf.random_normal_initializer()(
-            shape=(transform_heads, transform_size, char_emb_size),
-            dtype=tf.float32
-        ), name='trans_weight')
 
         self.target_tables = []
         for target in self.targets:
@@ -106,32 +82,27 @@ class DialectPredictor:
 
         self.target_embs = []
         for i, target in enumerate(self.targets):
-            self.target_embs.append(tf.Variable(tf.random_normal_initializer()(
-                shape=(target.shape[0], target_emb_size),
+            self.target_embs.append(tf.Variable(init(
+                shape=(target.shape[0], self.char_emb_size),
                 dtype=tf.float32
-            ), name='target_emb{}'.format(i)))
+            ), name=f'target_emb{i}'))
 
-        self.trainable_variables = [
-            self.dialect_emb,
-            self.char_emb,
-            self.dialect_att_weight,
-            self.dialect_att_bias,
-            self.char_att_weight,
-            self.char_att_bias,
-            self.trans_weight
-        ] + self.target_embs
+        self.add_variable(self.dialect_emb, self.char_emb, *self.target_embs)
 
-        if self.target_bias:
+        if self.target_sim == 'inner_product':
             self.target_biases = []
-            for target in self.targets:
-                self.target_biases.append(tf.Variable(tf.random_normal_initializer()(
-                    shape=(target.shape[0],),
-                    dtype=tf.float32
-                )))
+            for i, target in enumerate(self.targets):
+                self.target_biases.append(tf.Variable(
+                    init(shape=(target.shape[0],), dtype=tf.float32),
+                    name=f'target_bias{i}'
+                ))
 
-            self.trainable_variables += self.target_biases
+            self.add_variable(*self.target_biases)
 
-        self.optimizer = tf.optimizers.Adam() if optimizer is None else optimizer
+        self.optimizer = tf.optimizers.Adam(0.02) if optimizer is None else optimizer
+
+    def add_variable(self, *args):
+        self.variables.extend(args)
 
     def dialect_to_id(self, dialect):
         return self.dialect_table.lookup(tf.convert_to_tensor(dialect))
@@ -163,31 +134,17 @@ class DialectPredictor:
             self.target_to_id(index, target)
         )
 
-    def dialect_att(self, dialect_emb):
-        return tf.nn.sigmoid(tf.tensordot(
-            dialect_emb,
-            self.dialect_att_weight,
-            [1, 0]
-        ) + self.dialect_att_bias[None, :, :])
-
-    def char_att(self, char_emb):
-        return self.activation(tf.tensordot(
-            char_emb,
-            self.char_att_weight,
-            [1, 0]
-        ) + self.char_att_bias[None, :, :])
-
-    @tf.function
-    def transform(self, dialect_emb, char_emb):
-        att = self.dialect_att(dialect_emb) * self.char_att(char_emb)
-        return char_emb + tf.tensordot(att, self.trans_weight, [[1, 2], [0, 1]])
-
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
 
-        if self.target_bias:
-            logits = [l + b for l, b in zip(logits, self.target_biases)]
+        if self.target_sim == 'inner_product':
+            logits = [tf.matmul(emb, e, transpose_b=True) + b[None, :] \
+                for e, b in zip(self.target_embs, self.target_biases)]
+        elif self.target_sim == 'euclidean_distance':
+            logits = [-tf.reduce_sum(
+                tf.square(emb[:, None] - e[None, :]),
+                axis=-1
+            ) for e in self.target_embs]
 
         return logits
 
@@ -266,15 +223,8 @@ class DialectPredictor:
             ))
         loss = tf.reduce_sum(tf.stack(loss, axis=1), axis=1)
 
-        if self.emb_l2 > 0:
-            emb = self.transform(dialect_emb, char_emb)
-            loss += self.emb_l2 * tf.reduce_sum(
-                tf.square(emb - char_emb),
-                axis=1
-            )
-
         if self.l2 > 0:
-            for v in self.trainable_variables:
+            for v in self.variables:
                 loss += self.l2 * tf.reduce_sum(tf.square(v))
 
         return loss, target_ids, pred_ids
@@ -283,9 +233,224 @@ class DialectPredictor:
     def update(self, inputs, targets):
         with tf.GradientTape() as tape:
             loss, target_ids, pred_ids = self.loss(inputs, targets)
-        grad = tape.gradient(loss, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        grad = tape.gradient(loss, self.variables)
+        self.optimizer.apply_gradients(zip(grad, self.variables))
         return loss, target_ids, pred_ids
+
+    def train(
+        self,
+        train_data,
+        eval_data,
+        epochs=20,
+        batch_size=100,
+        output_path=None
+    ):
+        if output_path is None:
+            output_path = os.path.join(
+                self.name,
+                f'{datetime.datetime.now():%Y%m%d%H%M}'
+            )
+
+        train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
+        train_acc = tf.keras.metrics.Accuracy('train_acc', dtype=tf.float32)
+        eval_loss = tf.keras.metrics.Mean('eval_loss', dtype=tf.float32)
+        eval_acc = tf.keras.metrics.Accuracy('eval_acc', dtype=tf.float32)
+
+        writer = tf.summary.create_file_writer(output_path)
+        manager = tf.train.CheckpointManager(
+            self,
+            os.path.join(output_path, 'checkpoints'),
+            max_to_keep=epochs
+        )
+
+        while self.epoch < epochs:
+            for inputs, targets in train_data.shuffle(10000).batch(batch_size):
+                loss, target_ids, pred_ids = self.update(inputs, targets)
+                train_loss.update_state(loss)
+                train_acc.update_state(target_ids, pred_ids)
+
+            for inputs, targets in eval_data.batch(batch_size):
+                loss, target_ids, pred_ids = self.loss(inputs, targets)
+                eval_loss.update_state(loss)
+                eval_acc.update_state(
+                    target_ids,
+                    pred_ids,
+                    target_ids < tf.cast(tf.stack([t.shape[0] for t in self.targets]), tf.int64)
+                )
+
+            with writer.as_default():
+                tf.summary.scalar(train_loss.name, train_loss.result(), step=self.epoch)
+                tf.summary.scalar(train_acc.name, train_acc.result(), step=self.epoch)
+                tf.summary.scalar(eval_loss.name, eval_loss.result(), step=self.epoch)
+                tf.summary.scalar(eval_acc.name, eval_acc.result(), step=self.epoch)
+
+            train_loss.reset_states()
+            train_acc.reset_states()
+            eval_loss.reset_states()
+            eval_acc.reset_states()
+
+            self.epoch.assign_add(1)
+            manager.save()
+
+class LinearPredictor(Predictor):
+    '''方言 embedding 和字 embedding 直接相加.'''
+
+    def __init__(self, *args, emb_size=20, name='linear_predictor', **kwargs):
+        super().__init__(
+            *args,
+            dialect_emb_size=emb_size,
+            char_emb_size=emb_size,
+            name=name,
+            **kwargs
+        )
+
+    def transform(self, dialect_emb, char_emb):
+        return dialect_emb + char_emb
+
+class MLPPredictor(Predictor):
+    '''使用 MLP 作为字音变换.'''
+
+    def __init__(
+        self,
+        *args,
+        hidden_layer=2,
+        hidden_size=100,
+        activation=tf.nn.relu,
+        name='mlp_predictor',
+        **kwargs
+    ):
+        super().__init__(*args, name=name, **kwargs)
+
+        self.activation = activation
+
+        init = tf.random_normal_initializer()
+        self.weights = []
+        self.biases = []
+        for i in range(hidden_layer):
+            input_shape = self.dialect_emb_size + self.char_emb_size if i == 0 else hidden_size
+            output_shape = self.char_emb_size if i == hidden_layer - 1 else hidden_size
+
+            self.weights.append(tf.Variable(
+                init(shape=(input_shape, output_shape), dtype=tf.float32),
+                name=f'weight{i}')
+            )
+            self.biases.append(tf.Variable(
+                init(shape=(output_shape,), dtype=tf.float32),
+                name=f'bias{i}'
+            ))
+
+        self.add_variable(*self.weights, *self.biases)
+
+    def transform(self, dialect_emb, char_emb):
+        x = tf.concat([dialect_emb, char_emb], axis=1)
+        for w, b in zip(self.weights, self.biases):
+            x = self.activation(tf.matmul(x, w) + b[None, :])
+
+        return x
+
+class ResidualPredictor(Predictor):
+    '''预测方言字音变换的残差.'''
+
+    def __init__(
+        self,
+        *args,
+        hidden_size=100,
+        activation=tf.nn.relu,
+        name='residual_predictor',
+        **kwargs
+    ):
+        super().__init__(*args, name=name, **kwargs)
+
+        self.activation = activation
+
+        init = tf.random_normal_initializer()
+        self.weight0 = tf.Variable(init(
+            shape=(self.dialect_emb_size + self.char_emb_size, hidden_size),
+            dtype=tf.float32
+        ), name='weight0')
+        self.bias = tf.Variable(
+            init(shape=(hidden_size,), dtype=tf.float32),
+            name='bias'
+        )
+        self.weight1 = tf.Variable(
+            init(shape=(hidden_size, self.char_emb_size), dtype=tf.float32),
+            name='weight1'
+        )
+
+        self.add_variable(self.weight0, self.bias, self.weight1)
+
+    def transform(self, dialect_emb, char_emb):
+        return tf.matmul(
+            self.activation(tf.matmul(
+                tf.concat([dialect_emb, char_emb], axis=1),
+                self.weight0
+            ) + self.bias[None, :]),
+            self.weight1
+        )
+
+class AttentionPredictor(Predictor):
+    def __init__(
+        self,
+        *args,
+        transform_heads=5,
+        transform_size=20,
+        dialect_att_activation=tf.nn.sigmoid,
+        char_att_activation=tf.nn.softmax,
+        name='attention_predictor',
+        **kwargs
+    ):
+        super().__init__(*args, name=name, **kwargs)
+
+        self.dialect_att_activation = dialect_att_activation
+        self.char_att_activation = char_att_activation
+
+        init = tf.random_normal_initializer()
+        self.dialect_att_weight = tf.Variable(init(
+            shape=(self.dialect_emb_size, transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='dialect_att_weight')
+        self.dialect_att_bias = tf.Variable(
+            init(shape=(transform_heads, transform_size), dtype=tf.float32),
+            name='dialect_att_bias'
+        )
+        self.char_att_weight = tf.Variable(init(
+            shape=(self.char_emb_size, transform_heads, transform_size),
+            dtype=tf.float32
+        ), name='char_att_weight')
+        self.char_att_bias = tf.Variable(
+            init(shape=(transform_heads, transform_size), dtype=tf.float32),
+            name='char_bias'
+        )
+        self.trans_weight = tf.Variable(init(
+            shape=(transform_heads, transform_size, self.char_emb_size),
+            dtype=tf.float32
+        ), name='trans_weight')
+
+        self.add_variable(
+            self.dialect_att_weight,
+            self.dialect_att_bias,
+            self.char_att_weight,
+            self.char_att_bias,
+            self.trans_weight
+        )
+
+    def dialect_att(self, dialect_emb):
+        return self.dialect_att_activation(tf.tensordot(
+            dialect_emb,
+            self.dialect_att_weight,
+            [1, 0]
+        ) + self.dialect_att_bias[None, :, :])
+
+    def char_att(self, char_emb):
+        return self.char_att_activation(tf.tensordot(
+            char_emb,
+            self.char_att_weight,
+            [1, 0]
+        ) + self.char_att_bias[None, :, :])
+
+    def transform(self, dialect_emb, char_emb):
+        att = self.dialect_att(dialect_emb) * self.char_att(char_emb)
+        return char_emb + tf.tensordot(att, self.trans_weight, [[1, 2], [0, 1]])
 
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
@@ -358,74 +523,22 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
 
 
 if __name__ == '__main__':
-    prefix = r'D:\git\zhongguoyuyan\csv\dialect'
-    location = pandas.read_csv(os.path.join(prefix, 'location.csv'), index_col=0)
-    char = pandas.read_csv(r'D:\git\zhongguoyuyan\csv\words.csv', index_col=0)
+    prefix = sys.argv[1]
+    dialect_path = os.path.join(prefix, 'dialect')
+    location = pandas.read_csv(os.path.join(dialect_path, 'location.csv'), index_col=0)
+    char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
     sample = location.sample(100)
+    data = load_data(dialect_path, sample.index)
 
-    data = load_data(prefix, sample.index)
-
-    emb_size = 20
-    encoder = DialectPredictor(
+    predictor = AttentionPredictor(
         data['oid'].unique(),
         data['iid'].unique(),
-        (data['initial'].unique(), data['finals'].unique(), data['tone'].unique()),
-        emb_size=emb_size,
-        transform_layer=1,
-        transform_size=100,
-        activation=tf.nn.softmax,
-        target_bias=False,
-        l2=0
+        (data['initial'].unique(), data['finals'].unique(), data['tone'].unique())
     )
 
-    dataset = tf.data.Dataset.from_tensor_slices(data[['oid', 'iid', 'initial', 'finals', 'tone']].values).shuffle(100000).map(lambda x: (x[:2], x[2:]))
-    train_dataset = dataset.skip(10000)
-    test_dataset = dataset.take(10000)
-
-    output_prefix = os.path.join(
-        'tensorboard',
-        'encoder',
-        datetime.datetime.now().strftime('%Y%m%d%H%M')
-    )
-
-    log_dir = output_prefix
-    summary_writer = tf.summary.create_file_writer(log_dir)
-
-    loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
-    acc = tf.keras.metrics.Accuracy('acc', dtype=tf.float32)
-    eval_loss = tf.keras.metrics.Mean('eval_loss', dtype=tf.float32)
-    eval_acc = tf.keras.metrics.Accuracy('eval_acc', dtype=tf.float32)
-
-    checkpoint = tf.train.Checkpoint(
-        dialect_emb=encoder.dialect_emb,
-        char_emb=encoder.char_emb,
-        optimizer=encoder.optimizer
-    )
-    manager = tf.train.CheckpointManager(checkpoint, os.path.join(output_prefix, 'checkpoints'), max_to_keep=10)
-
-    epochs = 100
-    batch_size = 100
-
-    for epoch in range(epochs):
-        for inputs, targets in train_dataset.batch(batch_size):
-            l, target_ids, pred_ids = encoder.update(inputs, targets)
-            loss.update_state(l)
-            acc.update_state(target_ids, pred_ids)
-
-        for inputs, targets in test_dataset.batch(batch_size):
-            l, target_ids, pred_ids = encoder.loss(inputs, targets)
-            eval_loss.update_state(l)
-            eval_acc.update_state(target_ids, pred_ids)
-
-        with summary_writer.as_default():
-                tf.summary.scalar('loss', loss.result(), step=epoch)
-                tf.summary.scalar('acc', acc.result(), step=epoch)
-                tf.summary.scalar('eval_loss', eval_loss.result(), step=epoch)
-                tf.summary.scalar('eval_acc', eval_acc.result(), step=epoch)
-
-        loss.reset_states()
-        acc.reset_states()
-        eval_loss.reset_states()
-        eval_acc.reset_states()
-
-        manager.save()
+    dataset = tf.data.Dataset.from_tensor_slices(
+        data[['oid', 'iid', 'initial', 'finals', 'tone']].values
+    ).shuffle(100000).map(lambda x: (x[:2], x[2:]))
+    train_data = dataset.skip(10000)
+    eval_data = dataset.take(10000)
+    predictor.train(train_data, eval_data)
