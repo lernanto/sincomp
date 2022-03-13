@@ -459,7 +459,11 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     for id in ids:
         fname = os.path.join(prefix, id + suffix)
         try:
-            d = pandas.read_csv(fname, encoding='utf-8', dtype=str)
+            d = pandas.read_csv(
+                fname,
+                encoding='utf-8',
+                dtype={'iid': int, 'initial': str, 'finals': str, 'tone': str},
+            )
             d['oid'] = id
             data.append(d)
         except Exception as e:
@@ -521,24 +525,41 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
 
     return data
 
+def benchmark(data):
+    data = data.astype(str)
+    dialects = data['oid'].unique()
+    chars = data['iid'].unique()
+    initials = data['initial'].unique()
+    finals = data['finals'].unique()
+    tones = data['tone'].unique()
+
+    dataset = tf.data.Dataset.from_tensor_slices((
+        data[['oid', 'iid']].values,
+        data[['initial', 'finals', 'tone']].values
+    ))
+    eval_size = int(data.shape[0] * 0.1)
+    train_data = dataset.skip(eval_size)
+    eval_data = dataset.take(eval_size)
+
+    LinearPredictor(dialects, chars, (initials, finals, tones)) \
+        .train(train_data, eval_data)
+    MLPPredictor(dialects, chars, (initials, finals, tones)) \
+        .train(train_data, eval_data)
+    ResidualPredictor(dialects, chars, (initials, finals, tones)) \
+        .train(train_data, eval_data)
+    AttentionPredictor(dialects, chars, (initials, finals, tones)) \
+        .train(train_data, eval_data)
+
 
 if __name__ == '__main__':
     prefix = sys.argv[1]
+
     dialect_path = os.path.join(prefix, 'dialect')
-    location = pandas.read_csv(os.path.join(dialect_path, 'location.csv'), index_col=0)
+    location = pandas.read_csv(
+        os.path.join(dialect_path, 'location.csv'),
+        index_col=0
+    ).sample(100)
     char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
-    sample = location.sample(100)
-    data = load_data(dialect_path, sample.index)
+    data = load_data(dialect_path, location.index).sample(frac=0.8)
 
-    predictor = AttentionPredictor(
-        data['oid'].unique(),
-        data['iid'].unique(),
-        (data['initial'].unique(), data['finals'].unique(), data['tone'].unique())
-    )
-
-    dataset = tf.data.Dataset.from_tensor_slices(
-        data[['oid', 'iid', 'initial', 'finals', 'tone']].values
-    ).shuffle(100000).map(lambda x: (x[:2], x[2:]))
-    train_data = dataset.skip(10000)
-    eval_data = dataset.take(10000)
-    predictor.train(train_data, eval_data)
+    benchmark(data)
