@@ -27,6 +27,7 @@ class Predictor(tf.train.Checkpoint):
         targets,
         dialect_emb_size=20,
         char_emb_size=20,
+        target_sim='inner_product',
         l2=0,
         optimizer=None,
         name='predictor'
@@ -38,6 +39,7 @@ class Predictor(tf.train.Checkpoint):
         self.targets = [tf.convert_to_tensor(t) for t in targets]
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
+        self.target_sim = target_sim
         self.l2 = l2
         self.name = name
         self.variables = []
@@ -86,6 +88,17 @@ class Predictor(tf.train.Checkpoint):
             ), name=f'target_emb{i}'))
 
         self.add_variable(self.dialect_emb, self.char_emb, *self.target_embs)
+
+        if self.target_sim == 'inner_product':
+            self.target_biases = []
+            for i, target in enumerate(self.targets):
+                self.target_biases.append(tf.Variable(
+                    init(shape=(target.shape[0],), dtype=tf.float32),
+                    name=f'target_bias{i}'
+                ))
+
+            self.add_variable(*self.target_biases)
+
         self.optimizer = tf.optimizers.Adam(0.02) if optimizer is None else optimizer
 
     def add_variable(self, *args):
@@ -123,10 +136,15 @@ class Predictor(tf.train.Checkpoint):
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
-        logits = [-tf.reduce_sum(
-            tf.square(emb[:, None] - e[None, :]),
-            axis=-1
-        ) for e in self.target_embs]
+
+        if self.target_sim == 'inner_product':
+            logits = [tf.matmul(emb, e, transpose_b=True) + b[None, :] \
+                for e, b in zip(self.target_embs, self.target_biases)]
+        elif self.target_sim == 'euclidean_distance':
+            logits = [-tf.reduce_sum(
+                tf.square(emb[:, None] - e[None, :]),
+                axis=-1
+            ) for e in self.target_embs]
 
         return logits
 
