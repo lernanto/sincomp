@@ -285,6 +285,9 @@ class Predictor(tf.train.Checkpoint):
                 for i in range(acc.shape[0]):
                     tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
 
+                for v in self.variables:
+                    tf.summary.histogram(v.name, v, step=self.epoch)
+
             with eval_writer.as_default():
                 tf.summary.scalar('loss', eval_loss.result(), step=self.epoch)
                 acc = eval_acc.result()
