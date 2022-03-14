@@ -200,37 +200,39 @@ class Predictor(tf.train.Checkpoint):
         char_emb = self.get_char_emb(char)
         logits = self.logits(dialect_emb, char_emb)
 
-        pred_ids = tf.stack(
-            [tf.argmax(l, axis=1, output_type=tf.int32) for i, l in enumerate(logits)],
-            axis=1
-        )
-
         target_ids = tf.stack(
             [self.target_to_id(i, targets[:, i]) for i in range(targets.shape[1])],
             axis=1
         )
 
+        pred_ids = tf.stack(
+            [tf.argmax(l, axis=1) for l in logits],
+            axis=1
+        )
+
         loss = []
-        for i, l in enumerate(logits):
+        for i, (e, l) in enumerate(zip(self.target_embs, logits)):
             loss.append(tf.nn.sparse_softmax_cross_entropy_with_logits(
-                labels=target_ids[:, i],
+                labels=tf.minimum(target_ids[:, i], e.shape[0] - 1),
                 logits=l
             ))
-        loss = tf.reduce_sum(tf.stack(loss, axis=1), axis=1)
+        loss = tf.stack(loss, axis=1)
 
-        if self.l2 > 0:
-            for v in self.variables:
-                loss += self.l2 * tf.reduce_sum(tf.square(v))
-
-        return loss, target_ids, pred_ids
+        acc = tf.cast(target_ids == pred_ids, tf.float32)
+        return loss, acc
 
     @tf.function
     def update(self, dialect, char, targets):
         with tf.GradientTape() as tape:
-            loss, target_ids, pred_ids = self.loss(dialect, char, targets)
-        grad = tape.gradient(loss, self.variables)
+            loss, acc = self.loss(dialect, char, targets)
+            weight = tf.cast(targets != '', tf.float32)
+            grad = tape.gradient(
+                tf.reduce_mean(tf.reduce_sum(loss * weight, axis=1)),
+                self.variables
+            )
+
         self.optimizer.apply_gradients(zip(grad, self.variables))
-        return loss, target_ids, pred_ids
+        return loss, acc, weight
 
     def train(
         self,
@@ -246,12 +248,13 @@ class Predictor(tf.train.Checkpoint):
                 f'{datetime.datetime.now():%Y%m%d%H%M}'
             )
 
-        train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
-        train_acc = tf.keras.metrics.Accuracy('train_acc', dtype=tf.float32)
-        eval_loss = tf.keras.metrics.Mean('eval_loss', dtype=tf.float32)
-        eval_acc = tf.keras.metrics.Accuracy('eval_acc', dtype=tf.float32)
+        train_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        train_acc = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+        eval_loss = tf.keras.metrics.Mean(dtype=tf.float32)
+        eval_acc = tf.keras.metrics.MeanTensor(dtype=tf.float32)
 
-        writer = tf.summary.create_file_writer(output_path)
+        train_writer = tf.summary.create_file_writer(os.path.join(output_path, 'train'))
+        eval_writer = tf.summary.create_file_writer(os.path.join(output_path, 'eval'))
         manager = tf.train.CheckpointManager(
             self,
             os.path.join(output_path, 'checkpoints'),
@@ -260,24 +263,33 @@ class Predictor(tf.train.Checkpoint):
 
         while self.epoch < epochs:
             for dialect, char, targets in train_data.shuffle(10000).batch(batch_size):
-                loss, target_ids, pred_ids = self.update(dialect, char, targets)
-                train_loss.update_state(loss)
-                train_acc.update_state(target_ids, pred_ids)
-
-            for dialect, char, targets in eval_data.batch(batch_size):
-                loss, target_ids, pred_ids = self.loss(dialect, char, targets)
-                eval_loss.update_state(loss)
-                eval_acc.update_state(
-                    target_ids,
-                    pred_ids,
-                    target_ids < tf.cast(tf.stack([t.shape[0] for t in self.targets]), tf.int64)
+                loss, acc, weight = self.update(dialect, char, targets)
+                train_loss.update_state(loss, weight)
+                train_acc.update_state(
+                    tf.reduce_mean(acc, axis=0),
+                    tf.reduce_sum(weight, axis=0)
                 )
 
-            with writer.as_default():
-                tf.summary.scalar(train_loss.name, train_loss.result(), step=self.epoch)
-                tf.summary.scalar(train_acc.name, train_acc.result(), step=self.epoch)
-                tf.summary.scalar(eval_loss.name, eval_loss.result(), step=self.epoch)
-                tf.summary.scalar(eval_acc.name, eval_acc.result(), step=self.epoch)
+            for dialect, char, targets in eval_data.batch(batch_size):
+                loss, acc = self.loss(dialect, char, targets)
+                weight = tf.cast(targets != '', tf.float32)
+                eval_loss.update_state(loss, weight)
+                eval_acc.update_state(
+                    tf.reduce_mean(acc, axis=0),
+                    tf.reduce_sum(weight, axis=0)
+                )
+
+            with train_writer.as_default():
+                tf.summary.scalar('loss', train_loss.result(), step=self.epoch)
+                acc = train_acc.result()
+                for i in range(acc.shape[0]):
+                    tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
+
+            with eval_writer.as_default():
+                tf.summary.scalar('loss', eval_loss.result(), step=self.epoch)
+                acc = eval_acc.result()
+                for i in range(acc.shape[0]):
+                    tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
 
             train_loss.reset_states()
             train_acc.reset_states()
@@ -496,9 +508,9 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
 def benchmark(data):
     dialects = data['oid'].unique()
     chars = data['iid'].unique()
-    initials = data['initial'].unique()
-    finals = data['finals'].unique()
-    tones = data['tone'].unique()
+    initials = data.loc[data['initial'] != '', 'initial'].unique()
+    finals = data.loc[data['finals'] != '', 'finals'].unique()
+    tones = data.loc[data['tone'] != '', 'tone'].unique()
 
     dataset = tf.data.Dataset.from_tensor_slices((
         data['oid'],
