@@ -13,6 +13,7 @@ import os
 import logging
 import datetime
 import pandas
+import numpy
 import tensorflow as tf
 from util import clean_data
 
@@ -151,11 +152,9 @@ class Predictor(tf.train.Checkpoint):
 
         return logits
 
-    @tf.function
-    def predict_id(self, inputs):
-        inputs = tf.convert_to_tensor(inputs)
-        dialect_emb = self.get_dialect_emb(inputs[:, 0])
-        char_emb = self.get_char_emb(inputs[:, 1])
+    def predict_id(self, dialect, char):
+        dialect_emb = self.get_dialect_emb(dialect)
+        char_emb = self.get_char_emb(char)
         logits = self.logits(dialect_emb, char_emb)
         return tf.stack(
             [tf.argmax(l, axis=1, output_type=tf.int32) for l in logits],
@@ -163,22 +162,20 @@ class Predictor(tf.train.Checkpoint):
         )
 
     @tf.function
-    def predict(self, inputs):
-        ids = self.predict_id(inputs)
+    def predict(self, dialect, char):
+        ids = self.predict_id(dialect, char)
         return tf.stack(
             [self.id_to_target(i, ids[:, i]) for i in range(ids.shape[1])],
             axis=1
         )
 
     @tf.function
-    def predict_proba(self, inputs):
-        inputs = tf.convert_to_tensor(inputs)
-        dialect_emb = self.get_dialect_emb(inputs[:, 0])
-        char_emb = self.get_char_emb(inputs[:, 1])
+    def predict_proba(self, dialect, char):
+        dialect_emb = self.get_dialect_emb(dialect)
+        char_emb = self.get_char_emb(char)
         logits = self.logits(dialect_emb, char_emb)
         return [tf.nn.softmax(l) for l in logits]
 
-    @tf.function
     def predict_id_emb(self, dialect_emb, char_emb):
         logits = self.logits(dialect_emb, char_emb)
         return tf.stack(
@@ -186,7 +183,6 @@ class Predictor(tf.train.Checkpoint):
             axis=1
         )
 
-    @tf.function
     def predict_emb(self, dialect_emb, char_emb):
         ids = self.predict_id_emb(dialect_emb, char_emb)
         return tf.stack(
@@ -194,18 +190,14 @@ class Predictor(tf.train.Checkpoint):
             axis=1
         )
 
-    @tf.function
     def predict_proba_emb(self, dialect_emb, char_emb):
         logits = self.logits(dialect_emb, char_emb)
         return [tf.nn.softmax(l) for l in logits]
 
     @tf.function
-    def loss(self, inputs, targets):
-        inputs = tf.convert_to_tensor(inputs)
-        targets = tf.convert_to_tensor(targets)
-
-        dialect_emb = self.get_dialect_emb(inputs[:, 0])
-        char_emb = self.get_char_emb(inputs[:, 1])
+    def loss(self, dialect, char, targets):
+        dialect_emb = self.get_dialect_emb(dialect)
+        char_emb = self.get_char_emb(char)
         logits = self.logits(dialect_emb, char_emb)
 
         pred_ids = tf.stack(
@@ -233,9 +225,9 @@ class Predictor(tf.train.Checkpoint):
         return loss, target_ids, pred_ids
 
     @tf.function
-    def update(self, inputs, targets):
+    def update(self, dialect, char, targets):
         with tf.GradientTape() as tape:
-            loss, target_ids, pred_ids = self.loss(inputs, targets)
+            loss, target_ids, pred_ids = self.loss(dialect, char, targets)
         grad = tape.gradient(loss, self.variables)
         self.optimizer.apply_gradients(zip(grad, self.variables))
         return loss, target_ids, pred_ids
@@ -267,13 +259,13 @@ class Predictor(tf.train.Checkpoint):
         )
 
         while self.epoch < epochs:
-            for inputs, targets in train_data.shuffle(10000).batch(batch_size):
-                loss, target_ids, pred_ids = self.update(inputs, targets)
+            for dialect, char, targets in train_data.shuffle(10000).batch(batch_size):
+                loss, target_ids, pred_ids = self.update(dialect, char, targets)
                 train_loss.update_state(loss)
                 train_acc.update_state(target_ids, pred_ids)
 
-            for inputs, targets in eval_data.batch(batch_size):
-                loss, target_ids, pred_ids = self.loss(inputs, targets)
+            for dialect, char, targets in eval_data.batch(batch_size):
+                loss, target_ids, pred_ids = self.loss(dialect, char, targets)
                 eval_loss.update_state(loss)
                 eval_acc.update_state(
                     target_ids,
@@ -487,7 +479,7 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
             d = pandas.read_csv(
                 fname,
                 encoding='utf-8',
-                dtype={'iid': int, 'initial': str, 'finals': str, 'tone': str},
+                dtype={'iid': numpy.int64, 'initial': str, 'finals': str, 'tone': str},
             )
             d['oid'] = id
             data.append(d)
@@ -502,7 +494,6 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     return data
 
 def benchmark(data):
-    data = data.astype(str)
     dialects = data['oid'].unique()
     chars = data['iid'].unique()
     initials = data['initial'].unique()
@@ -510,7 +501,8 @@ def benchmark(data):
     tones = data['tone'].unique()
 
     dataset = tf.data.Dataset.from_tensor_slices((
-        data[['oid', 'iid']],
+        data['oid'],
+        data['iid'],
         data[['initial', 'finals', 'tone']]
     ))
     eval_size = int(data.shape[0] * 0.1)
