@@ -28,8 +28,11 @@ class Predictor(tf.train.Checkpoint):
         targets,
         dialect_emb_size=20,
         char_emb_size=20,
-        target_sim='inner_product',
+        target_emb_size=10,
         target_bias=True,
+        target_activation=tf.identity,
+        target_sim='inner_product',
+        target_emb_bias=True,
         l2=0,
         optimizer=None,
         name='predictor'
@@ -41,6 +44,11 @@ class Predictor(tf.train.Checkpoint):
         self.targets = [tf.convert_to_tensor(t) for t in targets]
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
+        try:
+            self.target_emb_size = tuple(target_emb_size)
+        except:
+            self.target_emb_size = (target_emb_size,) * len(self.targets)
+        self.target_activation = target_activation
         self.target_sim = target_sim
         self.l2 = l2
         self.name = name
@@ -82,24 +90,38 @@ class Predictor(tf.train.Checkpoint):
                 num_oov_buckets=1
             ))
 
+        self.target_weights = []
         self.target_embs = []
-        for i, target in enumerate(self.targets):
-            self.target_embs.append(tf.Variable(init(
-                shape=(target.shape[0], self.char_emb_size),
-                dtype=tf.float32
-            ), name=f'target_emb{i}'))
+        for i, (target, size) in enumerate(zip(self.targets, self.target_emb_size)):
+            self.target_weights.append(tf.Variable(
+                init(shape=(self.char_emb_size, size), dtype=tf.float32),
+                name=f'target_weight{i}'
+            ))
+            self.target_embs.append(tf.Variable(
+                init(shape=(target.shape[0], size), dtype=tf.float32),
+                name=f'target_emb{i}'
+            ))
 
-        self.add_variable(self.dialect_emb, self.char_emb, *self.target_embs)
+        self.add_variable(
+            self.dialect_emb,
+            self.char_emb,
+            *self.target_weights,
+            *self.target_embs
+        )
 
-        if self.target_sim == 'inner_product' and target_bias:
-            self.target_biases = []
-            for i, target in enumerate(self.targets):
-                self.target_biases.append(tf.Variable(
-                    init(shape=(target.shape[0],), dtype=tf.float32),
-                    name=f'target_bias{i}'
-                ))
-
+        if target_bias:
+            self.target_biases = [tf.Variable(
+                init(shape=(s,), dtype=tf.float32),
+                name=f'target_bias{i}'
+            ) for i, s in enumerate(self.target_emb_size)]
             self.add_variable(*self.target_biases)
+
+        if self.target_sim == 'inner_product' and target_emb_bias:
+            self.target_emb_biases = [tf.Variable(
+                init(shape=(t.shape[0],), dtype=tf.float32),
+                name=f'target_emb_bias{i}'
+            ) for i, t in enumerate(self.targets)]
+            self.add_variable(*self.target_emb_biases)
 
         self.optimizer = tf.optimizers.Adam(0.02) if optimizer is None else optimizer
 
@@ -138,17 +160,25 @@ class Predictor(tf.train.Checkpoint):
 
     def logits(self, dialect_emb, char_emb):
         emb = self.transform(dialect_emb, char_emb)
+        output_embs = [tf.matmul(emb, w) for w in self.target_weights]
+        if hasattr(self, 'target_biases'):
+            output_embs = [e + b[None, :] \
+                for e, b in zip(output_embs, self.target_biases)]
+
+        output_embs = [self.target_activation(e) for e in output_embs]
 
         if self.target_sim == 'inner_product':
-            logits = [tf.matmul(emb, e, transpose_b=True) for e in self.target_embs]
-            if hasattr(self, 'target_biases'):
-                logits = [l + b[None, :] for l, b in zip(logits, self.target_biases)]
+            logits = [tf.matmul(o, t, transpose_b=True) \
+                for o, t in zip(output_embs, self.target_embs)]
+            if hasattr(self, 'target_emb_biases'):
+                logits = [l + b[None, :] \
+                    for l, b in zip(logits, self.target_emb_biases)]
 
         elif self.target_sim == 'euclidean_distance':
             logits = [-tf.reduce_sum(
-                tf.square(emb[:, None] - e[None, :]),
+                tf.square(o[:, None] - t[None, :]),
                 axis=-1
-            ) for e in self.target_embs]
+            ) for o, t in zip(output_embs, self.target_embs)]
 
         return logits
 
