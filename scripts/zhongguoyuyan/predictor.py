@@ -525,6 +525,35 @@ class AttentionPredictor(Predictor):
             trans += self.transform_bias[None, :]
         return char_emb + trans
 
+    def evaluate(self, data, batch_size=100):
+        ret = super().evaluate(data, batch_size)
+
+        dialect_att = []
+        char_att = []
+        for dialect, char, _ in data.batch(batch_size):
+            dialect_att.append(self.dialect_att(self.get_dialect_emb(dialect)))
+            char_att.append(self.char_att(self.get_char_emb(char)))
+
+        dialect_att = tf.concat(dialect_att, axis=0)
+        char_att = tf.concat(char_att, axis=0)
+        att = dialect_att * char_att
+        tf.summary.histogram('dialect_att', dialect_att, step=self.epoch)
+        tf.summary.histogram('char_att', char_att, step=self.epoch)
+        tf.summary.histogram('att', att, step=self.epoch)
+
+        tf.summary.image(
+            'dialect_att_img',
+            tf.transpose(self.dialect_att(self.dialect_emb), perm=[1, 0, 2])[:, :, :, None],
+            step=self.epoch
+        )
+        tf.summary.image(
+            'char_att_img',
+            tf.transpose(self.char_att(self.char_emb), perm=[1, 0, 2])[:, :, :, None],
+            step=self.epoch
+        )
+
+        return ret
+
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
 
@@ -551,9 +580,9 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     logging.info(f'done. loaded {dialects} dialects {data.shape[0]} records')
     return data
 
-def benchmark(data):
-    dialects = data['oid'].unique()
-    chars = data['iid'].unique()
+def benchmark(location, char, data):
+    dialects = location.index
+    chars = char.index
     initials = data.loc[data['initial'] != '', 'initial'].unique()
     finals = data.loc[data['finals'] != '', 'finals'].unique()
     tones = data.loc[data['tone'] != '', 'tone'].unique()
@@ -588,4 +617,4 @@ if __name__ == '__main__':
     char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
     data = load_data(dialect_path, location.index).sample(frac=0.8)
 
-    benchmark(data)
+    benchmark(location, char, data)
