@@ -264,10 +264,39 @@ class Predictor(tf.train.Checkpoint):
         self.optimizer.apply_gradients(zip(grad, self.variables))
         return loss, acc, weight
 
-    def train(
+    def train(self, data, batch_size=100):
+        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
+        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+
+        for dialect, char, targets in data.shuffle(10000).batch(batch_size):
+            loss, acc, weight = self.update(dialect, char, targets)
+            loss_stat.update_state(loss, weight)
+            acc_stat.update_state(
+                tf.reduce_mean(acc, axis=0),
+                tf.reduce_sum(weight, axis=0)
+            )
+
+        return loss_stat.result(), acc_stat.result()
+
+    def evaluate(self, data, batch_size=100):
+        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
+        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+
+        for dialect, char, targets in data.batch(batch_size):
+            loss, acc = self.loss(dialect, char, targets)
+            weight = tf.cast(targets != '', tf.float32)
+            loss_stat.update_state(loss, weight)
+            acc_stat.update_state(
+                tf.reduce_mean(acc, axis=0),
+                tf.reduce_sum(weight, axis=0)
+            )
+
+        return loss_stat.result(), acc_stat.result()
+
+    def fit(
         self,
         train_data,
-        eval_data,
+        eval_data=None,
         epochs=20,
         batch_size=100,
         output_path=None
@@ -278,13 +307,9 @@ class Predictor(tf.train.Checkpoint):
                 f'{datetime.datetime.now():%Y%m%d%H%M}'
             )
 
-        train_loss = tf.keras.metrics.Mean(dtype=tf.float32)
-        train_acc = tf.keras.metrics.MeanTensor(dtype=tf.float32)
-        eval_loss = tf.keras.metrics.Mean(dtype=tf.float32)
-        eval_acc = tf.keras.metrics.MeanTensor(dtype=tf.float32)
-
         train_writer = tf.summary.create_file_writer(os.path.join(output_path, 'train'))
-        eval_writer = tf.summary.create_file_writer(os.path.join(output_path, 'eval'))
+        if eval_data is not None:
+            eval_writer = tf.summary.create_file_writer(os.path.join(output_path, 'eval'))
         manager = tf.train.CheckpointManager(
             self,
             os.path.join(output_path, 'checkpoints'),
@@ -292,42 +317,30 @@ class Predictor(tf.train.Checkpoint):
         )
 
         while self.epoch < epochs:
-            for dialect, char, targets in train_data.shuffle(10000).batch(batch_size):
-                loss, acc, weight = self.update(dialect, char, targets)
-                train_loss.update_state(loss, weight)
-                train_acc.update_state(
-                    tf.reduce_mean(acc, axis=0),
-                    tf.reduce_sum(weight, axis=0)
-                )
-
-            for dialect, char, targets in eval_data.batch(batch_size):
-                loss, acc = self.loss(dialect, char, targets)
-                weight = tf.cast(targets != '', tf.float32)
-                eval_loss.update_state(loss, weight)
-                eval_acc.update_state(
-                    tf.reduce_mean(acc, axis=0),
-                    tf.reduce_sum(weight, axis=0)
-                )
-
             with train_writer.as_default():
-                tf.summary.scalar('loss', train_loss.result(), step=self.epoch)
-                acc = train_acc.result()
+                loss, acc = self.train(train_data)
+                tf.summary.scalar('loss', loss, step=self.epoch)
                 for i in range(acc.shape[0]):
                     tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
 
                 for v in self.variables:
                     tf.summary.histogram(v.name, v, step=self.epoch)
 
-            with eval_writer.as_default():
-                tf.summary.scalar('loss', eval_loss.result(), step=self.epoch)
-                acc = eval_acc.result()
-                for i in range(acc.shape[0]):
-                    tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
+            if eval_data is not None:
+                with eval_writer.as_default():
+                    loss, acc = self.evaluate(eval_data)
+                    tf.summary.scalar('loss', loss, step=self.epoch)
+                    for i in range(acc.shape[0]):
+                        tf.summary.scalar(f'accuracy{i}', acc[i], step=self.epoch)
 
-            train_loss.reset_states()
-            train_acc.reset_states()
-            eval_loss.reset_states()
-            eval_acc.reset_states()
+                    emb = tf.concat(
+                        [self.transform(
+                            self.get_dialect_emb(dialect),
+                            self.get_char_emb(char)
+                        ) for dialect, char, _ in eval_data.batch(batch_size)],
+                        axis=0
+                    )
+                    tf.summary.histogram('trans_emb', emb, step=self.epoch)
 
             self.epoch.assign_add(1)
             manager.save()
@@ -555,13 +568,13 @@ def benchmark(data):
     eval_data = dataset.take(eval_size)
 
     LinearPredictor(dialects, chars, (initials, finals, tones)) \
-        .train(train_data, eval_data)
+        .fit(train_data, eval_data=eval_data)
     MLPPredictor(dialects, chars, (initials, finals, tones)) \
-        .train(train_data, eval_data)
+        .fit(train_data, eval_data=eval_data)
     ResidualPredictor(dialects, chars, (initials, finals, tones)) \
-        .train(train_data, eval_data)
+        .fit(train_data, eval_data=eval_data)
     AttentionPredictor(dialects, chars, (initials, finals, tones)) \
-        .train(train_data, eval_data)
+        .fit(train_data, eval_data=eval_data)
 
 
 if __name__ == '__main__':
