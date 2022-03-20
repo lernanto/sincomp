@@ -450,105 +450,109 @@ class AttentionPredictor(Predictor):
     def __init__(
         self,
         *args,
-        transform_heads=1,
-        transform_size=100,
-        dialect_att_bias=True,
-        dialect_att_activation=tf.nn.sigmoid,
+        transform_heads=5,
+        char_att_size=20,
         char_att_bias=True,
         char_att_activation=tf.nn.sigmoid,
+        att_bias=True,
+        att_activation=tf.nn.sigmoid,
+        transform_size=20,
         transform_bias=False,
         name='attention_predictor',
         **kwargs
     ):
         super().__init__(*args, name=name, **kwargs)
 
-        self.dialect_att_activation = dialect_att_activation
         self.char_att_activation = char_att_activation
+        self.att_activation = att_activation
 
         init = tf.random_normal_initializer()
-        self.dialect_att_weight = tf.Variable(init(
-            shape=(self.dialect_emb_size, transform_heads, transform_size),
-            dtype=tf.float32
-        ), name='dialect_att_weight')
         self.char_att_weight = tf.Variable(init(
-            shape=(self.char_emb_size, transform_heads, transform_size),
+            shape=(transform_heads, self.char_emb_size, char_att_size),
             dtype=tf.float32
         ), name='char_att_weight')
+        self.att_weight = tf.Variable(
+            init(shape=(
+                transform_heads,
+                self.dialect_emb_size + char_att_size,
+                transform_size
+            ), dtype=tf.float32),
+            name='char_att_weight'
+        )
         self.trans_weight = tf.Variable(init(
             shape=(transform_heads, transform_size, self.char_emb_size),
             dtype=tf.float32
         ), name='trans_weight')
 
         self.add_variable(
-            self.dialect_att_weight,
             self.char_att_weight,
+            self.att_weight,
             self.trans_weight
         )
 
-        if dialect_att_bias:
-            self.dialect_att_bias = tf.Variable(
-                init(shape=(transform_heads, transform_size), dtype=tf.float32),
-                name='dialect_att_bias'
-            )
-            self.add_variable(self.dialect_att_bias)
-
         if char_att_bias:
             self.char_att_bias = tf.Variable(
-                init(shape=(transform_heads, transform_size), dtype=tf.float32),
+                init(shape=(transform_heads, char_att_size), dtype=tf.float32),
                 name='char_att_bias'
             )
             self.add_variable(self.char_att_bias)
 
-        if transform_bias:
-            self.transform_bias = tf.Variable(
-                init(shape=(self.char_emb_size,), dtype=tf.float32),
-                name='transform_bias'
+        if att_bias:
+            self.att_bias = tf.Variable(
+                init(shape=(transform_heads, transform_size), dtype=tf.float32),
+                name='att_bias'
             )
-            self.add_variable(self.transform_bias)
+            self.add_variable(self.att_bias)
 
-    def dialect_att(self, dialect_emb):
-        att = tf.tensordot(dialect_emb, self.dialect_att_weight, [1, 0])
-        if hasattr(self, 'dialect_att_bias'):
-            att += self.dialect_att_bias[None, :, :]
-        return self.dialect_att_activation(att)
+        if transform_bias:
+            self.trans_bias = tf.Variable(
+                init(shape=(self.char_emb_size,), dtype=tf.float32),
+                name='trans_bias'
+            )
+            self.add_variable(self.trans_bias)
 
     def char_att(self, char_emb):
-        att = tf.tensordot(char_emb, self.char_att_weight, [1, 0])
+        att = tf.matmul(char_emb[None, :, :], self.char_att_weight)
         if hasattr(self, 'char_att_bias'):
-            att += self.char_att_bias[None, :, :]
+            att += self.char_att_bias[:, None, :]
         return self.char_att_activation(att)
 
+    def att(self, dialect_emb, char_emb):
+        char_att = self.char_att(char_emb)
+        return self.att_activation(tf.matmul(
+            tf.concat([
+                tf.repeat(dialect_emb[None, :, :], char_att.shape[0], axis=0),
+                char_att
+            ], axis=2),
+            self.att_weight
+        ) + self.att_bias[:, None, :])
+
     def transform(self, dialect_emb, char_emb):
-        att = self.dialect_att(dialect_emb) * self.char_att(char_emb)
-        trans = tf.tensordot(att, self.trans_weight, [[1, 2], [0, 1]])
-        if hasattr(self, 'transform_bias'):
-            trans += self.transform_bias[None, :]
+        att = self.att(dialect_emb, char_emb)
+        trans = tf.tensordot(att, self.trans_weight, axes=[[0, 2], [0, 1]])
+        if hasattr(self, 'trans_bias'):
+            trans += self.trans_bias[None, :]
         return char_emb + trans
 
     def evaluate(self, data, batch_size=100):
         ret = super().evaluate(data, batch_size)
 
-        dialect_att = []
         char_att = []
+        att = []
         for dialect, char, _ in data.batch(batch_size):
-            dialect_att.append(self.dialect_att(self.get_dialect_emb(dialect)))
-            char_att.append(self.char_att(self.get_char_emb(char)))
+            dialect_emb = self.get_dialect_emb(dialect)
+            char_emb = self.get_char_emb(char)
+            char_att.append(self.char_att(char_emb))
+            att.append(self.att(dialect_emb, char_emb))
 
-        dialect_att = tf.concat(dialect_att, axis=0)
-        char_att = tf.concat(char_att, axis=0)
-        att = dialect_att * char_att
-        tf.summary.histogram('dialect_att', dialect_att, step=self.epoch)
+        char_att = tf.concat(char_att, axis=1)
+        att = tf.concat(att, axis=1)
         tf.summary.histogram('char_att', char_att, step=self.epoch)
         tf.summary.histogram('att', att, step=self.epoch)
 
         tf.summary.image(
-            'dialect_att_img',
-            tf.transpose(self.dialect_att(self.dialect_emb), perm=[1, 0, 2])[:, :, :, None],
-            step=self.epoch
-        )
-        tf.summary.image(
             'char_att_img',
-            tf.transpose(self.char_att(self.char_emb), perm=[1, 0, 2])[:, :, :, None],
+            self.char_att(self.char_emb)[:, :, :, None],
             step=self.epoch
         )
 
