@@ -14,7 +14,6 @@ import sys
 import os
 import logging
 import pandas
-import geopandas
 import numpy
 import scipy.sparse
 import scipy.cluster.hierarchy
@@ -22,7 +21,6 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 import joblib
 import colorspacious
-import matplotlib
 import seaborn
 import plotly.express
 import plotly.figure_factory
@@ -710,6 +708,6 @@ if __name__ == '__main__':
     pandas.DataFrame(chisq, index=ids, columns=ids) \
         .to_csv('chi2.csv', line_terminator='\n')
 
-    ent = entropy(data.values)
+    ent = entropy(data.values, parallel=4)
     pandas.DataFrame(ent, index=ids, columns=ids) \
         .to_csv('entropy.csv', line_terminator='\n')
