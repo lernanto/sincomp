@@ -27,6 +27,68 @@ import plotly.figure_factory
 import folium
 
 
+def clean_data(data):
+    '''清洗方言字音数据中的录入错误'''
+
+    ipa = 'A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f' \
+        + '\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\ufffb' \
+        + '\U00010780-\U000107ba\U0001df00-\U0001df1e'
+
+    clean = data.copy()
+
+    # 有些符号使用了多种写法，统一成较常用的一种
+    clean['initial'] = clean['initial'].fillna('').str.lower() \
+        .str.replace(f'[^{ipa}]', '') \
+        .str.replace('[\u00f8\u01ff]', '\u2205') \
+        .str.replace('\ufffb', ' ') \
+        .str.replace('\u02a3', 'dz') \
+        .str.replace('\u02a4', 'dʒ') \
+        .str.replace('\u02a5', 'dʑ') \
+        .str.replace('\u02a6', 'ts') \
+        .str.replace('\u02a7', 'tʃ') \
+        .str.replace('\u02a8', 'tɕ') \
+        .str.replace('[\u02b0\u02b1]', 'h') \
+        .str.replace('g', 'ɡ')
+
+    mask = clean['initial'] != data['initial']
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'initial'],
+            'clean': clean.loc[mask, 'initial']
+        }).value_counts().iteritems():
+            logging.warning(f'replace {r} -> {c} {cnt}')
+
+    clean['finals'] = clean['finals'].fillna('').str.lower() \
+        .str.replace(f'[^{ipa}]', '')
+
+    mask = clean['finals'] != data['finals']
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'finals'],
+            'clean': clean.loc[mask, 'finals']
+        }).value_counts().iteritems():
+            logging.warning(f'replace {r} -> {c} {cnt}')
+
+    # 部分声调被错误转为日期格式，还原成数字
+    clean['tone'].fillna('', inplace=True)
+    mask = clean['tone'].str.match(r'^\d+年\d+月\d+日$')
+    clean.loc[mask, 'tone'] = pandas.to_datetime(
+        clean.loc[mask, 'tone'],
+        format=r'%Y年%m月%d日'
+    ).dt.dayofyear.astype(str)
+    clean.loc[~mask, 'tone'] = clean.loc[~mask, 'tone'].str.lower() \
+        .str.replace(r'[^1-5]', '')
+
+    mask = clean['tone'] != data['tone']
+    if numpy.count_nonzero(mask):
+        for (r, c), cnt in pandas.DataFrame({
+            'raw': data.loc[mask, 'tone'],
+            'clean': clean.loc[mask, 'tone']
+        }).value_counts().iteritems():
+            logging.warning(f'replace {r} -> {c} {cnt}')
+
+    return clean
+
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
 
@@ -38,26 +100,29 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     for id in ids:
         try:
             fname = os.path.join(prefix, id + suffix)
+            logging.info(f'loading {fname} ...')
             d = pandas.read_csv(fname, encoding='utf-8', dtype=str)
-
-            # 记录部分有值部分为空会导致统计数据细微偏差
-            empty = d[columns].isna() | (d[columns] == '')
-            empty = empty.any(axis=1) & ~empty.all(axis=1)
-            empty_num = numpy.count_nonzero(empty)
-            if empty_num > 0:
-                logging.warning('{}/{} records from {} are partially empty, drop to avoid problems'.format(
-                    empty_num,
-                    d.shape[0],
-                    fname
-                ))
-                logging.warning(d[empty])
-
-                d = d[~empty]
-
-            dialects.append(d)
-            load_ids.append(id)
         except Exception as e:
             logging.error('cannot load file {}: {}'.format(fname, e))
+            continue
+
+        d = clean_data(d)
+
+        # 记录部分有值部分为空会导致统计数据细微偏差
+        invalid = (d[columns].isna() | (d[columns] == '')).any(axis=1)
+        invalid_num = numpy.count_nonzero(invalid)
+        if invalid_num > 0:
+            logging.warning('drop {}/{} invalid records from {}'.format(
+                invalid_num,
+                d.shape[0],
+                fname
+            ))
+            logging.warning(d[invalid])
+
+            d = d[~invalid]
+
+        dialects.append(d)
+        load_ids.append(id)
 
     logging.info('done. {} data loaded'.format(len(dialects)))
 
@@ -67,7 +132,8 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
         keys=load_ids
     ).fillna('')
 
-    logging.info('load data of {} characters'.format(data.shape[0]))
+    logging.info(f'load data of {data.shape[0]} characters x {len(dialects)} dialects, ' \
+        + f'{sum(d.shape[0] for d in dialects)} valid records')
     return load_ids, data
 
 def cross_features(data, column=3):
