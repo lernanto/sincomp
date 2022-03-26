@@ -25,69 +25,8 @@ import seaborn
 import plotly.express
 import plotly.figure_factory
 import folium
+from util import clean_data
 
-
-def clean_data(data):
-    '''清洗方言字音数据中的录入错误'''
-
-    ipa = 'A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f' \
-        + '\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\ufffb' \
-        + '\U00010780-\U000107ba\U0001df00-\U0001df1e'
-
-    clean = data.copy()
-
-    # 有些符号使用了多种写法，统一成较常用的一种
-    clean['initial'] = clean['initial'].fillna('').str.lower() \
-        .str.replace(f'[^{ipa}]', '') \
-        .str.replace('[\u00f8\u01ff]', '\u2205') \
-        .str.replace('\ufffb', ' ') \
-        .str.replace('\u02a3', 'dz') \
-        .str.replace('\u02a4', 'dʒ') \
-        .str.replace('\u02a5', 'dʑ') \
-        .str.replace('\u02a6', 'ts') \
-        .str.replace('\u02a7', 'tʃ') \
-        .str.replace('\u02a8', 'tɕ') \
-        .str.replace('[\u02b0\u02b1]', 'h') \
-        .str.replace('g', 'ɡ')
-
-    mask = clean['initial'] != data['initial']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'initial'],
-            'clean': clean.loc[mask, 'initial']
-        }).value_counts().iteritems():
-            logging.warning(f'replace {r} -> {c} {cnt}')
-
-    clean['finals'] = clean['finals'].fillna('').str.lower() \
-        .str.replace(f'[^{ipa}]', '')
-
-    mask = clean['finals'] != data['finals']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'finals'],
-            'clean': clean.loc[mask, 'finals']
-        }).value_counts().iteritems():
-            logging.warning(f'replace {r} -> {c} {cnt}')
-
-    # 部分声调被错误转为日期格式，还原成数字
-    clean['tone'].fillna('', inplace=True)
-    mask = clean['tone'].str.match(r'^\d+年\d+月\d+日$')
-    clean.loc[mask, 'tone'] = pandas.to_datetime(
-        clean.loc[mask, 'tone'],
-        format=r'%Y年%m月%d日'
-    ).dt.dayofyear.astype(str)
-    clean.loc[~mask, 'tone'] = clean.loc[~mask, 'tone'].str.lower() \
-        .str.replace(r'[^1-5]', '')
-
-    mask = clean['tone'] != data['tone']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'tone'],
-            'clean': clean.loc[mask, 'tone']
-        }).value_counts().iteritems():
-            logging.warning(f'replace {r} -> {c} {cnt}')
-
-    return clean
 
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
