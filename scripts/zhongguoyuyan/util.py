@@ -34,7 +34,7 @@ def clean_data(data, minfreq=1):
     clean['initial'] = clean['initial'].fillna('').str.lower() \
         .str.replace(f'[^{ipa}]', '', regex=True) \
         .str.replace('[\u00f8\u01ff]', '\u2205', regex=True) \
-        .str.replace('\ufffb', ' ') \
+        .str.replace('\ufffb', '_') \
         .str.replace('\u02a3', 'dz') \
         .str.replace('\u02a4', 'dʒ') \
         .str.replace('\u02a5', 'dʑ') \
@@ -101,3 +101,41 @@ def clean_data(data, minfreq=1):
             logging.warning(f'replace {r} -> {c} {cnt}')
 
     return clean
+
+def get_dialect(location):
+    '''从方言信息中获取所属方言区'''
+
+    def clean(tag):
+        '''清洗原始的方言区标记'''
+
+        tag = tag.fillna('')
+
+        return numpy.where(
+            tag.str.contains('客'),
+            '客家方言',
+            numpy.where(
+                tag.str.contains('平'),
+                '平话',
+                numpy.where(
+                    tag.str.contains('[吴闽赣粤湘晋徽]'),
+                    tag.str.replace('.*([吴闽赣粤湘晋徽]).*', r'\1方言', regex=True),
+                    numpy.where(
+                        tag.str.contains('北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南'),
+                        tag.str.replace(
+                            '.*(北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南).*',
+                            r'\1官话',
+                            regex=True
+                        ),
+                        numpy.where(
+                            tag.str.contains('湖南|韶州'),
+                            tag.str.replace('.*(湖南|韶州).*', r'\1土话', regex=True),
+                            ''
+                        )
+                    )
+                )
+            )
+        ).astype(str)
+
+    # 有些方言区，主要是官话的大区被标在不同的字段，尽力尝试获取
+    dialect = clean(location['area'])
+    return numpy.where(dialect != '', dialect, clean(location['slice']))
