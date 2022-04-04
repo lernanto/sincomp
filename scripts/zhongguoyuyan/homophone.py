@@ -65,7 +65,12 @@ class FeatureClustering:
         
         if self.pooling_func == numpy.mean \
             and hasattr(self.transformer_, 'cluster_centers_'):
-            return self.transformer_.cluster_centers_
+            result = self.transformer_.cluster_centers_.T
+            if scipy.sparse.issparse(X):
+                result = scipy.sparse.csr_matrix(result)
+
+            return result
+
         else:
             return self.transform(X)
 
@@ -129,8 +134,14 @@ class PhoneClustering(FeatureClustering):
                 .groupby(self.labels_).agg(''.join))
 
 class Homophone:
-    def __init__(self, affinity=cosine_similarity, dtype=numpy.float64):
+    def __init__(
+        self,
+        affinity=cosine_similarity,
+        interaction_only=False,
+        dtype=numpy.float64
+    ):
         self.affinity = affinity
+        self.interaction_only = interaction_only
         self.dtype = dtype
 
     def fit(self, X, y=None):
@@ -138,17 +149,42 @@ class Homophone:
         return self
 
     def transform(self, X):
-        result = []
+        trius = []
         for i in range(X.shape[0]):
             features = CountVectorizer(
                 lowercase=False,
                 token_pattern=r'\S+',
                 dtype=self.dtype
-            ).fit_transform( X.iloc[i] if hasattr(X, 'iloc') else X[i])
-            sim = self.affinity(features)
-            result.append(scipy.sparse.csr_matrix(sim[numpy.triu_indices_from(sim)]))
+            ).fit_transform(X.iloc[i] if hasattr(X, 'iloc') else X[i])
+            sim = self.affinity(features, dense_output=False)
 
-        return scipy.sparse.vstack(result, format='csr')
+            if scipy.sparse.issparse(sim):
+                # 利用稀疏矩阵的特性加速上三角阵计算
+                # 计算变换后坐标的映射关系
+                row, col = scipy.sparse.triu(sim).nonzero()
+                data = sim[row, col].A.squeeze()
+
+                if self.interaction_only:
+                    # TODO: 排除对角线元素
+                    ...
+                else:
+                    col = row * (2 * sim.shape[1] - row - 1) // 2 + col
+                    shape = sim.shape[1] * (sim.shape[1] + 1) // 2
+
+                row = numpy.zeros_like(col)
+                triu = scipy.sparse.csr_matrix(
+                    (data, (row, col)),
+                    shape=(1, shape)
+                )
+            else:
+                triu = sim[numpy.triu_indices_from(sim)]
+
+            trius.append(triu)
+
+        if scipy.sparse.issparse(trius[0]):
+            return scipy.sparse.vstack(trius, format='csr')
+        else:
+            return numpy.stack(trius)
 
     def fit_transform(self, X, y=None):
         return self.fit(X, y).transform(X)
@@ -158,7 +194,8 @@ class Homophone:
         if input_features is None:
             return [f'x{i}=x{j}' for i, j in zip(*indices)]
         else:
-            return [f'{input_features[i]}={input_features[j]}' for i, j in zip(*indices)]
+            return [f'{input_features[i]}={input_features[j]}' \
+                for i, j in zip(*indices)]
 
 class HomophoneClustering(FeatureClustering):
     def __init__(self, method='kmeans', n_clusters=1000, **kwargs):
@@ -166,9 +203,11 @@ class HomophoneClustering(FeatureClustering):
 
     def get_feature_names(self, input_features=None):
         if input_features is None:
-            return [f'x{numpy.where(self.labels_ == i)[0][0]}' for i in range(self.classes_.shape[0])]
+            return [f'x{numpy.where(self.labels_ == i)[0][0]}' \
+                for i in range(self.classes_.shape[0])]
         else:
-            return list(pandas.Series(input_features).groupby(self.labels_).agg('_'.join))
+            return list(pandas.Series(input_features) \
+                .groupby(self.labels_).agg('_'.join))
 
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
