@@ -10,6 +10,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import os
 import logging
 from tokenize import Special
+from matplotlib.pyplot import sci
 import pandas
 import numpy
 import scipy.sparse
@@ -18,14 +19,13 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.feature_selection import VarianceThreshold
 from sklearn.cluster import KMeans, SpectralClustering, spectral_clustering
 from sklearn.metrics.pairwise import linear_kernel, cosine_similarity
 from util import clean_data
 
 
 class FeatureClustering:
-    def __init__(self, method='kmeans', n_clusters=100, pooling_func=numpy.mean):
+    def __init__(self, method='kmeans', n_clusters=100, pooling_func='mean'):
         self.method = method
         self.n_clusters = n_clusters
         self.pooling_func = pooling_func
@@ -45,32 +45,48 @@ class FeatureClustering:
         return self
 
     def transform(self, X):
-        if scipy.sparse.issparse(X) and self.pooling_func == numpy.mean:
+        if scipy.sparse.issparse(X) and self.pooling_func in ('sum', 'mean'):
             # 利用稀疏矩阵运算加快速度
-            group = scipy.sparse.csr_matrix((
+            T = scipy.sparse.csr_matrix((
                 numpy.ones_like(self.labels_),
                 (numpy.arange(self.labels_.shape[0]), self.labels_)
             ))
-            counts = group.sum(axis=0).A.squeeze()
-            diag = scipy.sparse.diags(numpy.where(counts == 0, 0, 1 / counts))
-            return X * (group * diag)
+
+            if self.pooling_func == 'mean':
+                counts = T.sum(axis=0).A.squeeze()
+                diag = scipy.sparse.diags(numpy.where(counts == 0, 0, 1 / counts))
+                T *= diag
+
+            return X * T
 
         else:
-            return numpy.column_stack([self.pooling_func(
+            if self.pooling_func == 'sum':
+                pooling_func = numpy.sum
+            elif self.pooling_func == 'mean':
+                pooling_func = numpy.mean
+            else:
+                pooling_func = self.pooling_func
+
+            X_t = [pooling_func(
                 (X.iloc if hasattr(X, 'iloc') else X)[:, self.labels_ == i],
                 axis=1
-            ) for i in self.classes_])
+            ) for i in self.classes_]
+
+            if scipy.sparse.issparse(X_t[0]):
+                return scipy.sparse.hstack(X_t, format='csr')
+            else:
+                return numpy.column_stack(X_t)
 
     def fit_transform(self, X, y=None):
         self.fit(X, y)
         
         if self.pooling_func == numpy.mean \
             and hasattr(self.transformer_, 'cluster_centers_'):
-            result = self.transformer_.cluster_centers_.T
+            X_t = self.transformer_.cluster_centers_.T
             if scipy.sparse.issparse(X):
-                result = scipy.sparse.csr_matrix(result)
+                X_t = scipy.sparse.csr_matrix(X_t)
 
-            return result
+            return X_t
 
         else:
             return self.transform(X)
@@ -110,7 +126,14 @@ class PhoneVectorizer(ColumnTransformer):
         return super().fit_transform(X, y)
 
 class PhoneClustering(FeatureClustering):
-    def __init__(self, method='kmeans', n_clusters=100, n_jobs=None):
+    def __init__(
+        self,
+        method='kmeans',
+        n_clusters=100,
+        dtype=numpy.float64,
+        n_jobs=None
+    ):
+        self.dtype = dtype
         self.n_jobs = n_jobs
 
         if method == 'kmeans':
@@ -121,7 +144,10 @@ class PhoneClustering(FeatureClustering):
             transformer = copy.deepcopy(method)
 
         super().__init__(
-            method=make_pipeline(PhoneVectorizer(n_jobs=self.n_jobs), transformer),
+            method=make_pipeline(
+                PhoneVectorizer(dtype=self.dtype, n_jobs=self.n_jobs),
+                transformer
+            ),
             n_clusters=n_clusters,
             pooling_func=lambda x, axis: numpy.apply_along_axis(' '.join, axis, x)
         )
@@ -161,24 +187,30 @@ class Homophone:
 
             if scipy.sparse.issparse(sim):
                 # 利用稀疏矩阵的特性加速上三角阵计算
-                # 计算变换后坐标的映射关系
-                row, col = scipy.sparse.triu(sim).nonzero()
-                data = sim[row, col].A.squeeze()
-
+                # 根据坐标映射关系计算变换后的坐标
                 if self.interaction_only:
-                    # TODO: 排除对角线元素
-                    ...
+                    # 不计入和自己的读音相似度，排除相似度矩阵的对角线元素
+                    row, col = scipy.sparse.triu(sim, 1).nonzero()
+                    new_col = row * (2 * sim.shape[1] - row - 3) // 2 + col
+                    shape = sim.shape[1] * (sim.shape[1] - 1) // 2
                 else:
-                    col = row * (2 * sim.shape[1] - row - 1) // 2 + col
+                    row, col = scipy.sparse.triu(sim).nonzero()
+                    new_col = row * (2 * sim.shape[1] - row - 1) // 2 + col
                     shape = sim.shape[1] * (sim.shape[1] + 1) // 2
 
-                row = numpy.zeros_like(col)
+                data = sim[row, col].A.squeeze()
+                new_row = numpy.zeros_like(new_col)
                 triu = scipy.sparse.csr_matrix(
-                    (data, (row, col)),
+                    (data, (new_row, new_col)),
                     shape=(1, shape)
                 )
             else:
-                triu = sim[numpy.triu_indices_from(sim)]
+                if self.interaction_only:
+                    indices = numpy.triu_indices_from(sim, 1)
+                else:
+                    indices = numpy.triu_indices_from(sim)
+
+                triu = sim[indices]
 
             trius.append(triu)
 
@@ -199,8 +231,8 @@ class Homophone:
                 for i, j in zip(*indices)]
 
 class HomophoneClustering(FeatureClustering):
-    def __init__(self, method='kmeans', n_clusters=1000, **kwargs):
-        super().__init__(method=method, n_clusters=n_clusters, **kwargs)
+    def __init__(self, n_clusters=1000, **kwargs):
+        super().__init__(n_clusters=n_clusters, **kwargs)
 
     def get_feature_names(self, input_features=None):
         if input_features is None:
