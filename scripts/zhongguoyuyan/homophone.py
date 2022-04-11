@@ -18,7 +18,6 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.cluster import KMeans, SpectralClustering, spectral_clustering
-from sklearn.metrics.pairwise import linear_kernel, cosine_similarity
 from util import clean_data
 
 
@@ -158,10 +157,31 @@ class PhoneClustering(FeatureClustering):
             return list(pandas.Series(input_features) \
                 .groupby(self.labels_).agg(''.join))
 
+class SmoothSimilarity:
+    def __init__(self, smooth=1):
+        self.smooth = smooth
+
+    def __call__(self, X, Y=None, **kwargs):
+        X_norm = X.sum(axis=1).A.squeeze() + self.smooth
+        if Y is None:
+            Y = X
+            Y_norm = X_norm
+        else:
+            Y_norm = Y.sum(axis=1).A.squeeze() + self.smooth
+
+        if scipy.sparse.issparse(X) and scipy.sparse.issparse(Y):
+            return scipy.sparse.diags(1 / X_norm) * X \
+                * Y.T * scipy.sparse.diags(1 / Y_norm)
+        else:
+            return numpy.dot(
+                numpy.asarray(X / X_norm[:, None]),
+                numpy.asarray(Y / Y_norm[:, None]).T
+            )
+
 class Homophone:
     def __init__(
         self,
-        affinity=cosine_similarity,
+        affinity=SmoothSimilarity(),
         interaction_only=False,
         dtype=numpy.float64
     ):
