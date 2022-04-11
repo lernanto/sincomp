@@ -13,6 +13,9 @@ import pandas
 import numpy
 import scipy.sparse
 import copy
+import sklearn.feature_selection
+import sklearn.pipeline
+import sklearn.compose
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder
@@ -259,6 +262,34 @@ class HomophoneClustering(FeatureClustering):
         else:
             return list(pandas.Series(input_features) \
                 .groupby(self.labels_).agg('_'.join))
+
+class VarianceThreshold(sklearn.feature_selection.VarianceThreshold):
+    def get_feature_names(self, input_features=None):
+        indices = self.get_support(indices=True)
+        if input_features is None:
+            return [f'x{i}' for i in indices]
+        else:
+            return [input_features[i] for i in indices]
+
+class Pipeline(sklearn.pipeline.Pipeline):
+    def get_feature_names(self, input_features=None):
+        feature_names = input_features
+        for _, estimator in self.steps:
+            feature_names = estimator.get_feature_names(feature_names)
+
+        return feature_names
+
+class ColumnTransformer(sklearn.compose.ColumnTransformer):
+    def get_feature_names(self, input_features=None):
+        return [f'{name}_{n}' for name, transformer, col in self.transformers_ \
+            for n in transformer.get_feature_names(input_features[col])]
+
+def make_pipeline(*steps, memory=None, verbose=False):
+    return Pipeline(
+        sklearn.pipeline._name_estimators(steps),
+        memory=memory,
+        verbose=verbose
+    )
 
 def load_data(prefix, ids, suffix='mb01dz.csv'):
     '''加载方言字音数据'''
