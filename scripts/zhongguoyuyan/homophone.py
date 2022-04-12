@@ -1,3 +1,4 @@
+#!/usr/bin/python3 -O
 # -*- coding: utf-8 -*-
 
 '''
@@ -7,6 +8,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import sys
 import os
 import logging
 import pandas
@@ -327,3 +329,40 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
 
     logging.info(f'load data of {data.shape[0]} dialects x {data.columns.levels[1].shape[0]} characters')
     return data
+
+
+if __name__ == '__main__':
+    logging.getLogger().setLevel(logging.INFO)
+
+    prefix = sys.argv[1]
+    dialect_path = os.path.join(prefix, 'dialect')
+    location = pandas.read_csv(
+        os.path.join(dialect_path, 'location.csv'),
+        encoding='utf-8',
+        index_col=0
+    )
+    char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
+    data = load_data(dialect_path, location.index) \
+        .reindex(char.index, axis=1, level=1)
+
+    transformer = ColumnTransformer(transformers=[(
+        col,
+        make_pipeline(
+            PhoneClustering(dtype=numpy.float32, n_clusters=200),
+            Homophone(dtype=numpy.float32),
+            VarianceThreshold(threshold=0.998 * (1 - 0.998)),
+            HomophoneClustering(n_clusters=1000)
+        ),
+        data.columns.get_loc(col)
+    ) for col in data.columns.levels[0]], sparse_threshold=0, n_jobs=3)
+    homophones = transformer.fit_transform(data)
+
+    feature_names = transformer.get_feature_names(
+        char['item'].reindex(data.columns, level=1)
+    )
+    homophones = pandas.DataFrame(
+        homophones,
+        index=data.index.set_names('id'),
+        columns=feature_names
+    )
+    homophones.to_csv('homophone.csv', line_terminator='\n')
