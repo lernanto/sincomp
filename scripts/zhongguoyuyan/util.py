@@ -15,8 +15,8 @@ import numpy
 def clean_data(data, minfreq=1):
     '''清洗方言字音数据中的录入错误'''
 
-    ipa = 'A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f' \
-        + '\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\ufffb' \
+    ipa = ':A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f' \
+        + '\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\uff1a\ufffb' \
         + '\U00010780-\U000107ba\U0001df00-\U0001df1e'
 
     clean = data.copy()
@@ -51,7 +51,9 @@ def clean_data(data, minfreq=1):
             logging.warning(f'replace {r} -> {c} {cnt}')
 
     clean['finals'] = clean['finals'].fillna('').str.lower() \
-        .str.replace(f'[^{ipa}]', '', regex=True)
+        .str.replace(f'[^{ipa}]', '', regex=True) \
+        .str.replace(':', 'ː') \
+        .str.replace('：', 'ː')
 
     if minfreq > 1:
         clean.loc[
@@ -75,7 +77,7 @@ def clean_data(data, minfreq=1):
         format=r'%Y年%m月%d日'
     ).dt.dayofyear.astype(str)
     clean.loc[~mask, 'tone'] = clean.loc[~mask, 'tone'].str.lower() \
-        .str.replace(r'[^1-5]', '', regex=True)
+        .str.replace(r'[^1-5↗]', '', regex=True)
 
     if minfreq > 1:
         clean.loc[
