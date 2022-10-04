@@ -8,6 +8,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import logging
+import os
 import pandas
 import numpy
 
@@ -94,6 +95,84 @@ def clean_data(data, minfreq=1):
             logging.warning(f'replace {r} -> {c} {cnt}')
 
     return clean
+
+def load_data(
+    prefix,
+    ids,
+    suffix='mb01dz.csv',
+    force_complete=False,
+    sep=' ',
+    transpose=False
+):
+    '''
+    加载方言字音数据
+
+    :param prefix: 方言字音数据文件路径的前缀
+    :param ids: 要加载的方言代码列表，完整的方言字音文件路径由代码加上前后缀构成
+    :param suffix: 方言字音数据文件路径的后缀
+    :param force_complete: 保证一个读音的声母、韵母、声调均有效，否则舍弃该读音
+    :param sep: 在返回结果中，当一个字有多个读音时，用来分隔多个读音的分隔符
+    :param transpose: 返回结果默认每行代表一个方言，当 transpose 为真时每行代表一个字
+    :returns: 方言字音表
+    '''
+
+    logging.info('loading {} data files ...'.format(len(ids)))
+
+    columns = ['initial', 'finals', 'tone']
+    load_ids = []
+    dialects = []
+    for id in ids:
+        try:
+            fname = os.path.join(prefix, id + suffix)
+            logging.info(f'loading {fname} ...')
+
+            dtype = {'iid': int}
+            dtype.update((c, str) for c in columns)
+            d = pandas.read_csv(
+                fname,
+                encoding='utf-8',
+                index_col='iid',
+                usecols=['iid'] + columns,
+                dtype=dtype
+            )
+
+        except Exception as e:
+            logging.error('cannot load file {}: {}'.format(fname, e))
+            continue
+
+        d = clean_data(d)
+
+        if force_complete:
+            # 保证一个读音的声母、韵母、声调均有效，否则删除该读音
+            invalid = (d[columns].isna() | (d[columns] == '')).any(axis=1)
+            invalid_num = numpy.count_nonzero(invalid)
+            if invalid_num > 0:
+                logging.warning('drop {}/{} invalid records from {}'.format(
+                    invalid_num,
+                    d.shape[0],
+                    fname
+                ))
+                logging.warning(d[invalid])
+
+                d = d[~invalid]
+
+        dialects.append(d)
+        load_ids.append(id)
+
+    logging.info('done. {} data file loaded'.format(len(dialects)))
+
+    data = pandas.concat(
+        [d.groupby(d.index).agg(sep.join) for d in dialects],
+        axis=1,
+        keys=load_ids,
+        sort=True
+    ).fillna('')
+    logging.info(f'load data of {data.columns.levels[0].shape[0]} dialects x {data.shape[0]} characters')
+
+    if not transpose:
+        data = data.stack().transpose()
+
+    return data
 
 def get_dialect(location):
     '''从方言信息中获取所属方言区'''
