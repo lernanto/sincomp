@@ -25,55 +25,8 @@ import seaborn
 import plotly.express
 import plotly.figure_factory
 import folium
-from util import clean_data
+import util
 
-
-def load_data(prefix, ids, suffix='mb01dz.csv'):
-    '''加载方言字音数据'''
-
-    logging.info('loading {} data files ...'.format(len(ids)))
-
-    columns = ['initial', 'finals', 'tone']
-    load_ids = []
-    dialects = []
-    for id in ids:
-        try:
-            fname = os.path.join(prefix, id + suffix)
-            logging.info(f'loading {fname} ...')
-            d = pandas.read_csv(fname, encoding='utf-8', dtype=str)
-        except Exception as e:
-            logging.error('cannot load file {}: {}'.format(fname, e))
-            continue
-
-        d = clean_data(d)
-
-        # 记录部分有值部分为空会导致统计数据细微偏差
-        invalid = (d[columns].isna() | (d[columns] == '')).any(axis=1)
-        invalid_num = numpy.count_nonzero(invalid)
-        if invalid_num > 0:
-            logging.warning('drop {}/{} invalid records from {}'.format(
-                invalid_num,
-                d.shape[0],
-                fname
-            ))
-            logging.warning(d[invalid])
-
-            d = d[~invalid]
-
-        dialects.append(d)
-        load_ids.append(id)
-
-    logging.info('done. {} data loaded'.format(len(dialects)))
-
-    data = pandas.concat(
-        [d.drop_duplicates('iid').set_index('iid')[columns] for d in dialects],
-        axis=1,
-        keys=load_ids
-    ).fillna('')
-
-    logging.info(f'load data of {data.shape[0]} characters x {len(dialects)} dialects, ' \
-        + f'{sum(d.shape[0] for d in dialects)} valid records')
-    return load_ids, data
 
 def cross_features(data, column=3):
     '''构造交叉特征'''
@@ -707,12 +660,16 @@ if __name__ == '__main__':
         encoding='utf-8',
         index_col=0
     )
-    ids, data = load_data(prefix, location.index)
+    data = util.load_data(prefix, location.index, force_complete=True, transpose=True)
+    # 对每个字取第一个声母、韵母、声调均非空的读音
+    # 声韵调部分有值部分为空会导致统计数据细微偏差
+    data = data.loc[:, pandas.IndexSlice[:, ['initial', 'finals', 'tone']]] \
+        .apply(lambda c: c.str.split(' ').str[0])
 
     chisq = chi2(data.values, parallel=4)
-    pandas.DataFrame(chisq, index=ids, columns=ids) \
+    pandas.DataFrame(chisq, index=data.index, columns=data.index) \
         .to_csv('chi2.csv', line_terminator='\n')
 
     ent = entropy(data.values, parallel=4)
-    pandas.DataFrame(ent, index=ids, columns=ids) \
+    pandas.DataFrame(ent, index=data.index, columns=data.index) \
         .to_csv('entropy.csv', line_terminator='\n')
