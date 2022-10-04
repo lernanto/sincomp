@@ -210,4 +210,6 @@ def get_dialect(location):
 
     # 有些方言区，主要是官话的大区被标在不同的字段，尽力尝试获取
     dialect = clean(location['area'])
-    return numpy.where(dialect != '', dialect, clean(location['slice']))
+    dialect = numpy.where(dialect != '', dialect, clean(location['slice']))
+
+    return pandas.Series(dialect, index=location.index)
