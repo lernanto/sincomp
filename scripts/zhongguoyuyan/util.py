@@ -8,6 +8,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import logging
+import os
 import pandas
 import numpy
 
@@ -31,7 +32,7 @@ def clean_data(data, minfreq=1):
     clean = data.copy()
 
     # 有些符号使用了多种写法，统一成较常用的一种
-    clean['initial'] = clean['initial'].fillna('').str.lower() \
+    clean['initial'] = clean['initial'].str.lower() \
         .str.replace(f'[^{ipa}]', '', regex=True) \
         .str.replace('[\u00f8\u01ff]', '\u2205', regex=True) \
         .str.replace('\ufffb', '_') \
@@ -59,7 +60,7 @@ def clean_data(data, minfreq=1):
         }).value_counts().items():
             logging.warning(f'replace {r} -> {c} {cnt}')
 
-    clean['finals'] = clean['finals'].fillna('').str.lower() \
+    clean['finals'] = clean['finals'].str.lower() \
         .str.replace(f'[^{ipa}]', '', regex=True) \
         .str.replace(':', 'ː') \
         .str.replace('：', 'ː')
@@ -79,7 +80,6 @@ def clean_data(data, minfreq=1):
             logging.warning(f'replace {r} -> {c} {cnt}')
 
     # 部分声调被错误转为日期格式，还原成数字
-    clean['tone'].fillna('', inplace=True)
     mask = clean['tone'].str.match(r'^\d+年\d+月\d+日$')
     clean.loc[mask, 'tone'] = pandas.to_datetime(
         clean.loc[mask, 'tone'],
@@ -103,6 +103,93 @@ def clean_data(data, minfreq=1):
             logging.warning(f'replace {r} -> {c} {cnt}')
 
     return clean
+
+def load_data(
+    prefix,
+    ids,
+    suffix='mb01dz.csv',
+    force_complete=False,
+    sep=' ',
+    transpose=False
+):
+    """
+    加载方言字音数据.
+
+    Parameters:
+        prefix (str): 方言字音数据文件路径的前缀
+        ids (iterable): 要加载的方言代码列表，完整的方言字音文件路径由代码加上前后缀构成
+        suffix (str): 方言字音数据文件路径的后缀
+        force_complete (bool): 保证一个读音的声母、韵母、声调均有效，否则舍弃该读音
+        sep (str): 在返回结果中，当一个字有多个读音时，用来分隔多个读音的分隔符
+        transpose (bool): 返回结果默认每行代表一个方言，当 transpose 为真时每行代表一个字
+
+    Returns:
+        data (`pandas.DataFrame`): 方言字音表
+    """
+
+    logging.info('loading {} data files ...'.format(len(ids)))
+
+    columns = ['initial', 'finals', 'tone']
+    dtypes = {
+        'iid': int,
+        'initial': str,
+        'finals': str,
+        'tone': str,
+        'memo': str
+    }
+
+    load_ids = []
+    dialects = []
+    for id in ids:
+        try:
+            fname = os.path.join(prefix, id + suffix)
+            logging.info(f'loading {fname} ...')
+
+            d = pandas.read_csv(
+                fname,
+                encoding='utf-8',
+                index_col='iid',
+                usecols=dtypes.keys(),
+                dtype=dtypes
+            ).fillna('')
+
+        except Exception as e:
+            logging.error('cannot load file {}: {}'.format(fname, e), exc_info=True)
+            continue
+
+        d = clean_data(d)
+
+        if force_complete:
+            # 保证一个读音的声母、韵母、声调均有效，否则删除该读音
+            invalid = (d[columns].isna() | (d[columns] == '')).any(axis=1)
+            invalid_num = numpy.count_nonzero(invalid)
+            if invalid_num > 0:
+                logging.warning('drop {}/{} invalid records from {}'.format(
+                    invalid_num,
+                    d.shape[0],
+                    fname
+                ))
+                logging.warning(d[invalid])
+
+                d = d[~invalid]
+
+        dialects.append(d)
+        load_ids.append(id)
+
+    logging.info('done. {} data file loaded'.format(len(dialects)))
+
+    data = pandas.concat(
+        [d.groupby(d.index).agg(sep.join) for d in dialects],
+        axis=1,
+        keys=load_ids,
+        sort=True
+    ).fillna('')
+    logging.info(f'load data of {data.columns.levels[0].shape[0]} dialects x {data.shape[0]} characters')
+
+    if not transpose:
+        data = data.stack().transpose()
+
+    return data
 
 def get_dialect(location):
     '''从方言信息中获取所属方言区'''
