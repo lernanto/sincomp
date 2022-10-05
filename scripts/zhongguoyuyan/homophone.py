@@ -307,7 +307,7 @@ if __name__ == '__main__':
     char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
     data = util.load_data(dialect_path, location.index) \
         .swaplevel(axis=1) \
-        .sort_index(axis=1) \
+        .sort_index(axis=1, level=0) \
         .reindex(char.index, axis=1, level=1)
 
     transformer = ColumnTransformer(transformers=[(
