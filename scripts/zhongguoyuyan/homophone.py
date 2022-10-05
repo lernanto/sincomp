@@ -23,7 +23,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import LabelEncoder
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.cluster import KMeans, SpectralClustering, spectral_clustering
-from util import clean_data
+import util
 
 
 class FeatureClustering:
@@ -293,43 +293,6 @@ def make_pipeline(*steps, memory=None, verbose=False):
         verbose=verbose
     )
 
-def load_data(prefix, ids, suffix='mb01dz.csv'):
-    '''加载方言字音数据'''
-
-    logging.info('loading {} data files ...'.format(len(ids)))
-
-    load_ids = []
-    dialects = []
-    for id in ids:
-        try:
-            fname = os.path.join(prefix, id + suffix)
-            logging.info(f'loading {fname} ...')
-            d = pandas.read_csv(
-                fname,
-                encoding='utf-8',
-                index_col='iid',
-                usecols=('iid', 'initial', 'finals', 'tone'),
-                dtype={ 'iid': int, 'initial': str, 'finals': str, 'tone': str}
-            )
-        except Exception as e:
-            logging.error('cannot load file {}: {}'.format(fname, e))
-            continue
-
-        d = clean_data(d)
-        dialects.append(d)
-        load_ids.append(id)
-
-    logging.info('done. {} data file loaded'.format(len(dialects)))
-
-    data = pandas.concat(
-        [d.groupby(d.index).agg(' '.join).unstack() for d in dialects],
-        axis=1,
-        keys=load_ids
-    ).dropna(axis=0, how='all').fillna('').transpose()
-
-    logging.info(f'load data of {data.shape[0]} dialects x {data.columns.levels[1].shape[0]} characters')
-    return data
-
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
@@ -342,7 +305,9 @@ if __name__ == '__main__':
         index_col=0
     )
     char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
-    data = load_data(dialect_path, location.index) \
+    data = util.load_data(dialect_path, location.index) \
+        .swaplevel(axis=1) \
+        .sort_index(axis=1) \
         .reindex(char.index, axis=1, level=1)
 
     transformer = ColumnTransformer(transformers=[(
