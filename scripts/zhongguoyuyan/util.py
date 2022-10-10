@@ -41,8 +41,8 @@ def clean_data(data, minfreq=1):
         .str.replace('\u02a6', 'ts') \
         .str.replace('\u02a7', 'tʃ') \
         .str.replace('\u02a8', 'tɕ') \
-        .str.replace('[\u02b0\u02b1]', 'h', regex=True) \
-        .str.replace('g', 'ɡ')
+        .str.replace('g', 'ɡ') \
+        .str.replace('(.)h', r'\1ʰ', regex=True)
 
     # 删除出现次数少的读音
     if minfreq > 1:
