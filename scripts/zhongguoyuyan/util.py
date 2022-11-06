@@ -282,6 +282,78 @@ def get_dialect(location):
 
     return pandas.Series(dialect, index=location.index)
 
+def get_cluster(location):
+    """
+    从方言点信息中提取所属方言片.
+
+    Parameters:
+        location (`pandas.DataFrame`): 方言信息数据表
+
+    Returns:
+        cluster (`pandas.Series`): 方言片列表
+    """
+
+    def try_get_cluster(tag):
+        """尝试从标记字符串中匹配方言片."""
+
+        return tag[tag.str.match('^.+[^小]片.*$') == True].str.replace(
+            '^(?:.*[语话]区?)?([^语话片]*[^小片]片).*$',
+            r'\1',
+            regex=True
+        ).reindex(tag.index)
+
+    cluster = try_get_cluster(location['slice'])
+    cluster = cluster.where(cluster.notna(), try_get_cluster(location['slices']))
+    cluster = cluster.where(cluster.notna(), try_get_cluster(location['area']))
+
+    slice = location.loc[
+        location['slice'].str.contains('[不未]明|[语话片]$', regex=True) == False,
+        'slice'
+    ]
+    slice = slice.where(slice.str.len() != 2, slice + '片')
+    cluster = cluster.where(
+        cluster.notna(),
+        slice
+    )
+
+    return cluster.fillna('')
+
+def get_subcluster(location):
+    """
+    从方言点信息中提取所属方言小片.
+
+    Parameters:
+        location (`pandas.DataFrame`): 方言信息数据表
+
+    Returns:
+        subcluster (`pandas.Series`): 方言小片列表
+    """
+
+    def try_get_subcluster(tag):
+        """尝试从标记字符串中匹配方言小片."""
+
+        return tag[tag.str.match('^.+小片.*$') == True].str.replace(
+            '^(?:.*[语话]区?)?(?:[^语话片]*[^小片]片)?([^语话片]+小片).*$',
+            r'\1',
+            regex=True
+        ).reindex(tag.index)
+
+    subcluster = try_get_subcluster(location['slices'])
+    subcluster = subcluster.where(
+        subcluster.notna(),
+        try_get_subcluster(location['slice'])
+    )
+    subcluster = subcluster.where(
+        subcluster.notna(),
+        location.loc[
+            location['slices'].str.contains('[不未]明|[语话片]$', regex=True) == False,
+            'slices'
+        ]
+    )
+
+    return subcluster.fillna('')
+
+
 def predict_dialect(location, dialect):
     """
     使用 KNN 算法根据经纬度信息预测方言区.
@@ -324,4 +396,7 @@ def load_location(fname, predict=True):
     dialect = get_dialect(location)
     location['dialect'] = predict_dialect(location, dialect) if predict \
         else dialect
+    location['cluster'] = get_cluster(location)
+    location['subcluster'] = get_subcluster(location)
+
     return location
