@@ -18,8 +18,10 @@ import tensorflow as tf
 from util import clean_data
 
 
-class Predictor(tf.train.Checkpoint):
-    '''预测指定方言点的字音.'''
+class PredictorBase(tf.train.Checkpoint):
+    """
+    预测指定方言点的字音.
+    """
 
     def __init__(
         self,
@@ -28,10 +30,8 @@ class Predictor(tf.train.Checkpoint):
         targets,
         dialect_emb_size=20,
         char_emb_size=20,
-        target_emb_size=10,
-        target_bias=True,
+        target_emb_sizes=20,
         target_activation=tf.identity,
-        target_sim='inner_product',
         target_emb_bias=True,
         l2=0,
         optimizer=None,
@@ -44,12 +44,8 @@ class Predictor(tf.train.Checkpoint):
         self.targets = [tf.convert_to_tensor(t) for t in targets]
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
-        try:
-            self.target_emb_size = tuple(target_emb_size)
-        except:
-            self.target_emb_size = (target_emb_size,) * len(self.targets)
+        self.target_emb_sizes = tuple(target_emb_sizes)
         self.target_activation = target_activation
-        self.target_sim = target_sim
         self.l2 = l2
         self.name = name
         self.variables = []
@@ -90,40 +86,25 @@ class Predictor(tf.train.Checkpoint):
                 num_oov_buckets=1
             ))
 
-        self.target_weights = []
-        self.target_embs = []
-        for i, (target, size) in enumerate(zip(self.targets, self.target_emb_size)):
-            self.target_weights.append(tf.Variable(
-                init(shape=(self.char_emb_size, size), dtype=tf.float32),
-                name=f'target_weight{i}'
-            ))
-            self.target_embs.append(tf.Variable(
-                init(shape=(target.shape[0], size), dtype=tf.float32),
-                name=f'target_emb{i}'
-            ))
+        self.target_embs = [tf.Variable(
+            init(shape=(t.shape[0], s), dtype=tf.float32),
+            name=f'target_emb{i}'
+        ) for i, (t, s) in enumerate(zip(self.targets, self.target_emb_sizes))]
 
         self.add_variable(
             self.dialect_emb,
             self.char_emb,
-            *self.target_weights,
             *self.target_embs
         )
 
-        if target_bias:
-            self.target_biases = [tf.Variable(
-                init(shape=(s,), dtype=tf.float32),
-                name=f'target_bias{i}'
-            ) for i, s in enumerate(self.target_emb_size)]
-            self.add_variable(*self.target_biases)
-
-        if self.target_sim == 'inner_product' and target_emb_bias:
+        if target_emb_bias:
             self.target_emb_biases = [tf.Variable(
                 init(shape=(t.shape[0],), dtype=tf.float32),
                 name=f'target_emb_bias{i}'
             ) for i, t in enumerate(self.targets)]
             self.add_variable(*self.target_emb_biases)
 
-        self.optimizer = tf.optimizers.Adam(0.02) if optimizer is None else optimizer
+        self.optimizer = tf.optimizers.Adam(0.01) if optimizer is None else optimizer
 
     def add_variable(self, *args):
         self.variables.extend(args)
@@ -159,26 +140,13 @@ class Predictor(tf.train.Checkpoint):
         )
 
     def logits(self, dialect_emb, char_emb):
-        emb = self.transform(dialect_emb, char_emb)
-        output_embs = [tf.matmul(emb, w) for w in self.target_weights]
-        if hasattr(self, 'target_biases'):
-            output_embs = [e + b[None, :] \
-                for e, b in zip(output_embs, self.target_biases)]
+        output_emb = self.transform(dialect_emb, char_emb)
 
-        output_embs = [self.target_activation(e) for e in output_embs]
-
-        if self.target_sim == 'inner_product':
-            logits = [tf.matmul(o, t, transpose_b=True) \
-                for o, t in zip(output_embs, self.target_embs)]
-            if hasattr(self, 'target_emb_biases'):
-                logits = [l + b[None, :] \
-                    for l, b in zip(logits, self.target_emb_biases)]
-
-        elif self.target_sim == 'euclidean_distance':
-            logits = [-tf.reduce_sum(
-                tf.square(o[:, None] - t[None, :]),
-                axis=-1
-            ) for o, t in zip(output_embs, self.target_embs)]
+        logits = [tf.matmul(output_emb, t, transpose_b=True) \
+            for t in self.target_embs]
+        if hasattr(self, 'target_emb_biases'):
+            logits = [l + b[None, :] \
+                for l, b in zip(logits, self.target_emb_biases)]
 
         return logits
 
@@ -345,21 +313,32 @@ class Predictor(tf.train.Checkpoint):
             self.epoch.assign_add(1)
             manager.save()
 
-class SimplePredictor(Predictor):
+class SimplePredictor(PredictorBase):
     """
     方言向量和字向量直接相加.
     """
 
-    def __init__(self, *args, emb_size=20, name='simple_predictor', **kwargs):
+    def __init__(
+        self,
+        dialect,
+        char,
+        targets,
+        emb_size=20,
+        name='simple_predictor',
+        **kwargs
+    ):
         """
         Parameters:
             emb_size (int): 方言向量和字向量的长度
         """
 
         super().__init__(
-            *args,
+            dialect,
+            char,
+            targets,
             dialect_emb_size=emb_size,
             char_emb_size=emb_size,
+            target_emb_sizes=(emb_size,) * len(targets),
             name=name,
             **kwargs
         )
@@ -367,20 +346,43 @@ class SimplePredictor(Predictor):
     def transform(self, dialect_emb, char_emb):
         return dialect_emb + char_emb
 
-class LinearPredictor(Predictor):
+class LinearPredictor(PredictorBase):
     """
     方言向量和字向量经过线性变换得到目标向量.
     """
 
-    def __init__(self, *args, name='linear_predictor', **kwargs):
-        super().__init__(*args, name=name, **kwargs)
+    def __init__(
+        self,
+        dialect,
+        char,
+        targets,
+        target_emb_size=20,
+        name='linear_predictor',
+        **kwargs
+    ):
+        """
+        Parameters:
+            target_emb_size (int): 输出目标向量的长度
+            name (str): 输出模型的名字
+        """
+
+        super().__init__(
+            dialect,
+            char,
+            targets,
+            target_emb_sizes=(target_emb_size,) * len(targets),
+            name=name,
+            **kwargs
+        )
+
+        self.target_emb_size = target_emb_size
 
         self.weight = tf.Variable(
             tf.random_normal_initializer()(
                 shape=(
                     self.dialect_emb_size,
                     self.char_emb_size,
-                    self.char_emb_size
+                    self.target_emb_size
                 ),
                 dtype=tf.float32
             ),
@@ -394,19 +396,29 @@ class LinearPredictor(Predictor):
             tf.tensordot(dialect_emb, self.weight, axes=[[-1], [0]])
         ), (char_emb.shape[0], self.weight.shape[-1]))
 
-class MLPPredictor(Predictor):
+class MLPPredictor(PredictorBase):
     '''使用 MLP 作为字音变换.'''
 
     def __init__(
         self,
-        *args,
+        dialect,
+        char,
+        targets,
+        target_emb_size=20,
         hidden_layer=2,
         hidden_size=100,
         activation=tf.nn.relu,
         name='mlp_predictor',
         **kwargs
     ):
-        super().__init__(*args, name=name, **kwargs)
+        super().__init__(
+            dialect,
+            char,
+            targets,
+            target_emb_sizes=(target_emb_size,) * len(targets),
+            name=name,
+            **kwargs
+        )
 
         self.activation = activation
 
@@ -435,8 +447,102 @@ class MLPPredictor(Predictor):
 
         return x
 
-class ResidualPredictor(Predictor):
-    '''预测方言字音变换的残差.'''
+class ResidualPredictorBase(PredictorBase):
+    """
+    预测方言字音变换的残差.
+    """
+
+    def __init__(
+        self,
+        dialect,
+        char,
+        targets,
+        target_emb_size=20,
+        target_bias=True,
+        target_sim='inner_product',
+        target_emb_bias=True,
+        **kwargs
+    ):
+        """
+        Parameters:
+            target_bias (bool): 预测的目标 embedding 是否使用偏置
+            target_sim (str): 度量预测的目标 embedding 和实际目标 embedding 相似度的函数
+                - inner_product: 内积
+                - euclidean: 负的欧氏距离
+        """
+
+        try:
+            target_emb_sizes = tuple(target_emb_size)
+        except:
+            target_emb_sizes = (target_emb_size,) * len(targets)
+
+        super().__init__(
+            dialect,
+            char,
+            targets,
+            target_emb_sizes=target_emb_sizes,
+            target_emb_bias=target_sim == 'inner_product' and target_emb_bias,
+            **kwargs
+        )
+
+        self.target_sim = target_sim
+
+        init = tf.random_normal_initializer()
+
+        self.target_weights = [tf.Variable(
+            init(shape=(self.char_emb_size, s), dtype=tf.float32),
+            name=f'target_weight{i}'
+        ) for i, s in enumerate(self.target_emb_sizes)]
+
+        self.add_variable(*self.target_weights)
+
+        if target_bias:
+            self.target_biases = [tf.Variable(
+                init(shape=(s,), dtype=tf.float32),
+                name=f'target_bias{i}'
+            ) for i, s in enumerate(self.target_emb_sizes)]
+            self.add_variable(*self.target_biases)
+
+    def logits(self, dialect_emb, char_emb):
+        """
+        根据方言 embdding 和字 embedding 预测目标未归一化的概率.
+
+        Parameters:
+            dialect_emb (`tensorflow.Tensor`): 方言 embdding
+            char_emb (`tensorflow.Tensor`): 字 embedding
+
+        Returns:
+            logits (list of `tensorflow.Tensor`): 预测每一个目标的未归一化概率，
+                各自执行 softmax 后即为概率值
+        """
+
+        emb = self.transform(dialect_emb, char_emb)
+        output_embs = [tf.matmul(emb, w) for w in self.target_weights]
+        if hasattr(self, 'target_biases'):
+            output_embs = [e + b[None, :] \
+                for e, b in zip(output_embs, self.target_biases)]
+
+        output_embs = [self.target_activation(e) for e in output_embs]
+
+        if self.target_sim == 'inner_product':
+            logits = [tf.matmul(o, t, transpose_b=True) \
+                for o, t in zip(output_embs, self.target_embs)]
+            if hasattr(self, 'target_emb_biases'):
+                logits = [l + b[None, :] \
+                    for l, b in zip(logits, self.target_emb_biases)]
+
+        elif self.target_sim == 'euclidean_distance':
+            logits = [-tf.reduce_sum(
+                tf.square(o[:, None] - t[None, :]),
+                axis=-1
+            ) for o, t in zip(output_embs, self.target_embs)]
+
+        return logits
+
+class ResidualPredictor(ResidualPredictorBase):
+    """
+    预测方言字音变换的残差.
+    """
 
     def __init__(
         self,
@@ -480,7 +586,11 @@ class ResidualPredictor(Predictor):
 
         return char_emb + tf.matmul(self.activation(hidden), self.weight1)
 
-class AttentionPredictor(Predictor):
+class AttentionPredictor(ResidualPredictorBase):
+    """
+    使用注意力机制进行字 embedding 变换.
+    """
+
     def __init__(
         self,
         *args,
