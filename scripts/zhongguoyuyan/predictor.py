@@ -578,7 +578,7 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
             logging.error(f'cannot load file {fname}: {e}')
 
     dialects = len(data)
-    data = clean_data(pandas.concat(data, ignore_index=True), minfreq=2)
+    data = clean_data(pandas.concat(data, ignore_index=True).fillna(''), minfreq=2)
     data = data[(data['initial'] != '') | (data['finals'] != '') | (data['tone'] != '')]
 
     logging.info(f'done. loaded {dialects} dialects {data.shape[0]} records')
