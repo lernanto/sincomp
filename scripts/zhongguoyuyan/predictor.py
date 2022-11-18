@@ -345,10 +345,17 @@ class Predictor(tf.train.Checkpoint):
             self.epoch.assign_add(1)
             manager.save()
 
-class LinearPredictor(Predictor):
-    '''方言 embedding 和字 embedding 直接相加.'''
+class SimplePredictor(Predictor):
+    """
+    方言向量和字向量直接相加.
+    """
 
-    def __init__(self, *args, emb_size=20, name='linear_predictor', **kwargs):
+    def __init__(self, *args, emb_size=20, name='simple_predictor', **kwargs):
+        """
+        Parameters:
+            emb_size (int): 方言向量和字向量的长度
+        """
+
         super().__init__(
             *args,
             dialect_emb_size=emb_size,
@@ -359,6 +366,33 @@ class LinearPredictor(Predictor):
 
     def transform(self, dialect_emb, char_emb):
         return dialect_emb + char_emb
+
+class LinearPredictor(Predictor):
+    """
+    方言向量和字向量经过线性变换得到目标向量.
+    """
+
+    def __init__(self, *args, name='linear_predictor', **kwargs):
+        super().__init__(*args, name=name, **kwargs)
+
+        self.weight = tf.Variable(
+            tf.random_normal_initializer()(
+                shape=(
+                    self.dialect_emb_size,
+                    self.char_emb_size,
+                    self.char_emb_size
+                ),
+                dtype=tf.float32
+            ),
+            name='weight'
+        )
+        self.add_variable(self.weight)
+
+    def transform(self, dialect_emb, char_emb):
+        return tf.reshape(tf.matmul(
+            char_emb[:, None, :],
+            tf.tensordot(dialect_emb, self.weight, axes=[[-1], [0]])
+        ), (char_emb.shape[0], self.weight.shape[-1]))
 
 class MLPPredictor(Predictor):
     '''使用 MLP 作为字音变换.'''
@@ -600,6 +634,8 @@ def benchmark(location, char, data):
     train_data = dataset.skip(eval_size)
     eval_data = dataset.take(eval_size)
 
+    SimplePredictor(dialects, chars, (initials, finals, tones)) \
+        .fit(train_data, eval_data=eval_data)
     LinearPredictor(dialects, chars, (initials, finals, tones)) \
         .fit(train_data, eval_data=eval_data)
     MLPPredictor(dialects, chars, (initials, finals, tones)) \
