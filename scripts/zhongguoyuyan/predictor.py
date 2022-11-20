@@ -14,9 +14,10 @@ import logging
 import datetime
 import pandas
 import numpy
+import argparse
 import tensorflow as tf
 from tensorboard.plugins import projector
-from util import clean_data
+import util
 
 
 class PredictorBase(tf.train.Checkpoint):
@@ -723,7 +724,7 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
             logging.error(f'cannot load file {fname}: {e}')
 
     dialects = len(data)
-    data = clean_data(pandas.concat(data, ignore_index=True).fillna(''), minfreq=2)
+    data = util.clean_data(pandas.concat(data, ignore_index=True).fillna(''), minfreq=2)
     data = data[(data['initial'] != '') | (data['finals'] != '') | (data['tone'] != '')]
 
     logging.info(f'done. loaded {dialects} dialects {data.shape[0]} records')
@@ -840,7 +841,7 @@ def benchmark(location, char, data, output_prefix=''):
         data['iid'],
         data[['initial', 'finals', 'tone']]
     ))
-    eval_size = int(data.shape[0] * 0.1)
+    eval_size = 10000
     train_data = dataset.skip(eval_size)
     eval_data = dataset.take(eval_size)
 
@@ -869,14 +870,19 @@ def benchmark(location, char, data, output_prefix=''):
 
 
 if __name__ == '__main__':
-    prefix = sys.argv[1]
+    parser = argparse.ArgumentParser(globals().get('__doc__'))
+    parser.add_argument('input_prefix', help='方言数据根目录')
+    parser.add_argument(
+        'output_prefix',
+        nargs='?',
+        default='tensorboard',
+        help='用于保存模型数据的路径前缀'
+    )
+    args = parser.parse_args()
 
-    dialect_path = os.path.join(prefix, 'dialect')
-    location = pandas.read_csv(
-        os.path.join(dialect_path, 'location.csv'),
-        index_col=0
-    ).sample(100)
-    char = pandas.read_csv(os.path.join(prefix, 'words.csv'), index_col=0)
-    data = load_data(dialect_path, location.index).sample(frac=0.8)
+    dialect_path = os.path.join(args.input_prefix, 'dialect')
+    location = util.load_location(os.path.join(dialect_path, 'location.csv'))
+    char = pandas.read_csv(os.path.join(args.input_prefix, 'words.csv'), index_col=0)
+    data = load_data(dialect_path, location.index).sample(frac=1)
 
-    benchmark(location, char, data)
+    benchmark(location, char, data, args.output_prefix)
