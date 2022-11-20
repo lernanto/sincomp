@@ -15,6 +15,7 @@ import datetime
 import pandas
 import numpy
 import tensorflow as tf
+from tensorboard.plugins import projector
 from util import clean_data
 
 
@@ -728,7 +729,106 @@ def load_data(prefix, ids, suffix='mb01dz.csv'):
     logging.info(f'done. loaded {dialects} dialects {data.shape[0]} records')
     return data
 
-def benchmark(location, char, data):
+def make_embeddings(
+    location,
+    char,
+    initials,
+    finals,
+    tones,
+    predictor,
+    output_path=''
+):
+    """
+    为 TensorBoard embedding projector 显示向量创建需要的数据.
+
+    Parameters:
+        location (`pandas.DataFrame`): 方言点信息数据表
+        char (`pandas.DataFrame`): 字信息数据表
+        initials (iterable): 模型的声母表
+        finals (iterable): 模型的韵母表
+        tones (iterable): 模型的声调表
+        predictor (`PredictorBase`): 方言字音预测模型
+        output_path (str): 输出向量数据的路径前缀
+    """
+
+    os.makedirs(output_path, exist_ok=True)
+
+    # 创建向量字典
+    pandas.concat([
+        pandas.DataFrame({
+            'location': location['city'] + location['county'],
+            'dialect': location['dialect']
+        }),
+        pandas.DataFrame({'location': ['未知']}, index=[''])
+    ]).to_csv(
+        os.path.join(output_path, 'dialect.tsv'),
+        sep='\t',
+        encoding='utf-8',
+        lineterminator='\n'
+    )
+
+    pandas.concat([
+        char[['item']],
+        pandas.DataFrame({'item': ['未知']}, index=[0])
+    ]).to_csv(
+        os.path.join(output_path, 'char.tsv'),
+        sep='\t',
+        encoding='utf-8',
+        lineterminator='\n'
+    )
+
+    with open(
+        os.path.join(output_path, 'initial.tsv'),
+        'w',
+        encoding='utf-8',
+        newline='\n'
+    ) as f:
+        for i in initials:
+            print(i, file=f)
+        print(file=f)
+
+    with open(
+        os.path.join(output_path, 'final.tsv'),
+        'w',
+        encoding='utf-8',
+        newline='\n'
+    ) as f:
+        for i in finals:
+            print(i, file=f)
+        print(file=f)
+
+    with open(
+        os.path.join(output_path, 'tone.tsv'),
+        'w',
+        encoding='utf-8',
+        newline='\n'
+    ) as f:
+        for t in tones:
+            print(t, file=f)
+        print(file=f)
+
+    # 保存向量值
+    embeddings = {
+        'dialect': predictor.dialect_emb,
+        'char': predictor.char_emb,
+        'initial': predictor.target_embs[0],
+        'final': predictor.target_embs[1],
+        'tone': predictor.target_embs[2]
+    }
+
+    checkpoint = tf.train.Checkpoint(**embeddings)
+    checkpoint.save(os.path.join(output_path, 'embeddings.ckpt'))
+
+    # 创建向量元数据
+    config = projector.ProjectorConfig()
+    for name in embeddings:
+        emb = config.embeddings.add()
+        emb.tensor_name = f'{name}/.ATTRIBUTES/VARIABLE_VALUE'
+        emb.metadata_path = f'{name}.tsv'
+
+    projector.visualize_embeddings(output_path, config)
+
+def benchmark(location, char, data, output_prefix=''):
     dialects = location.index
     chars = char.index
     initials = data.loc[data['initial'] != '', 'initial'].unique()
@@ -744,16 +844,28 @@ def benchmark(location, char, data):
     train_data = dataset.skip(eval_size)
     eval_data = dataset.take(eval_size)
 
-    SimplePredictor(dialects, chars, (initials, finals, tones)) \
-        .fit(train_data, eval_data=eval_data)
-    LinearPredictor(dialects, chars, (initials, finals, tones)) \
-        .fit(train_data, eval_data=eval_data)
-    MLPPredictor(dialects, chars, (initials, finals, tones)) \
-        .fit(train_data, eval_data=eval_data)
-    ResidualPredictor(dialects, chars, (initials, finals, tones)) \
-        .fit(train_data, eval_data=eval_data)
-    AttentionPredictor(dialects, chars, (initials, finals, tones)) \
-        .fit(train_data, eval_data=eval_data)
+    ver = f'{datetime.datetime.now():%Y%m%d%H%M}'
+
+    for predictor in (
+        SimplePredictor(dialects, chars, (initials, finals, tones)),
+        LinearPredictor(dialects, chars, (initials, finals, tones)),
+        MLPPredictor(dialects, chars, (initials, finals, tones)),
+        ResidualPredictor(dialects, chars, (initials, finals, tones)),
+        AttentionPredictor(dialects, chars, (initials, finals, tones))
+    ):
+        output_path = os.path.join(output_prefix, predictor.name, ver)
+        predictor.fit(train_data, eval_data=eval_data, output_path=output_path)
+
+        # 为 TensorBoard embedding projector 显示向量创建需要的数据
+        make_embeddings(
+            location,
+            char,
+            initials,
+            finals,
+            tones,
+            predictor,
+            output_path=os.path.join(output_path, 'embeddings')
+        )
 
 
 if __name__ == '__main__':
