@@ -359,12 +359,16 @@ class LinearPredictor(PredictorBase):
         char,
         targets,
         target_emb_size=20,
+        l1=0,
+        l2=0,
         name='linear_predictor',
         **kwargs
     ):
         """
         Parameters:
             target_emb_size (int): 输出目标向量的长度
+            l1 (float): L1 正则化系数，应用于方言向量和字向量以获得稀疏解
+            l2 (float): L2 正则化系数，应用于内部权重
             name (str): 输出模型的名字
         """
 
@@ -378,6 +382,8 @@ class LinearPredictor(PredictorBase):
         )
 
         self.target_emb_size = target_emb_size
+        self.l1 = l1
+        self.l2 = l2
 
         self.weight = tf.Variable(
             tf.random_normal_initializer()(
@@ -397,6 +403,25 @@ class LinearPredictor(PredictorBase):
             char_emb[:, None, :],
             tf.tensordot(dialect_emb, self.weight, axes=[[-1], [0]])
         ), (char_emb.shape[0], self.weight.shape[-1]))
+
+    @tf.function
+    def update(self, dialect, char, targets):
+        with tf.GradientTape() as tape:
+            loss, acc = self.loss(dialect, char, targets)
+            weight = tf.cast(targets != '', tf.float32)
+            l = tf.reduce_mean(tf.reduce_sum(loss * weight, axis=1))
+
+            if self.l1 > 0:
+                l += self.l1 * tf.reduce_sum(tf.abs(self.dialect_emb))
+                l += self.l1 * tf.reduce_sum(tf.abs(self.char_emb))
+
+            if self.l2 > 0:
+                l += self.l2 * tf.reduce_sum(tf.square(self.weight))
+
+            grad = tape.gradient(l, self.variables)
+
+        self.optimizer.apply_gradients(zip(grad, self.variables))
+        return loss, acc, weight
 
 class MLPPredictor(PredictorBase):
     '''使用 MLP 作为字音变换.'''
