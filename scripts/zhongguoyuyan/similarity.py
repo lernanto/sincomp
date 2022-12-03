@@ -25,7 +25,8 @@ import seaborn
 import plotly.express
 import plotly.figure_factory
 import folium
-import util
+
+from sinetym.datasets import zhongguoyuyan
 
 
 def cross_features(data, column=3):
@@ -660,7 +661,7 @@ if __name__ == '__main__':
         encoding='utf-8',
         index_col=0
     )
-    data = util.load_data(prefix, location.index, force_complete=True, transpose=True)
+    data = zhongguoyuyan.load_data(prefix, location.index, force_complete=True, transpose=True)
     # 对每个字取第一个声母、韵母、声调均非空的读音
     # 声韵调部分有值部分为空会导致统计数据细微偏差
     data = data.loc[:, pandas.IndexSlice[:, ['initial', 'finals', 'tone']]] \

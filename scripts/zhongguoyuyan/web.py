@@ -13,7 +13,8 @@ import logging
 import os
 import pandas as pd
 import dtale
-import util
+
+from sinetym.datasets import zhongguoyuyan
 
 
 def combine_phone(part1, part2):
@@ -30,9 +31,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     dialect_path = os.path.join(args.path, 'dialect')
-    location = util.load_location(os.path.join(dialect_path, 'location.csv'))
+    location = zhongguoyuyan.load_location(
+        os.path.join(dialect_path, 'location.csv')
+    )
     char = pd.read_csv(os.path.join(args.path, 'words.csv'), index_col=0)
-    data = util.load_data(
+    data = zhongguoyuyan.load_data(
         dialect_path,
         location.index,
         transpose=True
