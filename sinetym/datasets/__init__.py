@@ -7,4 +7,4 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-from . import zhongguoyuyan
+from . import xiaoxue, zhongguoyuyan

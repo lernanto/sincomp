@@ -27,88 +27,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 import joblib
 
+from sinetym.datasets import xiaoxue
 
-def load(*files):
-    '''加载方言字音数据，CSV 格式.'''
-
-    if (len(files) == 1):
-        # 只有一个输入文件，直接加载
-        return pd.read_csv(files[0], comment='#', index_col='id', dtype=str)
-
-    elif files > 1:
-        # 多个输入文件，分别加载然后拼接
-        data = []
-        for f in files:
-            if isinstance(f, str):
-                f = open(f)
-
-            # CSV 文件的第一行是大方言名称
-            dialect = re.sub(r'^\s*#', '', next(f)).strip()
-            if dialect:
-                # 每个列名都加上大方言作为前缀
-                data.append(pd.read_csv(f, index_col='id', dtype=str) \
-                        .add_prefix('{}_'.format(dialect)))
-
-        return pd.concat(data, axis=1)
-
-def clean(data):
-    '''
-    基于规则的数据清洗.
-    '''
-
-    def get_rows(col, max_row):
-        rows = []
-        for i, r in enumerate(col):
-            if max_row[i] <= 1:
-                # 该行不包含多音字，直接追加
-                rows.append(r)
-
-            elif isinstance(r, str) and '/' in r:
-                # 包含多音字，展开
-                vals = r.split('/')
-                for j in range(max_row[i]):
-                    # 读音数量少于最大读音数的，缺少的部分以第一个读音填充
-                    rows.append(vals[j] if j < len(vals) else vals[0])
-
-            else:
-                # 该行包含多音字但该列不包含多音字，重复多次
-                rows.extend([r] * max_row[i])
-
-        return np.asarray(rows, dtype=np.object_)
-
-    # 原始数据中有些格子有多个读音，以斜杠分隔，需要展开
-    columns = [c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調類', '調值')]
-    # 预先计算每行最多的读音数
-    max_row = np.asarray([(data[c].str.count('/') + 1).fillna(0) for c in columns], dtype=np.int32).max(axis=0)
-    output = data.reset_index().apply(get_rows, axis=0, max_row=max_row)
-
-    # 删除太长的读音
-    for c in columns:
-        output.loc[output[c].str.len() > 4, c] = np.NaN
-
-    for c in output.columns:
-        if c.endswith('聲母'):
-            # 只允许国际音标
-            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.NaN, inplace=True)
-            # 零声母统一用0填充
-            output[c].replace('', '0', inplace=True)
-
-        elif c.endswith('韻母'):
-            output[c].replace(r'.*[^0A-Za-z()\u0080-\u03ff\u1d00-\u1d7f\u2070-\u209f].*', np.NaN, inplace=True)
-
-        elif c.endswith('調類'):
-            output[c].replace(r'.*[^上中下變陰陽平去入].*', np.NaN, inplace=True)
-
-        elif c.endswith('調值'):
-            output[c].replace(r'.*[^0-9].*', np.NaN, inplace=True)
-
-    # 丢弃只出现一次的数据
-    for c in output.columns:
-        if c.split('_')[-1] in ('聲母', '韻母', '調類', '調值'):
-            count = output[c].value_counts()
-            output[c].replace(count[count <= 1].index, np.NaN, inplace=True)
-
-    return output
 
 def impute(data):
     '''
@@ -304,10 +224,10 @@ def main():
     args = parser.parse_args()
 
     # 加载方言字音数据
-    data = load(*args.input)
+    data = xiaoxue.load_data(*args.input)
 
     # 清洗
-    data = clean(data)
+    data = xiaoxue.clean_data(data)
 
     # 丢弃生僻字及缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
