@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorboard.plugins import projector
-import recon
 
+from sinetym.datasets import xiaoxue
 
 class ContrastiveEncoder:
     '''
@@ -355,7 +355,7 @@ class NoiseGenerator:
 if __name__ == '__main__':
     input_file = sys.argv[1]
 
-    data = recon.clean(recon.load(input_file))
+    data = xiaoxue.clean_data(xiaoxue.load_data(input_file))
 
     for c in data.columns:
         if c.partition('_')[2] in ('聲母', '韻母', '調值'):
