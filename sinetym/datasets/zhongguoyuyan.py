@@ -13,6 +13,8 @@ import pandas
 import numpy
 from sklearn.neighbors import KNeighborsClassifier
 
+from . import common
+
 
 def clean_location(location):
     """
@@ -56,95 +58,47 @@ def clean_location(location):
 
     return clean
 
-def clean_data(data, minfreq=1):
+def clean_data(raw, minfreq=2):
     """
     清洗方言字音数据中的录入错误.
 
     Parameters:
-        data (`pandas.DataFrame`): 方言字音数据表
+        raw (`pandas.DataFrame`): 方言字音数据表
         minfreq (int): 在一种方言中出现次数少于该值的声韵调会从该方言中删除
 
     Returns:
         clean (`pandas.DataFram`): 清洗后的方言字音数据表
     """
 
-    ipa = ':A-Za-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u2205\u2c60-\u2c7f' \
-        + '\ua720-\ua7ff\uab30-\uab6f\ufb00-\ufb4f\uff1a\ufffb' \
-        + '\U00010780-\U000107ba\U0001df00-\U0001df1e'
+    clean = pandas.DataFrame()
 
-    clean = data.copy()
-
-    # 有些符号使用了多种写法，统一成较常用的一种
-    clean['initial'] = clean['initial'].str.lower() \
-        .str.replace(f'[^{ipa}]', '', regex=True) \
-        .str.replace('[\u00f8\u01ff]', '\u2205', regex=True) \
-        .str.replace('\ufffb', '_') \
-        .str.replace('\u02a3', 'dz') \
-        .str.replace('\u02a4', 'dʒ') \
-        .str.replace('\u02a5', 'dʑ') \
-        .str.replace('\u02a6', 'ts') \
-        .str.replace('\u02a7', 'tʃ') \
-        .str.replace('\u02a8', 'tɕ') \
-        .str.replace('g', 'ɡ') \
-        .str.replace('(.)h', r'\1ʰ', regex=True)
-
-    # 删除出现次数少的读音
-    if minfreq > 1:
-        clean.loc[
-            clean['initial'].groupby(clean['initial']).transform('count') <= minfreq,
-            'initial'
-        ] = ''
-
-    mask = clean['initial'] != data['initial']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'initial'],
-            'clean': clean.loc[mask, 'initial']
-        }).value_counts().items():
-            logging.warning(f'replace {r} -> {c} {cnt}')
-
-    clean['finals'] = clean['finals'].str.lower() \
-        .str.replace(f'[^{ipa}]', '', regex=True) \
-        .str.replace(':', 'ː') \
-        .str.replace('：', 'ː')
-
-    if minfreq > 1:
-        clean.loc[
-            clean['finals'].groupby(clean['finals']).transform('count') <= minfreq,
-            'finals'
-        ] = ''
-
-    mask = clean['finals'] != data['finals']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'finals'],
-            'clean': clean.loc[mask, 'finals']
-        }).value_counts().items():
-            logging.warning(f'replace {r} -> {c} {cnt}')
+    clean['initial'] = common.clean_initial(raw['initial'])
+    clean['finals'] = common.clean_final(raw['finals'])
 
     # 部分声调被错误转为日期格式，还原成数字
-    mask = clean['tone'].str.match(r'^\d+年\d+月\d+日$')
+    mask = raw['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
     clean.loc[mask, 'tone'] = pandas.to_datetime(
-        clean.loc[mask, 'tone'],
+        raw.loc[mask, 'tone'],
         format=r'%Y年%m月%d日'
     ).dt.dayofyear.astype(str)
-    clean.loc[~mask, 'tone'] = clean.loc[~mask, 'tone'].str.lower() \
-        .str.replace(r'[^1-5↗]', '', regex=True)
 
-    if minfreq > 1:
-        clean.loc[
-            clean['tone'].groupby(clean['tone']).transform('count') <= minfreq,
-            'tone'
-        ] = ''
+    clean.loc[~mask, 'tone'] = raw.loc[~mask, 'tone']
+    clean['tone'] = common.clean_tone(clean['tone'])
 
-    mask = clean['tone'] != data['tone']
-    if numpy.count_nonzero(mask):
-        for (r, c), cnt in pandas.DataFrame({
-            'raw': data.loc[mask, 'tone'],
-            'clean': clean.loc[mask, 'tone']
-        }).value_counts().items():
-            logging.warning(f'replace {r} -> {c} {cnt}')
+    for col in clean.columns:
+        # 删除出现次数少的读音
+        if minfreq > 1:
+            clean.loc[clean.groupby(col)[col].transform('count') < minfreq, col] = ''
 
+        mask = clean[col] != raw[col]
+        if numpy.count_nonzero(mask):
+            for (r, c), cnt in pandas.DataFrame({
+                'raw': raw.loc[mask, col],
+                'clean': clean.loc[mask, col]
+            }).value_counts().items():
+                logging.warning(f'replace {r} -> {c} {cnt}')
+
+    clean[raw.columns.drop(clean.columns)] = raw.drop(clean.columns, axis=1)
     return clean
 
 def load_data(

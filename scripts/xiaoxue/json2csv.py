@@ -17,35 +17,8 @@ import argparse
 import jsonlines
 import pandas
 
+from sinetym.datasets import xiaoxue
 
-def load_json(fname):
-    """
-    载入 JSON lines 格式的方言字音数据.
-
-    Parameters:
-        fname (str): 方言字音数据文件，每行为一个 JSON 字符串
-
-    Returns:
-        dialect (str): 方言名称
-        data (`pandas.DataFrame`): 载入的方言读音数据表
-    """
-
-    # 尝试根据第一条记录确定是什么方言，查找记录中第一个类型为数组的元素
-    with jsonlines.open(fname) as f:
-        try:
-            dialect = next(k for r in f for k, v in r.items() if isinstance(v, list))
-        except StopIteration:
-            logging.error(f'{fname} format error!')
-            return
-
-    with jsonlines.open(fname) as f:
-        data = pandas.json_normalize(
-            (r for r in jsonlines.open(fname) if dialect in r),
-            record_path=dialect,
-            meta=['id', '字形']
-        )
-
-    return dialect, data
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
@@ -75,7 +48,7 @@ if __name__ == '__main__':
             root, ext = os.path.splitext(entry.name)
             if ext == '.jsonl':
                 logging.debug(f'parsing {entry.path} ...')
-                ret = load_json(entry.path)
+                ret = xiaoxue.load_json(entry.path)
 
                 if ret is not None:
                     dialect, data = ret
