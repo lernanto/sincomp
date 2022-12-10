@@ -68,3 +68,27 @@ def clean_tone(raw):
     """
 
     return raw.fillna('').str.replace(r'[^1-5↗]', '', regex=True)
+
+def transform_data(data, index='lid', agg=None):
+    """
+    把方言读音数据长表转换为宽表.
+
+    当 index 为 lid 时，以地点为行，字为列，声韵调为子列。
+    当 index 为 cid 时，以字为行，地点为列，声韵调为子列。
+
+    Parameters:
+        data (`pandas.DataFrame`): 原始方言读音数据表
+        index (str): 指明以原始表的哪一列为行，lid 一个地点为一行，cid 一个字为一行
+        agg (str or callable): 不为 None 时，先对 ['lid', 'cid'] 进行分组并用 agg 函数合并
+
+    Returns:
+        output (`pandas.DataFrame`): 变换格式后的数据表
+    """
+
+    if agg is not None:
+        data = data.groupby(['lid', 'cid']).agg(agg).reset_index()
+
+    return data.pivot(index=index, columns='cid' if index == 'lid' else 'lid') \
+        .swaplevel(axis=1) \
+        .sort_index(axis=1, level=0, sort_remaining=False) \
+        .fillna('')

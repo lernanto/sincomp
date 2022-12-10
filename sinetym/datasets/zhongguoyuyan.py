@@ -101,41 +101,30 @@ def clean_data(raw, minfreq=2):
     clean[raw.columns.drop(clean.columns)] = raw.drop(clean.columns, axis=1)
     return clean
 
-def load_data(
-    prefix,
-    ids,
-    suffix='mb01dz.csv',
-    force_complete=False,
-    sep=' ',
-    transpose=False
-):
+def load_data(prefix, ids=(), suffix='mb01dz.csv'):
     """
     加载方言字音数据.
 
     Parameters:
         prefix (str): 方言字音数据文件路径的前缀
-        ids (iterable): 要加载的方言代码列表，完整的方言字音文件路径由代码加上前后缀构成
+        ids (iterable): 要加载的方言代码列表，完整的方言字音文件路径由代码加上前后缀构成，
+            当为空时，加载路径中所有匹配指定后缀的文件
         suffix (str): 方言字音数据文件路径的后缀
-        force_complete (bool): 保证一个读音的声母、韵母、声调均有效，否则舍弃该读音
-        sep (str): 在返回结果中，当一个字有多个读音时，用来分隔多个读音的分隔符
-        transpose (bool): 返回结果默认每行代表一个方言，当 transpose 为真时每行代表一个字
 
     Returns:
         data (`pandas.DataFrame`): 方言字音表
     """
 
-    logging.info('loading {} data files ...'.format(len(ids)))
+    if len(ids) == 0:
+        ids = sorted(e.name[:-len(suffix)] for e in os.scandir(prefix) \
+            if e.is_file() and e.name.endswith(suffix))
 
-    columns = ['initial', 'finals', 'tone']
-    dtypes = {
-        'iid': int,
-        'initial': str,
-        'finals': str,
-        'tone': str,
-        'memo': str
-    }
+    if len(ids) == 0:
+        logging.error(f'no data file matching suffix {suffix} in {prefix}!')
+        return
 
-    load_ids = []
+    logging.info(f'loading data from {prefix} ...')
+
     dialects = []
     for id in ids:
         try:
@@ -145,48 +134,49 @@ def load_data(
             d = pandas.read_csv(
                 fname,
                 encoding='utf-8',
-                index_col='iid',
-                usecols=dtypes.keys(),
-                dtype=dtypes
+                dtype={
+                    'iid': int,
+                    'initial': str,
+                    'finals': str,
+                    'tone': str
+                }
             ).fillna('')
 
         except Exception as e:
-            logging.error('cannot load file {}: {}'.format(fname, e), exc_info=True)
+            logging.error(f'cannot load file {fname}: {e}', exc_info=True)
             continue
 
         d = clean_data(d)
-
-        if force_complete:
-            # 保证一个读音的声母、韵母、声调均有效，否则删除该读音
-            invalid = (d[columns].isna() | (d[columns] == '')).any(axis=1)
-            invalid_num = numpy.count_nonzero(invalid)
-            if invalid_num > 0:
-                logging.warning('drop {}/{} invalid records from {}'.format(
-                    invalid_num,
-                    d.shape[0],
-                    fname
-                ))
-                logging.warning(d[invalid])
-
-                d = d[~invalid]
-
+        d.insert(0, 'lid', id)
+        # 替换列名为统一的名称
+        d.rename(
+            columns={'iid': 'cid', 'name': 'character', 'finals': 'final'},
+            inplace=True
+        )
         dialects.append(d)
-        load_ids.append(id)
 
-    logging.info('done. {} data file loaded'.format(len(dialects)))
+    logging.info(f'done, {len(dialects)} data file loaded')
+    return pandas.concat(dialects, axis=0, ignore_index=True)
 
-    data = pandas.concat(
-        [d.groupby(d.index).agg(sep.join) for d in dialects],
-        axis=1,
-        keys=load_ids,
-        sort=True
-    ).fillna('')
-    logging.info(f'load data of {data.columns.levels[0].shape[0]} dialects x {data.shape[0]} characters')
+def force_complete(data):
+    """
+    保证一个读音的声母、韵母、声调均有效，否则删除该读音.
 
-    if not transpose:
-        data = data.stack().transpose()
+    Parameters:
+        data (`pandas.DataFrame`): 原始方言字音数据表
 
-    return data
+    Returns:
+        output (`pandas.DataFrame`): 删除不完整读音后的方言字音数据表
+    """
+
+    columns = ['initial', 'final', 'tone']
+    invalid = (data[columns].isna() | (data[columns] == '')).any(axis=1)
+    invalid_num = numpy.count_nonzero(invalid)
+    if invalid_num > 0:
+        logging.warning(f'drop {invalid_num}/{data.shape[0]} invalid records')
+        logging.warning(data[invalid])
+
+    return data.drop(data.index[invalid])
 
 def get_dialect(location):
     """

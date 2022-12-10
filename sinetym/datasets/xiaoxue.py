@@ -81,8 +81,20 @@ def load_data(prefix, *dialects, suffix='.csv', sep=' '):
         ), sep=sep)
 
         # 不同方言文件中可能存在相同的方言点名称，加上方言名称以区别
-        data.insert(1, '方言', d)
-        data_list.append(data)
+        data.insert(0, 'lid', f'{d}_' + data.pop('方言點'))
+        # 替换列名为统一的名称
+        data.rename(
+            columns={
+                'id': 'cid',
+                '字形': 'character',
+                '聲母': 'initial',
+                '韻母': 'final',
+                '調值': 'tone',
+                '備註': 'memo'
+            },
+            inplace=True
+        )
+        data_list.append(data.sort_values(['lid', 'cid']))
 
     logging.info(f'done, {len(data_list)} data files loaded.')
     return pandas.concat(data_list, axis=0, ignore_index=True)
@@ -173,13 +185,16 @@ def expand_polyphone(data, sep=' '):
 
         return numpy.asarray(rows, dtype=numpy.object_)
 
-    # 原始数据中有些格子有多个读音，以斜杠分隔，需要展开
-    columns = [c for c in data.columns if c.split('_')[-1] in ('聲母', '韻母', '調類', '調值')]
-
+    # 原始数据中有些格子有多个读音需要展开
     # 预先计算每行最多的读音数
     max_row = numpy.asarray(
-        [(data[c].str.count(sep) + 1).fillna(0) for c in columns],
+        [(data.iloc[:, i].str.count(sep) + 1).fillna(0) \
+            for (i, n) in enumerate(data.columns.get_level_values(-1)) \
+            if n in ('initial', 'final', 'tone', '調類')],
         dtype=numpy.int32
     ).max(axis=0)
 
-    return data.reset_index().apply(get_rows, axis=0, max_row=max_row)
+    return data.reset_index() \
+        .apply(get_rows, axis=0, max_row=max_row) \
+        .set_index('cid') \
+        .set_axis(data.columns, axis=1)
