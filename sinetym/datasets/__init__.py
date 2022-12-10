@@ -8,3 +8,4 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 from . import xiaoxue, zhongguoyuyan
+from .common import transform_data
