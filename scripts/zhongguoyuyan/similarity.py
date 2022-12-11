@@ -26,6 +26,7 @@ import plotly.express
 import plotly.figure_factory
 import folium
 
+import sinetym
 from sinetym.datasets import zhongguoyuyan
 
 
@@ -656,21 +657,29 @@ if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
 
     prefix = sys.argv[1]
-    location = pandas.read_csv(
-        os.path.join(prefix, 'location.csv'),
-        encoding='utf-8',
-        index_col=0
-    )
-    data = zhongguoyuyan.load_data(prefix, location.index, force_complete=True, transpose=True)
+
     # 对每个字取第一个声母、韵母、声调均非空的读音
     # 声韵调部分有值部分为空会导致统计数据细微偏差
-    data = data.loc[:, pandas.IndexSlice[:, ['initial', 'finals', 'tone']]] \
-        .apply(lambda c: c.str.split(' ').str[0])
+    data = sinetym.datasets.transform_data(
+        zhongguoyuyan.force_complete(
+            zhongguoyuyan.load_data(prefix)[[
+                'lid',
+                'cid',
+                'initial',
+                'final',
+                'tone'
+            ]]
+        ),
+        index='cid',
+        agg='first'
+    )
+
+    ids = data.columns.levels[0]
 
     chisq = chi2(data.values, parallel=4)
-    pandas.DataFrame(chisq, index=data.index, columns=data.index) \
+    pandas.DataFrame(chisq, index=ids, columns=ids) \
         .to_csv('chi2.csv', line_terminator='\n')
 
     ent = entropy(data.values, parallel=4)
-    pandas.DataFrame(ent, index=data.index, columns=data.index) \
+    pandas.DataFrame(ent, index=ids, columns=ids) \
         .to_csv('entropy.csv', line_terminator='\n')

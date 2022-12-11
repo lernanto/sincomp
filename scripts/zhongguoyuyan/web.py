@@ -14,6 +14,7 @@ import os
 import pandas as pd
 import dtale
 
+import sinetym
 from sinetym.datasets import zhongguoyuyan
 
 
@@ -35,10 +36,10 @@ if __name__ == '__main__':
         os.path.join(dialect_path, 'location.csv')
     )
     char = pd.read_csv(os.path.join(args.path, 'words.csv'), index_col=0)
-    data = zhongguoyuyan.load_data(
-        dialect_path,
-        location.index,
-        transpose=True
+    data = sinetym.datasets.transform_data(
+        zhongguoyuyan.load_data(dialect_path),
+        index='cid',
+        agg=' '.join
     ).reindex(char.index)
 
     location[['area', 'slice', 'slices']] \
@@ -76,7 +77,7 @@ if __name__ == '__main__':
         '02G49',    # 厦门
         '02193'     # 建瓯
     ]
-    columns = ['initial', 'finals', 'tone']
+    columns = ['initial', 'final', 'tone']
     dtale.views.startup(
         data=pd.DataFrame(
             data.loc[:, (indeces, columns)] \
@@ -95,7 +96,7 @@ if __name__ == '__main__':
     data = data.apply(lambda c: c.str.split(' '))
     pronunciation = data.loc[:, pd.IndexSlice[:, 'initial']] \
         .droplevel(axis=1, level=1).combine(
-        data.loc[:, pd.IndexSlice[:, 'finals']].droplevel(axis=1, level=1),
+        data.loc[:, pd.IndexSlice[:, 'final']].droplevel(axis=1, level=1),
         combine_phone
     ).combine(
         data.loc[:, pd.IndexSlice[:, 'tone']].droplevel(axis=1, level=1),
