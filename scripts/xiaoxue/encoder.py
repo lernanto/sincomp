@@ -16,6 +16,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorboard.plugins import projector
 
+import sinetym
 from sinetym.datasets import xiaoxue
 
 class ContrastiveEncoder:
@@ -353,43 +354,45 @@ class NoiseGenerator:
 
 
 if __name__ == '__main__':
-    input_file = sys.argv[1]
+    prefix, dialect = sys.argv[1:3]
 
-    data = xiaoxue.clean_data(xiaoxue.load_data(input_file))
+    data = xiaoxue.expand_polyphone(sinetym.datasets.transform_data(
+        xiaoxue.load_data(prefix, dialect)[[
+            'lid',
+            'cid',
+            'initial',
+            'final',
+            'tone'
+        ]],
+        index='cid'
+    )).replace('', pd.NA).dropna(how='all')
 
-    for c in data.columns:
-        if c.partition('_')[2] in ('聲母', '韻母', '調值'):
-            data[c] = data[c].astype('category')
+    data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((
+        ['initial', 'final', 'tone'],
+        data.columns.levels[0]
+    )))
 
-    initials = [c for c in data.columns if c.endswith('聲母')]
-    finals = [c for c in data.columns if c.endswith('韻母')]
-    tones = [c for c in data.columns if c.endswith('調值')]
-    columns = initials + finals + tones
+    data = pd.concat([data[c].astype('category') for c in data.columns], axis=1)
 
-    data.dropna(how='all', subset=columns, inplace=True)
-
-    for c in columns:
-        data[c] = data[c].astype('category')
-
-    initial_categories = [t.categories for t in data.dtypes[initials]]
-    final_categories = [t.categories for t in data.dtypes[finals]]
-    tone_categories = [t.categories for t in data.dtypes[tones]]
-    categories = initial_categories + final_categories + tone_categories
-
-    bases = np.insert(np.cumsum([len(c) for c in categories])[:-1], 0, 0)
-    codes = np.empty(data[columns].shape, dtype=np.int32)
-    for i, c in enumerate(columns):
-        codes[:, i] = data[c].cat.codes
-
+    bases = np.insert(
+        np.cumsum([len(t.categories) for t in data.dtypes])[:-1],
+        0,
+        0
+    )
+    codes = np.stack(
+        [data.iloc[:, i].cat.codes for i in range(data.shape[1])],
+        axis=1
+    )
     codes = pd.DataFrame(
-        columns=columns,
-        data=np.where(codes >= 0, codes + bases, -1)
+        data=np.where(codes >= 0, codes + bases, -1),
+        index=data.index,
+        columns=data.columns
     )
 
     generator = ContrastiveGenerator(
-        codes[initials].values,
-        codes[finals].values,
-        codes[tones].values
+        codes.loc[:, 'initial'].values,
+        codes.loc[:, 'final'].values,
+        codes.loc[:, 'tone'].values
     )
 
     dataset = tf.data.Dataset.from_generator(
@@ -406,7 +409,7 @@ if __name__ == '__main__':
     )
 
     emb_size = 10
-    encoder = AutoEncoder(sum(len(c) for c in categories), emb_size)
+    encoder = AutoEncoder(sum(len(t.categories) for t in data.dtypes), emb_size)
     optimizer = tf.optimizers.Adam()
 
     output_prefix = os.path.join(
@@ -440,15 +443,16 @@ if __name__ == '__main__':
             manager.save()
 
     log_dir = 'tensorboard'
-    data[['id'] + columns].to_csv(
+    data.set_axis(['_'.join(c) for c in data.columns], axis=1).to_csv(
         os.path.join(log_dir, 'metadata.tsv'),
         sep='\t',
-        index=False
+        encoding='utf-8',
+        lineterminator='\n'
     )
 
-    initial_emb = encoder.encode(codes[initials].values).numpy()
-    final_emb = encoder.encode(codes[finals].values).numpy()
-    tone_emb = encoder.encode(codes[tones].values).numpy()
+    initial_emb = encoder.encode(codes.loc[:, 'initial'].values).numpy()
+    final_emb = encoder.encode(codes.loc[:, 'final'].values).numpy()
+    tone_emb = encoder.encode(codes.loc[:, 'tone'].values).numpy()
 
     cp = tf.train.Checkpoint(
         initial_embedding=tf.Variable(initial_emb),
