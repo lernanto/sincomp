@@ -9,19 +9,12 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import argparse
-import logging
 import os
 import pandas as pd
 import dtale
 
 import sinetym
 from sinetym.datasets import zhongguoyuyan
-
-
-def combine_phone(part1, part2):
-    """连接字音数据表中声韵调的辅助函数."""
-
-    return part1.combine(part2, (lambda x, y: [i + j for (i, j) in zip(x, y)]))
 
 
 if __name__ == '__main__':
@@ -33,14 +26,11 @@ if __name__ == '__main__':
 
     dialect_path = os.path.join(args.path, 'dialect')
     location = zhongguoyuyan.load_location(
-        os.path.join(dialect_path, 'location.csv')
+        os.path.join(args.path, 'location.csv')
     )
     char = pd.read_csv(os.path.join(args.path, 'words.csv'), index_col=0)
-    data = sinetym.datasets.transform_data(
-        zhongguoyuyan.load_data(dialect_path),
-        index='cid',
-        agg=' '.join
-    ).reindex(char.index)
+    data = zhongguoyuyan.load_data(dialect_path)
+    data = data[data['cid'].isin(char.index)]
 
     location[['area', 'slice', 'slices']] \
         = location[['area', 'slice', 'slices']].fillna('')
@@ -77,38 +67,44 @@ if __name__ == '__main__':
         '02G49',    # 厦门
         '02193'     # 建瓯
     ]
-    columns = ['initial', 'final', 'tone']
-    dtale.views.startup(
-        data=pd.DataFrame(
-            data.loc[:, (indeces, columns)] \
-                .applymap(lambda x: ' '.join(sorted(set(x.split())))).values,
-            index=char.index.astype(str) + char['item'],
-            columns=pd.MultiIndex.from_product((
-                location.loc[indeces, ['city', 'county']].apply(''.join, axis=1),
-                columns
-            ))
-        ),
-        name='character',
+    character = sinetym.datasets.transform_data(
+        data.loc[
+            data['lid'].isin(indeces),
+            ['lid', 'cid', 'initial', 'final', 'tone']
+        ],
+        index='cid',
+        agg=lambda x: ' '.join(set(x))
+    )
+    character.set_index(
+        character.index.astype(str) + char.reindex(character.index)['item'],
         inplace=True
     )
+    character.columns = pd.MultiIndex.from_product((
+        location.reindex(character.columns.levels[0])[['city', 'county']] \
+            .apply(''.join, axis=1),
+        character.columns.levels[1]
+    ))
+
+    dtale.views.startup(data=character, name='character', inplace=True)
 
     # 拼接声韵调成为完整读音
-    data = data.apply(lambda c: c.str.split(' '))
-    pronunciation = data.loc[:, pd.IndexSlice[:, 'initial']] \
-        .droplevel(axis=1, level=1).combine(
-        data.loc[:, pd.IndexSlice[:, 'final']].droplevel(axis=1, level=1),
-        combine_phone
-    ).combine(
-        data.loc[:, pd.IndexSlice[:, 'tone']].droplevel(axis=1, level=1),
-        combine_phone
-    ).combine(
-        data.loc[:, pd.IndexSlice[:, 'memo']].droplevel(axis=1, level=1),
-        combine_phone
-    ).apply(lambda c: c.str.join(' ').str.replace('∅', ''))
-
-    pronunciation.columns = pronunciation.columns \
-        + location.loc[pronunciation.columns, 'city'] \
-        + location.loc[pronunciation.columns, 'county']
+    pronunciation = sinetym.datasets.transform_data(
+        pd.DataFrame({
+            'lid': data['lid'],
+            'cid': data['cid'],
+            'pronunciation': data[[
+                'initial',
+                'final',
+                'tone',
+                'memo'
+            ]].replace('∅', '').apply(''.join, axis=1)
+        }),
+        index='cid',
+        agg=' '.join
+    )
+    pronunciation.columns = pronunciation.columns.get_level_values(0) \
+        + location.loc[pronunciation.columns.get_level_values(0), 'city'] \
+        + location.loc[pronunciation.columns.get_level_values(0), 'county']
     pronunciation.set_index(char.index.astype(str) + char['item'], inplace=True)
 
     dtale.views.startup(
