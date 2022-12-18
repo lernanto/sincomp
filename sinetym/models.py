@@ -1,31 +1,23 @@
-#!/usr/bin/python3 -O
-# -*- encoding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
-'''
-使用编码器训练方言音系 embedding.
-'''
+"""
+方言字音编码器模型.
+"""
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import sys
-import os
-import datetime
-import numpy as np
-import pandas as pd
+import numpy
 import tensorflow as tf
-from tensorboard.plugins import projector
 
-import sinetym
-from sinetym.datasets import xiaoxue
 
 class ContrastiveEncoder:
-    '''
+    """
     使用孪生网络 + 对比损失训练方言音系 embedding.
 
     从包含多个方言声母、韵母、声调的同一个样本中随机抽样两份、每份包含部分方言数据的输入，
     输入孪生网络编码成 embedding 后，采用对比损失，即相同样本距离越近越好，不同样本距离必须大于预先指定的边界。
-    '''
+    """
 
     def __init__(self, input_size, emb_size):
         self.embedding = tf.Variable(tf.random_normal_initializer()(
@@ -72,32 +64,32 @@ class ContrastiveEncoder:
 
 
 def gen_sample(data, sample=None):
-    '''
+    """
     生成孪生网络的输入.
-    '''
+    """
 
     def gen():
         input_shapes = [len(d.categories) for d in data.dtypes]
-        base = np.cumsum(input_shapes) - input_shapes
+        base = numpy.cumsum(input_shapes) - input_shapes
         for indices in zip(*[c.cat.codes for _, c in data.iteritems()]):
             indices = tuple(idx + base[i] for i, idx in enumerate(indices) if idx != -1)
             if sample is None:
                 yield indices
             elif len(indices) > sample:
                 yield (
-                    np.random.choice(indices, sample, replace=False),
-                    np.random.choice(indices, sample, replace=False)
+                    numpy.random.choice(indices, sample, replace=False),
+                    numpy.random.choice(indices, sample, replace=False)
                 )
 
     return gen
 
 
 class AutoEncoder:
-    '''
+    """
     孪生网络 + 随机负采样自编码器.
 
     从同一个样本中随机采样两路输入孪生网络，其中一路作为真正的输入，另一路作为预测目标及负采样的负例。
-    '''
+    """
 
     def __init__(self, input_size, emb_size):
         self.embedding = tf.Variable(tf.random_normal_initializer()(
@@ -148,11 +140,11 @@ class AutoEncoder:
 
 
 class ContrastiveGenerator:
-    '''
+    """
     随机样本生成器.
 
     从同一个样本根据指定额采样率随机采样两路输入作为孪生网络的输入。可以对声母、韵母、声调分别指定采样率。
-    '''
+    """
 
     def __init__(self, *data):
         self.data = data
@@ -166,7 +158,7 @@ class ContrastiveGenerator:
         for i, s in enumerate(samples):
             if s < 1:
                 s = int(s * self.data[i].shape[1])
-            samples[i] = np.clip(s, 1, self.data[i].shape[1] - 1)
+            samples[i] = numpy.clip(s, 1, self.data[i].shape[1] - 1)
 
         def gen():
             for i in range(self.data[0].shape[0]):
@@ -176,13 +168,13 @@ class ContrastiveGenerator:
                 for j in range(len(self.data)):
                     indices = self.data[j][i][self.data[j][i] != -1]
                     if indices.shape[0] >= 2:
-                        m = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
-                        n = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
-                        inputs.append(np.random.choice(indices, m, replace=False))
-                        targets.append(np.random.choice(indices, n, replace=False))
+                        m = numpy.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        n = numpy.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        inputs.append(numpy.random.choice(indices, m, replace=False))
+                        targets.append(numpy.random.choice(indices, n, replace=False))
                     else:
-                        inputs.append(np.empty(0))
-                        targets.append(np.empty(0))
+                        inputs.append(numpy.empty(0))
+                        targets.append(numpy.empty(0))
 
                 if sum(ip.shape[0] for ip in inputs) > 0 \
                     and sum(t.shape[0] for t in targets) > 0:
@@ -202,18 +194,18 @@ class ContrastiveGenerator:
 
 
 class DenoisingAutoEncoder:
-    '''
+    """
     降噪自编码器进行方言音系编码.
 
     输入为多个方言点的声母、韵母、声调，随机删除其中部分数据，输出为还原的数据。
     分声母、韵母、声调分别求 embedding，多个方言的声母、韵母、声调分别求平均，
     然后把声母、韵母、声调 embedding 相加得到音节 embedding。
     使用音节 embedding 预测各方言的声母、韵母、声调。
-    '''
+    """
 
     def __init__(self, input_shapes, emb_size, symetric=True):
         self.input_shapes = tuple(input_shapes)
-        self.limits = np.cumsum((0,) + self.input_shapes)
+        self.limits = numpy.cumsum((0,) + self.input_shapes)
         self.embedding = tf.Variable(tf.random_normal_initializer()(
             shape=(self.limits[-1], emb_size),
             dtype=tf.float32
@@ -304,11 +296,11 @@ class DenoisingAutoEncoder:
 
 
 class NoiseGenerator:
-    '''
+    """
     生成降噪自编码器的训练样本.
 
     可以为声母、韵母、声调分别指定采样的比例，按指定的比例随机选择若干个方言的声母、韵母、声调作为输入。
-    '''
+    """
 
     def __init__(self, *data):
         self.data = data
@@ -322,7 +314,7 @@ class NoiseGenerator:
         for i, s in enumerate(samples):
             if isinstance(s, float):
                 s = int(s * self.data[i].shape[1])
-            samples[i] = np.clip(s, 1, self.data[i].shape[1] - 1)
+            samples[i] = numpy.clip(s, 1, self.data[i].shape[1] - 1)
 
         def gen():
             for i in range(self.data[0].shape[0]):
@@ -331,14 +323,14 @@ class NoiseGenerator:
                 for j in range(len(self.data)):
                     indices = self.data[j][i][self.data[j][i] >= 0]
                     if indices.shape[0] >= 2:
-                        m = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
-                        n = np.random.randint(1, min(samples[j] + 1, indices.shape[0]))
-                        inputs.append(np.random.choice(indices, m, replace=False))
+                        m = numpy.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        n = numpy.random.randint(1, min(samples[j] + 1, indices.shape[0]))
+                        inputs.append(numpy.random.choice(indices, m, replace=False))
                     else:
-                        inputs.append(np.empty(0))
+                        inputs.append(numpy.empty(0))
 
                 if sum(ip.shape[0] for ip in inputs) > 0:
-                    yield tuple(inputs), np.concatenate([self.data[j][i] for j in range(len(self.data))])
+                    yield tuple(inputs), numpy.concatenate([self.data[j][i] for j in range(len(self.data))])
 
         return gen
 
@@ -351,120 +343,3 @@ class NoiseGenerator:
 
             if sum(ip.shape[0] for ip in inputs) > 0:
                 yield tuple(inputs)
-
-
-if __name__ == '__main__':
-    prefix, dialect = sys.argv[1:3]
-
-    data = xiaoxue.expand_polyphone(sinetym.datasets.transform_data(
-        xiaoxue.load_data(prefix, dialect)[[
-            'lid',
-            'cid',
-            'initial',
-            'final',
-            'tone'
-        ]],
-        index='cid'
-    )).replace('', pd.NA).dropna(how='all')
-
-    data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((
-        ['initial', 'final', 'tone'],
-        data.columns.levels[0]
-    )))
-
-    data = pd.concat([data[c].astype('category') for c in data.columns], axis=1)
-
-    bases = np.insert(
-        np.cumsum([len(t.categories) for t in data.dtypes])[:-1],
-        0,
-        0
-    )
-    codes = np.stack(
-        [data.iloc[:, i].cat.codes for i in range(data.shape[1])],
-        axis=1
-    )
-    codes = pd.DataFrame(
-        data=np.where(codes >= 0, codes + bases, -1),
-        index=data.index,
-        columns=data.columns
-    )
-
-    generator = ContrastiveGenerator(
-        codes.loc[:, 'initial'].values,
-        codes.loc[:, 'final'].values,
-        codes.loc[:, 'tone'].values
-    )
-
-    dataset = tf.data.Dataset.from_generator(
-        generator.contrastive(0.5),
-        output_types=(
-            (tf.int32, tf.int32, tf.int32),
-            (tf.int32, tf.int32, tf.int32)
-        )
-    ).shuffle(1000).padded_batch(
-        100,
-        padded_shapes=(((None,), (None,), (None,)), ((None,), (None,), (None,))),
-        padding_values=-1,
-        drop_remainder=True
-    )
-
-    emb_size = 10
-    encoder = AutoEncoder(sum(len(t.categories) for t in data.dtypes), emb_size)
-    optimizer = tf.optimizers.Adam()
-
-    output_prefix = os.path.join(
-        'tensorboard',
-        datetime.datetime.now().strftime('%Y%m%d%H%M')
-    )
-
-    log_dir = output_prefix
-    summary_writer = tf.summary.create_file_writer(log_dir)
-    loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
-
-    checkpoint = tf.train.Checkpoint(
-        embedding=encoder.embedding,
-        optimizer=optimizer
-    )
-    manager = tf.train.CheckpointManager(
-        checkpoint,
-        os.path.join(output_prefix, 'checkpoints'),
-        max_to_keep=10
-    )
-
-    for epoch in range(100):
-        for inputs, targets in dataset:
-            loss(encoder.update(inputs, targets, optimizer))
-
-        with summary_writer.as_default():
-                tf.summary.scalar('loss', loss.result(), step=epoch)
-        loss.reset_states()
-
-        if epoch % 10 == 9:
-            manager.save()
-
-    log_dir = 'tensorboard'
-    data.set_axis(['_'.join(c) for c in data.columns], axis=1).to_csv(
-        os.path.join(log_dir, 'metadata.tsv'),
-        sep='\t',
-        encoding='utf-8',
-        lineterminator='\n'
-    )
-
-    initial_emb = encoder.encode(codes.loc[:, 'initial'].values).numpy()
-    final_emb = encoder.encode(codes.loc[:, 'final'].values).numpy()
-    tone_emb = encoder.encode(codes.loc[:, 'tone'].values).numpy()
-
-    cp = tf.train.Checkpoint(
-        initial_embedding=tf.Variable(initial_emb),
-        final_embedding=tf.Variable(final_emb),
-        tone_embedding=tf.Variable(final_emb)
-    )
-    cp.save(os.path.join(log_dir, 'embedding.ckpt'))
-
-    config = projector.ProjectorConfig()
-    for key in ('initial', 'final', 'tone'):
-        embedding = config.embeddings.add()
-        embedding.tensor_name = '{}_embedding/.ATTRIBUTES/VARIABLE_VALUE'.format(key)
-        embedding.metadata_path = 'metadata.tsv'
-
-    projector.visualize_embeddings(log_dir, config)
