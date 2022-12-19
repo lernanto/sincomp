@@ -7,4 +7,4 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-from . import datasets, models, similarity, plot
+from . import datasets, auxiliary, models, similarity, plot
