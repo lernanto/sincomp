@@ -28,7 +28,6 @@ from sklearn.tree import DecisionTreeClassifier
 import joblib
 
 import sinetym
-from sinetym.datasets import xiaoxue
 
 
 def impute(data):
@@ -202,18 +201,17 @@ def main():
     logging.getLogger().setLevel(logging.DEBUG)
 
     # 加载方言字音数据
-    data = xiaoxue.expand_polyphone(
-        sinetym.datasets.transform_data(
-            xiaoxue.load_data(args.input, *args.dialects)[[
-                'lid',
-                'cid',
-                'initial',
-                'final',
-                '調類'
-            ]],
-            index='cid'
-        )
-    ).replace('', pd.NA).rename(columns={'調類': 'tone'})
+    data = sinetym.datasets.transform_data(
+        sinetym.datasets.load_data(args.input, *args.dialects)[[
+            'lid',
+            'cid',
+            'initial',
+            'final',
+            'tone_category'
+        ]],
+        index='cid',
+        agg='first'
+    ).replace('', pd.NA).rename(columns={'tone_category': 'tone'})
 
     # 丢弃缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
