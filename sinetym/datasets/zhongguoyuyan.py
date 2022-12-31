@@ -13,8 +13,6 @@ import pandas
 import numpy
 from sklearn.neighbors import KNeighborsClassifier
 
-from . import common
-
 
 def clean_location(location):
     """
@@ -57,106 +55,6 @@ def clean_location(location):
     clean.loc[mask, 'city'] = ''
 
     return clean
-
-def clean_data(raw, minfreq=2):
-    """
-    清洗方言字音数据中的录入错误.
-
-    Parameters:
-        raw (`pandas.DataFrame`): 方言字音数据表
-        minfreq (int): 在一种方言中出现次数少于该值的声韵调会从该方言中删除
-
-    Returns:
-        clean (`pandas.DataFram`): 清洗后的方言字音数据表
-    """
-
-    clean = pandas.DataFrame()
-
-    clean['initial'] = common.clean_initial(raw['initial'])
-    clean['finals'] = common.clean_final(raw['finals'])
-
-    # 部分声调被错误转为日期格式，还原成数字
-    mask = raw['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
-    clean.loc[mask, 'tone'] = pandas.to_datetime(
-        raw.loc[mask, 'tone'],
-        format=r'%Y年%m月%d日'
-    ).dt.dayofyear.astype(str)
-
-    clean.loc[~mask, 'tone'] = raw.loc[~mask, 'tone']
-    clean['tone'] = common.clean_tone(clean['tone'])
-
-    for col in clean.columns:
-        # 删除出现次数少的读音
-        if minfreq > 1:
-            clean.loc[clean.groupby(col)[col].transform('count') < minfreq, col] = ''
-
-        mask = clean[col] != raw[col]
-        if numpy.count_nonzero(mask):
-            for (r, c), cnt in pandas.DataFrame({
-                'raw': raw.loc[mask, col],
-                'clean': clean.loc[mask, col]
-            }).value_counts().items():
-                logging.warning(f'replace {r} -> {c} {cnt}')
-
-    clean[raw.columns.drop(clean.columns)] = raw.drop(clean.columns, axis=1)
-    return clean
-
-def load_data(prefix, ids=(), suffix='mb01dz.csv'):
-    """
-    加载方言字音数据.
-
-    Parameters:
-        prefix (str): 方言字音数据文件路径的前缀
-        ids (iterable): 要加载的方言代码列表，完整的方言字音文件路径由代码加上前后缀构成，
-            当为空时，加载路径中所有匹配指定后缀的文件
-        suffix (str): 方言字音数据文件路径的后缀
-
-    Returns:
-        data (`pandas.DataFrame`): 方言字音表
-    """
-
-    if len(ids) == 0:
-        ids = sorted(e.name[:-len(suffix)] for e in os.scandir(prefix) \
-            if e.is_file() and e.name.endswith(suffix))
-
-    if len(ids) == 0:
-        logging.error(f'no data file matching suffix {suffix} in {prefix}!')
-        return
-
-    logging.info(f'loading data from {prefix} ...')
-
-    dialects = []
-    for id in ids:
-        try:
-            fname = os.path.join(prefix, id + suffix)
-            logging.info(f'loading {fname} ...')
-
-            d = pandas.read_csv(
-                fname,
-                encoding='utf-8',
-                dtype={
-                    'iid': int,
-                    'initial': str,
-                    'finals': str,
-                    'tone': str
-                }
-            ).fillna('')
-
-        except Exception as e:
-            logging.error(f'cannot load file {fname}: {e}', exc_info=True)
-            continue
-
-        d = clean_data(d)
-        d.insert(0, 'lid', id)
-        # 替换列名为统一的名称
-        d.rename(
-            columns={'iid': 'cid', 'name': 'character', 'finals': 'final'},
-            inplace=True
-        )
-        dialects.append(d)
-
-    logging.info(f'done, {len(dialects)} data file loaded')
-    return pandas.concat(dialects, axis=0, ignore_index=True)
 
 def force_complete(data):
     """

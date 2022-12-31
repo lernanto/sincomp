@@ -15,8 +15,6 @@ import logging
 import pandas
 
 import sinetym
-from sinetym.datasets import zhongguoyuyan
-from sinetym import similarity
 
 
 if __name__ == '__main__':
@@ -41,14 +39,11 @@ if __name__ == '__main__':
     # 对每个字取第一个声母、韵母、声调均非空的读音
     # 声韵调部分有值部分为空会导致统计数据细微偏差
     data = sinetym.datasets.transform_data(
-        zhongguoyuyan.force_complete(
-            zhongguoyuyan.load_data(args.input)[[
-                'lid',
-                'cid',
-                'initial',
-                'final',
-                'tone'
-            ]]
+        sinetym.datasets.zhongguoyuyan.force_complete(
+            sinetym.datasets.load_data(
+                args.input,
+                suffix='mb01dz.csv'
+            )[['lid', 'cid', 'initial', 'final', 'tone']]
         ),
         index='cid',
         agg='first'
@@ -56,6 +51,6 @@ if __name__ == '__main__':
 
     ids = data.columns.levels[0]
 
-    sim = getattr(similarity, args.method)(data.values, parallel=4)
+    sim = getattr(sinetym.similarity, args.method)(data.values, parallel=4)
     pandas.DataFrame(sim, index=ids, columns=ids) \
         .to_csv(output, line_terminator='\n')

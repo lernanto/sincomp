@@ -14,7 +14,6 @@ import pandas as pd
 import dtale
 
 import sinetym
-from sinetym.datasets import zhongguoyuyan
 
 
 if __name__ == '__main__':
@@ -25,11 +24,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     dialect_path = os.path.join(args.path, 'dialect')
-    location = zhongguoyuyan.load_location(
+    location = sinetym.datasets.zhongguoyuyan.load_location(
         os.path.join(args.path, 'location.csv')
     )
     char = pd.read_csv(os.path.join(args.path, 'words.csv'), index_col=0)
-    data = zhongguoyuyan.load_data(dialect_path)
+    data = sinetym.datasets.zhongguoyuyan.load_data(
+        dialect_path,
+        suffix='mb01dz.csv'
+    )
     data = data[data['cid'].isin(char.index)]
 
     location[['area', 'slice', 'slices']] \

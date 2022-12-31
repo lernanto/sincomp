@@ -17,8 +17,6 @@ import tensorflow as tf
 from tensorboard.plugins import projector
 
 import sinetym
-from sinetym.datasets import xiaoxue
-from sinetym import models
 
 
 if __name__ == '__main__':
@@ -40,20 +38,20 @@ if __name__ == '__main__':
         help='学习率'
     )
     parser.add_argument('input', help='方言字音数据目录')
-    parser.add_argument('dialect', help='要建模的方言')
+    parser.add_argument('dialects', nargs='+', help='要建模的方言编号列表')
     args = parser.parse_args()
 
     # 加载方言数据
-    data = xiaoxue.expand_polyphone(sinetym.datasets.transform_data(
-        xiaoxue.load_data(os.path.join(args.input, 'dialect'), args.dialect)[[
-            'lid',
-            'cid',
-            'initial',
-            'final',
-            'tone'
-        ]],
-        index='cid'
-    )).replace('', pd.NA).dropna(how='all')
+    data = sinetym.datasets.load_data(os.path.join(args.input), *args.dialects)
+    char = data[['cid', 'character']].drop_duplicates('cid') \
+        .set_index('cid').sort_index()
+
+    # 展开成字为行、方言点为列的字音矩阵
+    data = sinetym.datasets.transform_data(
+        data[[ 'lid', 'cid', 'initial', 'final', 'tone']],
+        index='cid',
+        agg='first'
+    ).replace('', pd.NA).dropna(how='all')
 
     data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((
         ['initial', 'final', 'tone'],
@@ -78,7 +76,7 @@ if __name__ == '__main__':
         columns=data.columns
     )
 
-    generator = models.ContrastiveGenerator(
+    generator = sinetym.models.ContrastiveGenerator(
         codes.loc[:, 'initial'].values,
         codes.loc[:, 'final'].values,
         codes.loc[:, 'tone'].values
@@ -97,7 +95,7 @@ if __name__ == '__main__':
         drop_remainder=True
     )
 
-    encoder = models.AutoEncoder(
+    encoder = sinetym.models.AutoEncoder(
         sum(len(t.categories) for t in data.dtypes),
         args.embedding_size
     )
@@ -133,12 +131,6 @@ if __name__ == '__main__':
             manager.save()
 
     # 保存声韵调向量及相关数据
-    char = pd.read_csv(
-        os.path.join(args.input, 'char.csv'),
-        encoding='utf-8',
-        index_col='id'
-    )[['字形']].reindex(data.index)
-
     variables = {}
     config = projector.ProjectorConfig()
     for col in ('initial', 'final', 'tone'):
