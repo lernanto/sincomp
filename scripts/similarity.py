@@ -40,13 +40,11 @@ if __name__ == '__main__':
     # 声韵调部分有值部分为空会导致统计数据细微偏差
     data = sinetym.datasets.transform_data(
         sinetym.datasets.zhongguoyuyan.force_complete(
-            sinetym.datasets.load_data(
-                args.input,
-                suffix='mb01dz.csv'
-            )[['lid', 'cid', 'initial', 'final', 'tone']]
+            sinetym.datasets.load_data(args.input, suffix='mb01dz.csv')
         ),
         index='cid',
-        agg='first'
+        values=['initial', 'final', 'tone'],
+        aggfunc='first'
     )
 
     ids = data.columns.levels[0]

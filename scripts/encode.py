@@ -48,9 +48,10 @@ if __name__ == '__main__':
 
     # 展开成字为行、方言点为列的字音矩阵
     data = sinetym.datasets.transform_data(
-        data[[ 'lid', 'cid', 'initial', 'final', 'tone']],
+        data,
         index='cid',
-        agg='first'
+        values=['initial', 'final', 'tone'],
+        aggfunc='first'
     ).replace('', pd.NA).dropna(how='all')
 
     data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((

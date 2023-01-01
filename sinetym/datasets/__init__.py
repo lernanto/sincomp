@@ -207,7 +207,7 @@ def load_data(prefix, *ids, suffix='.csv', general_names=True):
     logging.info(f'done, {len(dialects)} data file loaded')
     return pandas.concat(dialects, axis=0, ignore_index=True)
 
-def transform_data(data, index='lid', agg=None):
+def transform_data(data, index='lid', values=None, aggfunc=' '.join):
     """
     把方言读音数据长表转换为宽表.
 
@@ -217,16 +217,26 @@ def transform_data(data, index='lid', agg=None):
     Parameters:
         data (`pandas.DataFrame`): 原始方言读音数据表
         index (str): 指明以原始表的哪一列为行，lid 一个地点为一行，cid 一个字为一行
-        agg (str or callable): 不为 None 时，先对 ['lid', 'cid'] 进行分组并用 agg 函数合并
+        aggfunc (str or callable): 相同的 lid 和 cid 有多个记录的，使用 aggfunc 函数合并
 
     Returns:
         output (`pandas.DataFrame`): 变换格式后的数据表
     """
 
-    if agg is not None:
-        data = data.groupby(['lid', 'cid']).agg(agg).reset_index()
+    output = data.pivot_table(
+        values,
+        index=index,
+        columns='cid' if index == 'lid' else 'lid',
+        aggfunc=aggfunc,
+        fill_value='',
+        sort=False
+    )
 
-    return data.pivot(index=index, columns='cid' if index == 'lid' else 'lid') \
-        .swaplevel(axis=1) \
-        .sort_index(axis=1, level=0, sort_remaining=False) \
-        .fillna('')
+    if output.columns.nlevels <= 1:
+        return output
+    else:
+        # 如果列名为多层级，把指定的列名上移到最高层级
+        return output.swaplevel(axis=1).reindex(pandas.MultiIndex.from_product((
+            output.columns.levels[1],
+            output.columns.levels[0]
+        )), axis=1)

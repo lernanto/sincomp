@@ -70,12 +70,10 @@ if __name__ == '__main__':
         '02193'     # 建瓯
     ]
     character = sinetym.datasets.transform_data(
-        data.loc[
-            data['lid'].isin(indeces),
-            ['lid', 'cid', 'initial', 'final', 'tone']
-        ],
+        data[data['lid'].isin(indeces)],
         index='cid',
-        agg=lambda x: ' '.join(set(x))
+        values=['initial', 'final', 'tone'],
+        aggfunc=lambda x: ' '.join(set(x))
     )
     character.set_index(
         character.index.astype(str) + char.reindex(character.index)['item'],
@@ -101,8 +99,8 @@ if __name__ == '__main__':
                 'memo'
             ]].replace('∅', '').apply(''.join, axis=1)
         }),
-        index='cid',
-        agg=' '.join
+        values='pronunciation',
+        index='cid'
     )
     pronunciation.columns = pronunciation.columns.get_level_values(0) \
         + location.loc[pronunciation.columns.get_level_values(0), 'city'] \
