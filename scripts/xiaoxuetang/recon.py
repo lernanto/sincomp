@@ -202,16 +202,12 @@ def main():
 
     # 加载方言字音数据
     data = sinetym.datasets.transform_data(
-        sinetym.datasets.load_data(args.input, *args.dialects)[[
-            'lid',
-            'cid',
-            'initial',
-            'final',
-            'tone_category'
-        ]],
+        sinetym.datasets.load_data(args.input, *args.dialects) \
+            .rename(columns={'tone_category': 'tone'}),
         index='cid',
-        agg='first'
-    ).replace('', pd.NA).rename(columns={'tone_category': 'tone'})
+        values=['initial', 'final', 'tone'],
+        aggfunc='first'
+    ).replace('', pd.NA)
 
     # 丢弃缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
