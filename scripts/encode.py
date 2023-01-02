@@ -52,24 +52,19 @@ if __name__ == '__main__':
         index='cid',
         values=['initial', 'final', 'tone'],
         aggfunc='first'
-    ).replace('', pd.NA).dropna(how='all')
+    )
 
     data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((
         ['initial', 'final', 'tone'],
         data.columns.levels[0]
     )))
 
-    data = pd.concat([data[c].astype('category') for c in data.columns], axis=1)
-
     # 方言声韵调编码，缺失值为 -1
+    codes, categories = sinetym.auxiliary.encode(data)
     bases = np.insert(
-        np.cumsum([len(t.categories) for t in data.dtypes])[:-1],
+        np.cumsum([c.shape[0] for c in categories])[:-1],
         0,
         0
-    )
-    codes = np.stack(
-        [data.iloc[:, i].cat.codes for i in range(data.shape[1])],
-        axis=1
     )
     codes = pd.DataFrame(
         data=np.where(codes >= 0, codes + bases, -1),
@@ -97,7 +92,7 @@ if __name__ == '__main__':
     )
 
     encoder = sinetym.models.AutoEncoder(
-        sum(len(t.categories) for t in data.dtypes),
+        sum(c.shape[0] for c in categories),
         args.embedding_size
     )
     optimizer = tf.optimizers.Adam(args.learning_rate)
