@@ -53,6 +53,7 @@ if __name__ == '__main__':
         values=['initial', 'final', 'tone'],
         aggfunc='first'
     )
+    char = char.reindex(data.index)
 
     data = data.swaplevel(axis=1).reindex(columns=pd.MultiIndex.from_product((
         ['initial', 'final', 'tone'],
