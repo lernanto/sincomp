@@ -8,6 +8,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import numpy
+import scipy.interpolate
 import geopandas
 import matplotlib.pyplot
 import cartopy.crs
@@ -119,6 +120,101 @@ def plot_primary_component(
         color=auxiliary.pc2color(pc),
         **kwargs
     )
+
+def isogloss(
+    latitudes,
+    longitudes,
+    values,
+    ax=None,
+    fill=True,
+    cmap='coolwarm',
+    vmin=None,
+    vmax=None,
+    extent=None,
+    clip=None,
+    **kwargs
+):
+    """
+    绘制同言线地图.
+
+    输入参数为一系列样本点坐标，及样本点符合某个语言特征的程度值，通常取值范围为 [0, 1]。
+    使用径向基函数根据样本点插值，计算整个绘制空间的值，然后据此计算等值线。
+    如果指定了裁剪范围，只绘制该范围内的等值线。
+
+    Parameters:
+        latitudes (`numpy.ndarray`): 样本点的纬度数组
+        longitudes (`numpy.ndarray`): 样本点的经度数组
+        values (`numpy.ndarray`): 样本点的值，通常取值范围为 [0, 1]
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
+            如果为空，创建一个新对象
+        cmap: 等值线图使用的颜色集
+        vmin (float): 最小值，用于裁剪插值结果及作图
+        vmax (float): 最大值，用于裁剪插值结果及作图
+        extent: 绘制的范围 (左, 右, 下, 上)
+        clip (`shapely.geometry.multipolygon.MultiPolygon`):
+            裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
+        kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
+
+    Returns:
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
+        extent: 绘制的范围
+        cs (`matplotlib.contour.QuadContourSet`): 绘制的等值线集合
+    """
+
+    if extent is None:
+        # 根据样本点的中心和标准差计算绘制范围
+        lat_mean = numpy.mean(latitudes)
+        lon_mean = numpy.mean(longitudes)
+        lat_std = numpy.std(latitudes)
+        lon_std = numpy.std(longitudes)
+        # 正态分布的左右2个标准差覆盖了95%以上的样本
+        min_lat, max_lat = lat_mean - 2 * lat_std, lat_mean + 2 * lat_std
+        min_lon, max_lon = lon_mean - 2 * lon_std, lon_mean + 2 * lon_std
+        extent = (min_lon, max_lon, min_lat, max_lat)
+
+    else:
+        min_lon, max_lon, min_lat, max_lat = extent
+
+    # 使用径向基函数基于样本点对选定范围进行插值
+    mask = numpy.isfinite(values)
+    rbf = scipy.interpolate.Rbf(
+        longitudes[mask],
+        latitudes[mask],
+        values[mask],
+        function='linear'
+    )
+    lon, lat = numpy.meshgrid(
+        numpy.linspace(min_lon, max_lon, 100),
+        numpy.linspace(min_lat, max_lat, 100)
+    )
+    val = rbf(lon, lat)
+
+    # 限制插值的结果
+    min_val = numpy.min(values[mask]) if vmin is None else vmin
+    max_val = numpy.max(values[mask]) if vmax is None else vmax
+    val = numpy.clip(val, min_val, max_val)
+
+    proj = cartopy.crs.PlateCarree()
+    if ax is None:
+        ax = matplotlib.pyplot.axes(projection=proj)
+
+    # 根据插值结果绘制等值线图
+    cs = (ax.contourf if fill else ax.contour)(
+        lon,
+        lat,
+        val,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        transform=proj,
+        **kwargs
+    )
+
+    if clip is not None:
+        # 根据传入的图形裁剪等值线图
+        auxiliary.clip_paths(cs.collections, clip, extent=extent)
+
+    return ax, extent, cs
 
 def interactive_map(
     latitudes,
