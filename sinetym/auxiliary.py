@@ -72,7 +72,7 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
         vectorizer = TfidfVectorizer(
             lowercase=False,
             tokenizer=lambda s: s.split(sep),
-            stop_words=('',),
+            stop_words=[''],
             binary=binary,
             dtype=dtype,
             norm=norm,
