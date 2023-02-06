@@ -10,9 +10,9 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import pandas
 import numpy
 import scipy.sparse
-from sklearn.preprocessing import OrdinalEncoder
+from sklearn.preprocessing import normalize, OrdinalEncoder
 from sklearn.impute import SimpleImputer
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer
 
 
 def encode(data, dtype=numpy.int32, missing_values='', unknown_value=-1):
@@ -69,16 +69,20 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
     codes = []
 
     for i in range(data.shape[1]):
-        vectorizer = TfidfVectorizer(
+        vectorizer = CountVectorizer(
             lowercase=False,
             tokenizer=lambda s: s.split(sep),
+            token_pattern=None,
             stop_words=[''],
             binary=binary,
-            dtype=dtype,
-            norm=norm,
-            use_idf=False
+            dtype=dtype
         )
-        codes.append(vectorizer.fit_transform(data[:, i]))
+        c = vectorizer.fit_transform(data[:, i])
+
+        if norm is not None:
+            c = normalize(c, norm=norm)
+
+        codes.append(c)
         categories.append(len(vectorizer.vocabulary_))
 
     code = scipy.sparse.hstack(codes)
