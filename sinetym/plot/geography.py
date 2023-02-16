@@ -122,6 +122,80 @@ def plot_primary_component(
         **kwargs
     )
 
+def area(
+    latitudes,
+    longitudes,
+    values,
+    ax=None,
+    extent=None,
+    clip=None,
+    **kwargs
+):
+    """
+    绘制方言分区图.
+
+    Parameters:
+        latitudes (`numpy.ndarray`): 样本点的纬度数组
+        longitudes (`numpy.ndarray`): 样本点的经度数组
+        values (`numpy.ndarray`): 样本点的分类，为整数
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
+            如果为空，创建一个新对象
+        extent: 绘制的范围 (左, 右, 下, 上)
+        clip (`shapely.geometry.multipolygon.MultiPolygon`):
+            裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
+        kwargs: 透传给 `matplotlib.pyplot.Axes.pcolormesh`
+
+    Returns:
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
+        extent: 绘制的范围
+        qm (`matplotlib.collectoins.QuadMesh`): 绘制的色块集
+    """
+
+    if extent is None:
+        # 根据样本点确定绘制边界
+        min_lat = numpy.min(latitudes)
+        max_lat = numpy.max(latitudes)
+        min_lon = numpy.min(longitudes)
+        max_lon = numpy.max(longitudes)
+        lat_margin = 0.05 * (max_lat - min_lat)
+        lon_margin = 0.05 * (max_lon - min_lon)
+        min_lat -= lat_margin
+        max_lat += lat_margin
+        min_lon -= lon_margin
+        max_lon += lon_margin
+        extent = (min_lon, max_lon, min_lat, max_lat)
+
+    else:
+        min_lon, max_lon, min_lat, max_lat = extent
+
+    # 使用最近邻插值计算绘制范围内每个点的分类
+    mask = numpy.isfinite(values)
+    lon, lat = numpy.meshgrid(
+        numpy.linspace(min_lon, max_lon, 1000),
+        numpy.linspace(min_lat, max_lat, 1000)
+    )
+    interp = scipy.interpolate.griddata(
+        numpy.stack([longitudes[mask], latitudes[mask]], axis=1),
+        values[mask],
+        (lon, lat),
+        method='nearest'
+    )
+
+    proj = cartopy.crs.PlateCarree()
+    if ax is None:
+        ax = matplotlib.pyplot.axes(projection=proj)
+
+    # 根据插值结果绘制方言分区图，根据传入的图形裁剪
+    qm = ax.pcolormesh(
+        lon,
+        lat,
+        interp,
+        transform=proj,
+        clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
+        **kwargs
+    )
+    return ax, extent, qm
+
 def isogloss(
     latitudes,
     longitudes,
