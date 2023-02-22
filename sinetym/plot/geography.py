@@ -7,6 +7,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import pandas
 import numpy
 import scipy.interpolate
 import geopandas
@@ -174,6 +175,13 @@ def isogloss(
 
     else:
         min_lon, max_lon, min_lat, max_lat = extent
+
+    # 针对完全相同的经纬度，对经度稍作偏移，使能正常计算
+    longitudes = pandas.DataFrame({
+        'latitude': latitudes,
+        'longitude': longitudes
+    }).groupby(['latitude', 'longitude'])['longitude'] \
+        .transform(lambda x: x + numpy.arange(x.shape[0]) * 1e-4).values
 
     # 使用径向基函数基于样本点对选定范围进行插值
     mask = numpy.isfinite(values)
