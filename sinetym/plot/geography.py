@@ -298,14 +298,14 @@ def isogloss(
 
     return ax, extent, cs
 
-def interactive_map(
+def interactive_scatter(
     latitudes,
     longitudes,
-    labels,
-    tips,
-    zoom=5,
-    tiles='https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}',
-    attr='AutoNavi'
+    values,
+    m=None,
+    tips={},
+    marker_kwds={'radius': 5},
+    **kwargs
 ):
     """
     绘制可交互的方言地图.
@@ -313,37 +313,23 @@ def interactive_map(
     Parameters:
         latitudes (`numpy.ndarray`): 方言点的纬度数组
         longitudes (`numpy.ndarray`): 方言点的经度数组
-        labels (`numpy.ndarray`): 方言点的分类
-        tips (`numpy.ndarray`): 方言点显示的标签
-        zoom (int): 地图缩放级别
-        tiles (str): 地图底图瓦片的 URL 格式，地图交互时通过此格式获取所需经纬度的瓦片
-        attr  (str): 用于地图上显示的声明等
+        values (`numpy.ndarray`): 方言点的属性值，可为连续或离散值
+        m (`folium.Map`): 指定在现有的地图上绘制
+        tips (dict of (str, `numpy.ndarray`)): 鼠标悬停在方言点上时显示的提示，每组元素对应一个标签
+        marker_kwds, kwargs: 透传给 `geopandas.GeoDataFrame.explore`
 
     Returns:
-        mp (`folium.Map`): 生成的地图对象
+        m (`folium.Map`): 生成的地图对象
     """
 
-    # 绘制底图
-    mp = folium.Map(
-        location=(numpy.mean(latitudes), numpy.mean(longitudes)),
-        zoom_start=zoom,
-        tiles=tiles,
-        attr=attr
+    location = geopandas.GeoDataFrame(
+        dict(tips, value=values),
+        geometry=geopandas.points_from_xy(longitudes, latitudes)
     )
 
-    # 添加坐标点
-    for i in range(latitudes.shape[0]):
-        # 根据标签序号分配一个颜色
-        r = (labels[i] * 79 + 31) & 0xff
-        g = (labels[i] * 37 + 43) & 0xff
-        b = (labels[i] * 73 + 17) & 0xff
-
-        folium.CircleMarker(
-            (latitudes[i], longitudes[i]),
-            radius=5,
-            tooltip='{} {}'.format(labels[i], tips[i]),
-            color='#{:02x}{:02x}{:02x}'.format(r, g, b),
-            fill=True
-        ).add_to(mp)
-
-    return mp
+    return location[location['value'].notna()].explore(
+        column='value',
+        m=m,
+        marker_kwds=marker_kwds,
+        **kwargs
+    )
