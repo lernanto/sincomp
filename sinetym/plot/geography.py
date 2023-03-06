@@ -333,3 +333,82 @@ def interactive_scatter(
         marker_kwds=marker_kwds,
         **kwargs
     )
+
+def interactive(
+        latitudes,
+        longitudes,
+        values,
+        m=None,
+        zoom=5,
+        tiles='https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}',
+        attr='高德地图',
+        names=None,
+        tips={},
+        show=None,
+        cmap='coolwarm',
+        vmin=0,
+        vmax=1,
+        legend=False,
+        **kwargs
+):
+    """
+    使用 folium 绘制交互式方言地图.
+
+    对每个方言点的颜色由一个连续的分值确定，一般代表该方言点对某条语音规则的遵从程度。
+
+    Parameters:
+        latitudes (`numpy.ndarray`): 方言点的纬度数组
+        longitudes (`numpy.ndarray`): 方言点的经度数组
+        values (`pandas.DataFrame` 或 `numpy.ndarray`): 指定方言点的分值
+        m (`folium.Map`): 指定在现有的地图上绘制
+        zoom (int): 地图缩放级别
+        tiles (str): 地图底图瓦片的 URL 格式，地图交互时通过此格式获取所需经纬度的瓦片，
+            默认为高德地图街道图
+        attr (str): 用于地图上显示的声明等
+        names (list-like): 用于在地图上显示的图层名称，每组分值一个
+        tips (dict of (str, `numpy.ndarray`)): 鼠标悬停在方言点上时显示的提示，每组元素对应一个标签
+        show (bool): 是否显示图层，默认只显示第一组分值
+        cmap, vmin, vmax, legend, kwargs: 透传给 `geopandas.GeoDataFrame.explore`
+
+    Returns:
+        m (`folium.Map`): 绘制的地图对象
+    """
+
+    if names is None:
+        names = (values.columns.values if isinstance(values, pandas.DataFrame) \
+            else numpy.arange(values.shape[1])).astype(str)
+
+    if isinstance(values, pandas.DataFrame):
+        values = values.values
+
+    if m is None:
+        # 创建底图
+        m = folium.Map(
+            location=(numpy.mean(latitudes), numpy.mean(longitudes)),
+            tiles=None,
+            zoom_start=zoom
+        )
+
+    # 添加底图
+    folium.TileLayer(tiles=tiles, attr=attr, name='background').add_to(m)
+
+    # 为每一组分值添加一个图层
+    for i in range(values.shape[1]):
+        interactive_scatter(
+            latitudes,
+            longitudes,
+            values[:, i],
+            m=m,
+            tips=tips,
+            name=names[i],
+            show=(i == 0) if show is None else show,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            legend=legend,
+            **kwargs
+        )
+
+    # 添加选择图层的控件
+    folium.LayerControl().add_to(m)
+    return m
