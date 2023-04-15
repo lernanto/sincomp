@@ -30,7 +30,7 @@ def clean_location(location):
             .str.replace('^[(（]无[)）]$', '', regex=True) \
             .str.replace('(.)（.*）$', r'\1', regex=True) \
             .str.replace('[（）]', '', regex=True) \
-            .str.replace('(?:(?:土家|布衣|蒙古|朝鲜|哈尼|.)族|哈萨克)*自治[州县]$', '', regex=True) \
+            .str.replace('(?:(?:土家|布依|蒙古|朝鲜|哈尼|.)族|哈萨克)*自治[州县]$', '', regex=True) \
             .str.replace('^(?:.*市区.*|市[内辖].+区)$', '市区', regex=True) \
             .str.replace('^(.{2,})(?:地|新|特|林|综合实验)区$', r'\1', regex=True) \
             .str.replace('^(.{2,6})[市州县区]$', r'\1', regex=True)
