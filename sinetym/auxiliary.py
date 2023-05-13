@@ -48,12 +48,12 @@ def encode(data, dtype=numpy.int32, missing_values='', unknown_value=-1):
 
 def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
     """
-    对方言读音进行稀疏编码.
+    对一个方言读音的数组或包含多个方言读音的矩阵进行稀疏编码.
 
     原始数据以字为行，以方言点的声韵调为列，允许一格包含多个音，以指定分隔符分隔。
 
     Parameters:
-        data (array): M x N 矩阵，元素为字符串，每行为一个字，每列为一个方言点的声母/韵母/声调
+        data (array): 长度为 M 的数组 或 M x N 矩阵，当为矩阵时，每列为一个方言点的声母/韵母/声调
         sep (str): 分隔多音字的多个音的分隔符
         binary (bool): 为真时，返回的编码为 0/1 编码，否则返回读音的计数
         norm (str): 是否对返回编码归一化：
@@ -63,39 +63,49 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
 
     Returns:
         code (`scipy.sparse.csr_matrix`): 稀疏编码得到的稀疏矩阵，行数为 M，列数为所有列读音数之和
-        limits (`numpy.ndarray`): 表示编码边界的数组，长度为 N + 1，data[:, i]
-            的编码为 code[:, limits[i]:limits[i + 1]]
+        limits (`numpy.ndarray`): 仅当 data 为矩阵时返回，表示编码边界的数组，
+            长度为 N + 1，data[:, i] 的编码为 code[:, limits[i]:limits[i + 1]]
     """
 
-    if isinstance(data, pandas.DataFrame):
+    if isinstance(data, pandas.DataFrame) or isinstance(data, pandas.Series):
         data = data.values
 
-    categories = []
-    codes = []
-
-    for i in range(data.shape[1]):
-        vectorizer = CountVectorizer(
+    if data.ndim == 1:
+        # 一维数组，直接编码返回
+        code = CountVectorizer(
             lowercase=False,
             tokenizer=lambda s: s.split(sep),
             token_pattern=None,
             stop_words=[''],
             binary=binary,
             dtype=dtype
-        )
-        c = vectorizer.fit_transform(data[:, i])
+        ).fit_transform(data)
 
-        if norm is not None:
-            c = normalize(c, norm=norm)
+        return code if norm is None else normalize(code, norm=norm)
 
-        codes.append(c)
-        categories.append(len(vectorizer.vocabulary_))
+    # 矩阵，分别编码每列然后拼接
+    categories = []
+    codes = []
+    columns = []
+
+    for i in range(data.shape[1]):
+        c = CountVectorizer(
+            lowercase=False,
+            tokenizer=lambda s: s.split(sep),
+            token_pattern=None,
+            stop_words=[''],
+            binary=binary,
+            dtype=dtype
+        ).fit_transform(data[:, i])
+
+        codes.append(c if norm is None else normalize(c, norm=norm))
+        columns.append(c.shape[1])
 
     code = scipy.sparse.hstack(codes)
     # 计算稀疏编码的边界
-    limits = numpy.empty(len(categories) + 1, dtype=int)
+    limits = numpy.empty(len(columns) + 1, dtype=int)
     limits[0] = 0
-    numpy.cumsum(categories, out=limits[1:])
-
+    numpy.cumsum(columns, out=limits[1:])
     return code, limits
 
 def pc2color(pc):
