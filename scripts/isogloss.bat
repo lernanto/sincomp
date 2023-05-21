@@ -1,0 +1,1 @@
+python -O isogloss.py --size 32,18 --background "C:\Users\lerna\data\natural_earth\raster\NE1_50M_SR_W\NE1_50M_SR_W.tif" --geography "C:\Users\lerna\git\ChinaAdminDivisonSHP\2. Province\province.shp" --extent 98,128,18,48 C:\Users\lerna\git\zhongguoyuyan\csv %*
