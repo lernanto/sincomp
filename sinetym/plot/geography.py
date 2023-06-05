@@ -298,6 +298,78 @@ def isogloss(
 
     return ax, extent, cs
 
+def isoglosses(
+    data,
+    latitudes,
+    longitudes,
+    values,
+    extent,
+    names=None,
+    ax=None,
+    proj=cartopy.crs.PlateCarree(),
+    background=None,
+    geo=None,
+    levels=[0.5],
+    cmap='tab10',
+    **kwargs
+):
+    if ax is None:
+        ax = matplotlib.pyplot.axes(projection=proj)
+
+    # 绘制背景图政区边界
+    if background is not None:
+        ax.imshow(
+            background,
+            transform=proj,
+            extent=[-180, 180, -90, 90]
+        )
+
+    if geo is not None:
+        geo = tuple(geo)
+        ax.add_geometries(geo, proj, edgecolor='gray', facecolor='none')
+
+    if isinstance(cmap, str):
+        cmap = matplotlib.pyplot.colormaps[cmap]
+
+    for i, val in enumerate(values):
+        isogloss(
+            data[latitudes],
+            data[longitudes],
+            data[val],
+            ax=ax,
+            fill=False,
+            label=val,
+            cmap=None,
+            vmin=0,
+            vmax=1,
+            extent=extent,
+            clip=geo,
+            levels=levels,
+            colors=[cmap(i)]
+        )
+
+    if names is not None:
+        scatter(
+            data[latitudes],
+            data[longitudes],
+            ax=ax,
+            extent=extent,
+            clip=geo,
+            marker='.',
+            color='black'
+        )
+
+        for _, r in data[
+            (data[longitudes] > extent[0]) \
+            & (data[longitudes] < extent[1])
+            & (data[latitudes] > extent[2]) \
+            & (data[latitudes] < extent[3])
+        ].iterrows():
+            ax.annotate(r[names], xy=(r[longitudes], r[latitudes]))
+
+    ax.set_extent(extent, crs=proj)
+    return ax
+
 def interactive_scatter(
     latitudes,
     longitudes,
