@@ -181,6 +181,7 @@ def _isogloss(
     func,
     ax=None,
     fill=True,
+    label=False,
     clip=None,
     resolution=100,
     **kwargs
@@ -197,6 +198,7 @@ def _isogloss(
         func (callable): 符合度值函数，输入参数为坐标数组，返回符合度数组
         ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，如果为空，创建一个新对象
         fill (bool): 为真时填充颜色，为假时只绘制等值线
+        label (bool or str): 是否在等值线添加标签，为 str 时指定添加标签的格式
         clip (`shapely.geometry.multipolygon.MultiPolygon`):
             裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
         resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
@@ -233,6 +235,11 @@ def _isogloss(
     if clip is not None:
         # 根据传入的图形裁剪等值线图
         auxiliary.clip_paths(cs.collections, clip, extent=extent)
+
+    if isinstance(label, str):
+        ax.clabel(cs, inline=True, fmt=f'{label} = %s')
+    elif label:
+        ax.clabel(cs, inline=True)
 
     return ax, cs
 
