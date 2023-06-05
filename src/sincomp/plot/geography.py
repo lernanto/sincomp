@@ -7,6 +7,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import typing
 import pandas
 import numpy
 import scipy.interpolate
@@ -237,14 +238,24 @@ def area(
     return ax, extent, qm
 
 def _isogloss(
-    lat0, lat1, lon0, lon1,
-    func,
-    ax=None,
-    fill=True,
-    clip=None,
-    resolution=100,
+    lat0: float,
+    lat1: float,
+    lon0: float,
+    lon1: float,
+    func: typing.Callable[
+        [numpy.ndarray[float], numpy.ndarray[float]],
+        numpy.ndarray[float]
+    ],
+    ax: cartopy.mpl.geoaxes.GeoAxes | None = None,
+    fill: bool = True,
+    label: bool = False,
+    clip: shapely.geometry.MultiPolygon | None = None,
+    resolution: int = 100,
     **kwargs
-):
+) -> tuple[
+    cartopy.mpl.geoaxes.GeoAxes,
+    matplotlib.contour.QuadContourSet
+]:
     """
     绘制同言线地图.
 
@@ -253,19 +264,18 @@ def _isogloss(
     如果指定了裁剪范围，只绘制该范围内的等值线。
 
     Parameters:
-        lat0, lat1, lon0, lon1 (float): 绘制范围下、上、左、右
-        func (callable): 符合度值函数，输入参数为坐标数组，返回符合度数组
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，如果为空，创建一个新对象
-        fill (bool): 为真时填充颜色，为假时只绘制等值线
-        clip (`shapely.geometry.multipolygon.MultiPolygon`):
-            裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
-        resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
-            实际分的点数由长宽比决定
+        lat0, lat1, lon0, lon1: 绘制范围下、上、左、右
+        func: 符合度值函数，输入参数为坐标数组，返回符合度数组
+        ax: 作图使用的 GeoAxes 对象，如果为空，创建一个新对象
+        fill: 为真时填充颜色，为假时只绘制等值线
+        label: 是否在等值线添加标签，为 str 时指定添加标签的格式
+        clip: 裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
+        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，实际分的点数由长宽比决定
         kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
 
     Returns:
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
-        cs (`matplotlib.contour.QuadContourSet`): 绘制的等值线集合
+        ax: 作图使用的 GeoAxes 对象
+        cs: 绘制的等值线集合
     """
 
     # 计算分辨率，把长宽最多分成指定点数，且为方格
@@ -293,6 +303,11 @@ def _isogloss(
     if clip is not None:
         # 根据传入的图形裁剪等值线图
         clip_paths(cs, clip, extent=extent)
+
+    if isinstance(label, str):
+        ax.clabel(cs, inline=True, fmt=f'{label} = %s')
+    elif label:
+        ax.clabel(cs, inline=True)
 
     return ax, cs
 
