@@ -17,7 +17,6 @@ import sinetym
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 from cartopy.io.shapereader import Reader
-from cartopy.mpl.ticker import LatitudeFormatter, LongitudeFormatter
 
 
 def isogloss(
@@ -25,11 +24,19 @@ def isogloss(
     lat,
     lon,
     val,
+    name=None,
     ax=None,
     proj=ccrs.PlateCarree(),
     background=None,
     geo=None,
-    extent=None
+    fill=True,
+    cmap=None,
+    color=None,
+    extent=None,
+    levels=np.linspace(0, 1, 11),
+    alpha=None,
+    title=None,
+    **kwargs
 ):
     """
     绘制带背景的同言线图.
@@ -50,43 +57,61 @@ def isogloss(
         geo = tuple(geo)
         ax.add_geometries(geo, proj, edgecolor='gray', facecolor='none')
 
+    if cmap is None and color is None:
+        cmap = 'coolwarm'
+
     # 绘制同言线图
+    if alpha is None:
+        alpha = 0.7 if fill else 1
+
     _, extent, _ = sinetym.plot.geography.isogloss(
         data.loc[:, lat],
         data.loc[:, lon],
         values=data.loc[:, val],
         ax=ax,
+        fill=fill,
+        cmap=cmap,
+        colors=color,
         vmin=0,
         vmax=1,
         extent=extent,
         clip=geo,
-        alpha=0.7,
-        levels=np.arange(0, 1.1, 0.1)
+        levels=levels,
+        alpha=alpha,
+        **kwargs
     )
 
     # 绘制样本点散点图
     sinetym.plot.geography.scatter(
         data.loc[:, lat],
         data.loc[:, lon],
-        values=data.loc[:, val],
+        values=None if cmap is None else data.loc[:, val],
         ax=ax,
         extent=extent,
         clip=geo,
         vmin=0,
         vmax=1,
         marker='.',
-        cmap='coolwarm'
+        cmap=cmap,
+        color=color
     )
 
-    # 计算坐标经纬度
+    # 标注地名
     left, right, bottom, top = extent
-    step = max(right - left, top - bottom) / 5
-    step = 1 if step <= 1 else 5 if step <= 5 else 10
-    ax.set_xticks(np.arange(left // step, right // step + 1) * step, crs=proj)
-    ax.set_yticks(np.arange(bottom // step, top // step + 1) * step, crs=proj)
-    ax.xaxis.set_major_formatter(LongitudeFormatter())
-    ax.yaxis.set_major_formatter(LatitudeFormatter())
+    if name is not None:
+        for _, r in data[(data[lon] > left) & (data[lon] < right) \
+            & (data[lat] > bottom) & (data[lat] < top)].iterrows():
+            ax.annotate(r[name], xy=(r[lon], r[lat]))
+
+    # 添加经纬度
+    gl = ax.gridlines(crs=proj, draw_labels=True)
+    gl.xlines = False
+    gl.ylines = False
+
     ax.set_extent(extent, crs=proj)
+
+    if title is not None:
+        ax.set_title(title)
 
     return ax, extent
 

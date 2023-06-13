@@ -10,6 +10,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import pandas
 import numpy
 import scipy.interpolate
+from sklearn.preprocessing import OneHotEncoder
 import geopandas
 import matplotlib.pyplot
 import cartopy.crs
@@ -129,6 +130,7 @@ def area(
     ax=None,
     extent=None,
     clip=None,
+    resolution=100,
     **kwargs
 ):
     """
@@ -137,12 +139,15 @@ def area(
     Parameters:
         latitudes (`numpy.ndarray`): 样本点的纬度数组
         longitudes (`numpy.ndarray`): 样本点的经度数组
-        values (`numpy.ndarray`): 样本点的分类，为整数
+        values (`numpy.ndarray`): 当为1维数组时，表示样本点的分类，
+            当为2维数组时，表示样本点属于各分类的概率
         ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
             如果为空，创建一个新对象
         extent: 绘制的范围 (左, 右, 下, 上)
         clip (`shapely.geometry.multipolygon.MultiPolygon`):
             裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
+        resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
+            实际分的点数由长宽比决定
         kwargs: 透传给 `matplotlib.pyplot.Axes.pcolormesh`
 
     Returns:
@@ -150,6 +155,24 @@ def area(
         extent: 绘制的范围
         qm (`matplotlib.collectoins.QuadMesh`): 绘制的色块集
     """
+
+    # 如果传入的是原始分类，先转化为 one-hont 编码
+    if values.ndim == 1:
+        mask = numpy.isfinite(values)
+        values = OneHotEncoder(dtype=numpy.int32) \
+            .fit_transform(numpy.expand_dims(values[mask], 1)).A
+    else:
+        mask = numpy.all(numpy.isfinite(values), axis=1)
+        values = values[mask]
+
+    # 针对完全相同的经纬度，对经度稍作偏移，使能正常计算
+    longitudes = longitudes[mask]
+    latitudes = latitudes[mask]
+    longitudes = pandas.DataFrame({
+        'latitude': latitudes,
+        'longitude': longitudes
+    }).groupby(['latitude', 'longitude'])['longitude'] \
+        .transform(lambda x: x + numpy.arange(x.shape[0]) * 1e-4).values
 
     if extent is None:
         # 根据样本点确定绘制边界
@@ -168,18 +191,22 @@ def area(
     else:
         min_lon, max_lon, min_lat, max_lat = extent
 
-    # 使用最近邻插值计算绘制范围内每个点的分类
-    mask = numpy.isfinite(values)
-    lon, lat = numpy.meshgrid(
-        numpy.linspace(min_lon, max_lon, 1000),
-        numpy.linspace(min_lat, max_lat, 1000)
+    # 使用径向基函数基于样本点对选定范围进行插值
+    rbf = scipy.interpolate.RBFInterpolator(
+        numpy.stack([longitudes, latitudes], axis=1),
+        values,
+        kernel='linear'
     )
-    interp = scipy.interpolate.griddata(
-        numpy.stack([longitudes[mask], latitudes[mask]], axis=1),
-        values[mask],
-        (lon, lat),
-        method='nearest'
-    )
+
+    # 计算分辨率，把长宽最多分成指定点数，且为方格
+    size = numpy.asarray([max_lon - min_lon, max_lat - min_lat])
+    lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
+    lon = numpy.linspace(min_lon, max_lon, lon_res)
+    lat = numpy.linspace(min_lat, max_lat, lat_res)
+    coo = numpy.reshape(numpy.stack(numpy.meshgrid(lon, lat), axis=2), (-1, 2))
+
+    val = numpy.reshape(rbf(coo), (lon_res, lat_res, -1))
+    label = numpy.argmax(val, axis=2)
 
     proj = cartopy.crs.PlateCarree()
     if ax is None:
@@ -189,24 +216,79 @@ def area(
     qm = ax.pcolormesh(
         lon,
         lat,
-        interp,
+        label,
         transform=proj,
         clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
     )
     return ax, extent, qm
 
+def _isogloss(
+    lat0, lat1, lon0, lon1,
+    func,
+    ax=None,
+    fill=True,
+    clip=None,
+    resolution=100,
+    **kwargs
+):
+    """
+    绘制同言线地图.
+
+    输入参数为一系列样本点坐标，及样本点符合某个语言特征的程度值，通常取值范围为 [0, 1]。
+    使用径向基函数根据样本点插值，计算整个绘制空间的值，然后据此计算等值线。
+    如果指定了裁剪范围，只绘制该范围内的等值线。
+
+    Parameters:
+        lat0, lat1, lon0, lon1 (float): 绘制范围下、上、左、右
+        func (callable): 符合度值函数，输入参数为坐标数组，返回符合度数组
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，如果为空，创建一个新对象
+        fill (bool): 为真时填充颜色，为假时只绘制等值线
+        clip (`shapely.geometry.multipolygon.MultiPolygon`):
+            裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
+        resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
+            实际分的点数由长宽比决定
+        kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
+
+    Returns:
+        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
+        cs (`matplotlib.contour.QuadContourSet`): 绘制的等值线集合
+    """
+
+    # 计算分辨率，把长宽最多分成指定点数，且为方格
+    size = numpy.asarray([lon1 - lon0, lat1 - lat0])
+    lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
+    lon, lat = numpy.meshgrid(
+        numpy.linspace(lon0, lon1, lon_res),
+        numpy.linspace(lat0, lat1, lat_res)
+    )
+    val = func(lon, lat)
+
+    proj = cartopy.crs.PlateCarree()
+    if ax is None:
+        ax = matplotlib.pyplot.axes(projection=proj)
+
+    # 根据插值结果绘制等值线图
+    extent = (lon0, lon1, lat0, lat1)
+    cs = (ax.contourf if fill else ax.contour)(
+        val,
+        extent=extent,
+        transform=proj,
+        **kwargs
+    )
+
+    if clip is not None:
+        # 根据传入的图形裁剪等值线图
+        auxiliary.clip_paths(cs.collections, clip, extent=extent)
+
+    return ax, cs
+
 def isogloss(
     latitudes,
     longitudes,
     values,
-    ax=None,
-    fill=True,
-    cmap='coolwarm',
-    vmin=None,
-    vmax=None,
     extent=None,
-    clip=None,
+    scale=0,
     **kwargs
 ):
     """
@@ -220,14 +302,8 @@ def isogloss(
         latitudes (`numpy.ndarray`): 样本点的纬度数组
         longitudes (`numpy.ndarray`): 样本点的经度数组
         values (`numpy.ndarray`): 样本点的值，通常取值范围为 [0, 1]
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
-            如果为空，创建一个新对象
-        cmap: 等值线图使用的颜色集
-        vmin (float): 最小值，用于裁剪插值结果及作图
-        vmax (float): 最大值，用于裁剪插值结果及作图
-        extent: 绘制的范围 (左, 右, 下, 上)
-        clip (`shapely.geometry.multipolygon.MultiPolygon`):
-            裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
+        extent (array-like): 绘制的范围 (左, 右, 下, 上)
+        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
         kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
 
     Returns:
@@ -236,19 +312,20 @@ def isogloss(
         cs (`matplotlib.contour.QuadContourSet`): 绘制的等值线集合
     """
 
-    if extent is None:
-        # 根据样本点的中心和标准差计算绘制范围
-        lat_mean = numpy.mean(latitudes)
-        lon_mean = numpy.mean(longitudes)
-        lat_std = numpy.std(latitudes)
-        lon_std = numpy.std(longitudes)
-        # 正态分布的左右2个标准差覆盖了95%以上的样本
-        min_lat, max_lat = lat_mean - 2 * lat_std, lat_mean + 2 * lat_std
-        min_lon, max_lon = lon_mean - 2 * lon_std, lon_mean + 2 * lon_std
-        extent = (min_lon, max_lon, min_lat, max_lat)
+    mask = numpy.all([
+        numpy.isfinite(latitudes),
+        numpy.isfinite(longitudes),
+        numpy.isfinite(values)
+    ], axis=0)
+    latitudes = latitudes[mask]
+    longitudes = longitudes[mask]
+    values = values[mask]
 
+    if extent is None:
+        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
+        extent = (lon0, lon1, lat0, lat1)
     else:
-        min_lon, max_lon, min_lat, max_lat = extent
+        lon0, lon1, lat0, lat1 = extent
 
     # 针对完全相同的经纬度，对经度稍作偏移，使能正常计算
     longitudes = pandas.DataFrame({
@@ -258,44 +335,8 @@ def isogloss(
         .transform(lambda x: x + numpy.arange(x.shape[0]) * 1e-4).values
 
     # 使用径向基函数基于样本点对选定范围进行插值
-    mask = numpy.isfinite(values)
-    rbf = scipy.interpolate.Rbf(
-        longitudes[mask],
-        latitudes[mask],
-        values[mask],
-        function='linear'
-    )
-    lon, lat = numpy.meshgrid(
-        numpy.linspace(min_lon, max_lon, 100),
-        numpy.linspace(min_lat, max_lat, 100)
-    )
-    val = rbf(lon, lat)
-
-    # 限制插值的结果
-    min_val = numpy.min(values[mask]) if vmin is None else vmin
-    max_val = numpy.max(values[mask]) if vmax is None else vmax
-    val = numpy.clip(val, min_val, max_val)
-
-    proj = cartopy.crs.PlateCarree()
-    if ax is None:
-        ax = matplotlib.pyplot.axes(projection=proj)
-
-    # 根据插值结果绘制等值线图
-    cs = (ax.contourf if fill else ax.contour)(
-        lon,
-        lat,
-        val,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        transform=proj,
-        **kwargs
-    )
-
-    if clip is not None:
-        # 根据传入的图形裁剪等值线图
-        auxiliary.clip_paths(cs.collections, clip, extent=extent)
-
+    rbf = scipy.interpolate.Rbf(longitudes, latitudes, values, function='linear')
+    ax, cs = _isogloss(lat0, lat1, lon0, lon1, auxiliary.clip(rbf), **kwargs)
     return ax, extent, cs
 
 def isoglosses(
@@ -338,7 +379,6 @@ def isoglosses(
             data[val],
             ax=ax,
             fill=False,
-            label=val,
             cmap=None,
             vmin=0,
             vmax=1,

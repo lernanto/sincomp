@@ -138,6 +138,55 @@ def pc2color(pc):
     # Lab 色系转 RGB 色系用于显示
     return numpy.clip(colorspacious.cspace_convert(lab, 'CIELab', 'sRGB1'), 0, 1)
 
+def extent(latitudes, longitudes, scale=0, margin=0.01):
+    """
+    根据样本点坐标计算合适的绘制范围.
+
+    Parameters:
+        latitudes (array-like): 样本点纬度
+        longitudes (array-like): 样本点经度
+        scale (float): 指定绘制范围为样本点的几倍标准差，如不大于0，覆盖所有样本点
+        margin (float): 当覆盖所有样本点时，四边的留白
+
+    Returns:
+        lat0, lat1, lon0, lon1: 匹配的绘制范围四角坐标
+    """
+
+    mask = numpy.logical_and(
+        numpy.isfinite(latitudes),
+        numpy.isfinite(longitudes)
+    )
+    latitudes = latitudes[mask]
+    longitudes = longitudes[mask]
+
+    # 覆盖所有样本点的最小范围
+    ext = numpy.asarray([
+        [numpy.min(latitudes), numpy.max(latitudes)],
+        [numpy.min(longitudes), numpy.max(longitudes)]
+    ])
+
+    if scale > 0:
+        # 根据样本点的中心和标准差计算绘制范围
+        mean = numpy.asarray([numpy.mean(latitudes), numpy.mean(longitudes)])
+        std = numpy.asarray([numpy.std(latitudes), numpy.std(longitudes)])
+        # 如果边界超出所有样本点，裁剪
+        ext = numpy.clip(
+            mean[:, None] + std[:, None] * numpy.asarray([-scale, scale]),
+            ext[:, 0:1],
+            ext[:, 1:2]
+        )
+
+    # 四边添加留白
+    ext += (ext[:, 1:2] - ext[:, 0:1]) * numpy.asarray([-margin, margin])
+    return ext.flatten()
+
+def clip(func, vmin=0, vmax=1):
+    """
+    辅助函数，对目标函数的返回值进行截断.
+    """
+
+    return lambda x, y: numpy.clip(func(x, y), vmin, vmax)
+
 def make_clip_path(polygons, extent=None):
     """
     根据绘制范围及指定的多边形生成图形的裁剪路径.
