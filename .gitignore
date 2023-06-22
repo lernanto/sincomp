@@ -1,6 +1,12 @@
 *.pyc
 *.pyo
+tensorboard
 *-checkpoint.ipynb
 checkpoint
 ckpt-*
 events.out.*
+*.ckpt
+embeddings
+*.ckpt-*
+*.pbtxt
+*.log
