@@ -30,10 +30,16 @@ def clean_location(location):
             .str.replace('^[(（]无[)）]$', '', regex=True) \
             .str.replace('(.)（.*）$', r'\1', regex=True) \
             .str.replace('[（）]', '', regex=True) \
-            .str.replace('(?:(?:土家|布依|蒙古|朝鲜|哈尼|.)族|哈萨克)*自治[州县]$', '', regex=True) \
+            .str.replace(
+                '(?:(?:土家|布依|蒙古|朝鲜|哈尼|.)族|蒙古|哈萨克|苗蔟|少数民族)*自治[州县]+$',
+                '',
+                regex=True
+            ) \
+            .str.replace('新疆生产建设兵团.+师', '', regex=True) \
             .str.replace('^(?:.*市区.*|市[内辖].+区)$', '市区', regex=True) \
             .str.replace('^(.{2,})(?:地|新|特|林|综合实验)区$', r'\1', regex=True) \
-            .str.replace('^(.{2,6})[市州县区]$', r'\1', regex=True)
+            .str.replace('(.)县城$', r'\1', regex=True) \
+            .str.replace('^(.{2,6})[市州盟县区旗]$', r'\1', regex=True)
 
         mask = clean != raw
         if numpy.count_nonzero(mask):
@@ -236,6 +242,14 @@ def load_location(fname, predict=True):
     """
 
     location = clean_location(pandas.read_csv(fname, index_col=0))
+
+    # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
+    location['name'] = location['city'].where(
+        location['city'] == location['county'],
+        location['city'] + location['county']
+    )
+
+    # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
     dialect = get_dialect(location)
     location['dialect'] = predict_dialect(location, dialect) if predict \
         else dialect
