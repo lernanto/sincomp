@@ -36,7 +36,8 @@ def clean_initial(raw):
     """
 
     # 有些符号使用了多种写法，统一成较常用的一种
-    return raw.str.replace('[0\u00f8\u01fe\u01ff]', '∅', regex=True) \
+    return raw.str.replace('[0\u00d8\u00f8\u01fe\u01ff]', '∅', regex=True) \
+        .str.replace('(.)∅|∅(.)', r'\1\2', regex=True) \
         .str.replace('\ufffb', '_') \
         .str.replace('\u02a3', 'dz') \
         .str.replace('\u02a4', 'dʒ') \
@@ -46,6 +47,8 @@ def clean_initial(raw):
         .str.replace('\u02a8', 'tɕ') \
         .str.replace('g', 'ɡ') \
         .str.replace('(.)h', r'\1ʰ', regex=True) \
+        .str.replace('(.)ɦ', r'\1ʱ', regex=True) \
+        .str.replace('([bdɡvzʐʑʒɾ])ʰ', r'\1ʱ', regex=True) \
         .str.replace(f'[^{ipa}]', '', regex=True)
 
 def clean_final(raw):
@@ -95,9 +98,16 @@ def clean_data(raw, minfreq=2):
 
     for col in raw.columns:
         if col in ('initial', '聲母'):
+            # 部分音节切分错误，重新切分
+            clean.loc[raw['initial'] == 'Ǿŋ', col] = '∅'
+            clean.loc[raw['initial'] == 'ku', col] = 'k'
             clean[col] = clean_initial(raw[col])
 
         elif col in ('finals', '韻母'):
+            # 部分音节切分错误，重新切分
+            clean.loc[raw['initial'] == 'Ǿŋ', col] = 'ŋ'
+            mask = raw['initial'] == 'ku'
+            clean.loc[mask, col] = 'u' + raw.loc[mask, col]
             clean[col] = clean_final(raw[col])
 
         elif col == 'tone':
