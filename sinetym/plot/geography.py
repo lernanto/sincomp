@@ -76,53 +76,6 @@ def scatter(
     )
     return ax, extent, pc
 
-def plot_primary_component(
-    latitudes,
-    longitudes,
-    pc=None,
-    ax=None,
-    clip=None,
-    **kwargs
-):
-    """
-    绘制方言主成分地图.
-
-    方言的主成分是根据方言数据矩阵主成分分析获得的向量，可以在低维空间上表示方言的距离。
-    在绘制的地图上，根据方言点的主成分计算颜色，通过颜色的相似度来表示方言之间的相似度。
-
-    Parameters:
-        latitudes (`numpy.ndarray`): 方言点的纬度数组
-        longitudes (`numpy.ndarray`): 方言点的经度数组
-        pc (`numpy.ndarray`): 方言主成分，列数至少为2
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
-            如果为空，创建一个新对象
-        clip (`geopandas.GeoDataFrame`):
-            裁剪的范围，只绘制该范围内的方言点，为空绘制所有方言点
-        kwargs: 透传给 `scatter`
-
-    Returns:
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
-        extent: 绘制的范围
-        pc (`matplotlib.contour.QuadContourSet`): 绘制的点集合
-    """
-
-    if clip is not None:
-        # 根据指定的地理边界筛选边界内部的点
-        mask = geopandas.GeoDataFrame(
-            geometry=geopandas.geometry_from_xy(latitudes, longitudes)
-        ).within(clip).values
-        latitudes = latitudes[mask]
-        longitudes = longitudes[mask]
-        pc = pc[mask]
-
-    return scatter(
-        latitudes,
-        longitudes,
-        ax=ax,
-        color=auxiliary.pc2color(pc),
-        **kwargs
-    )
-
 def area(
     latitudes,
     longitudes,
@@ -205,7 +158,7 @@ def area(
     lat = numpy.linspace(min_lat, max_lat, lat_res)
     coo = numpy.reshape(numpy.stack(numpy.meshgrid(lon, lat), axis=2), (-1, 2))
 
-    val = numpy.reshape(rbf(coo), (lon_res, lat_res, -1))
+    val = numpy.reshape(rbf(coo), (lat_res, lon_res, -1))
     label = numpy.argmax(val, axis=2)
 
     proj = cartopy.crs.PlateCarree()
