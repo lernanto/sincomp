@@ -579,13 +579,14 @@ class EncoderBase(tf.Module):
         return loss, acc
 
     @tf.function
-    def update(self, optimizer, dialect, inputs, targets):
+    def update(self, optimizer, dialect, inputs, targets, weights):
         """
         反向传播更新模型参数.
 
         Parameters:
             optimizer (tensorflow.optimizers.Optimizer): 用于更新的优化器
             dialect, inputs, targets: self.loss 的输入
+            weights (array-like): 各目标输出的权重
 
         Returns:
             loss, acc: self.loss 的返回值
@@ -594,58 +595,71 @@ class EncoderBase(tf.Module):
         dialect = tf.convert_to_tensor(dialect)
         inputs = tf.convert_to_tensor(inputs)
         targets = tf.convert_to_tensor(targets)
+        if weights is not None:
+            weights = tf.convert_to_tensor(weights)
 
         with tf.GradientTape() as tape:
             loss, acc = self.loss(dialect, inputs, targets)
-            loss = tf.reduce_sum(tf.reduce_mean(loss, axis=0))
-            acc = tf.reduce_mean(acc, axis=0)
-            grad = tape.gradient(loss, self.trainable_variables)
+            loss = tf.reduce_mean(loss, axis=0)
+            loss = tf.reduce_sum(loss if weights is None else loss * weights)
 
+        grad = tape.gradient(loss, self.trainable_variables)
         optimizer.apply_gradients(zip(grad, self.trainable_variables))
-        return loss, acc
+        return loss, tf.reduce_mean(acc, axis=0)
 
-    def train(self, optimizer, data):
+    def train(self, optimizer, data, weights=None):
         """
         使用数据集训练模型.
 
         Parameters:
             optimizer (tensorflow.optimizers.Optimizer): 用于更新的优化器
             data (tensorflow.data.Dataset): 训练数据集
+            weights (array-like): 各目标的权重
 
         Returns:
             loss, acc (tensorflow.Tensor): 模型在训练数据集上的损失及精确度
         """
 
+        if weights is not None:
+            weights = tf.convert_to_tensor(weights, dtype=tf.float32)
+
         loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
         acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
 
         for dialect, inputs, targets in data:
-            loss, acc = self.update(optimizer, dialect, inputs, targets)
+            loss, acc = self.update(optimizer, dialect, inputs, targets, weights)
             loss_stat.update_state(loss)
             acc_stat.update_state(acc)
 
         return loss_stat.result(), acc_stat.result()
 
-    def evaluate(self, data):
+    def evaluate(self, data, weights=None):
         """
         使用测试数据集评估模型.
 
         Parameters:
             data (tensorflow.data.Dataset): 测试数据集
+            weights (array-like): 各目标的权重
 
         Returns:
             loss, acc (tensorflow.Tensor): 模型在测试数据集上的损失及精确度
         """
+
+        if weights is not None:
+            weights = tf.convert_to_tensor(weights, dtype=tf.float32)
 
         loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
         acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
 
         for dialect, inputs, targets in data:
             loss, acc = self.loss(dialect, inputs, targets)
-            loss = tf.reduce_sum(tf.reduce_mean(
-                loss * tf.cast(targets > 0, tf.float32), axis=0
-            ))
-            loss_stat.update_state(loss)
+            loss = tf.reduce_mean(
+                loss * tf.cast(targets > 0, tf.float32),
+                axis=0
+            )
+            if weights is not None:
+                loss *= weights
+            loss_stat.update_state(tf.reduce_sum(loss))
             acc_stat.update_state(tf.reduce_mean(acc, axis=0))
 
         return loss_stat.result(), acc_stat.result()
@@ -655,6 +669,7 @@ class EncoderBase(tf.Module):
         optimizer,
         train_data,
         eval_data=None,
+        weights=None,
         epochs=20,
         batch_size=100,
         output_path=None
@@ -666,6 +681,7 @@ class EncoderBase(tf.Module):
             optimizer (tensorflow.optimizers.Optimizer): 用于训练的优化器
             train_data (tensorflow.data.Dataset): 训练数据集
             eval_data (tensorflow.data.Dataset): 测试数据集
+            weights (array-like): 各目标的权重
             epochs (int): 训练轮次
             batch_size (int): 批大小
             output_path (str): 检查点及统计数据输出路径
@@ -681,8 +697,8 @@ class EncoderBase(tf.Module):
             )
 
         logging.info(
-            f'train {self.name}, epochs = {epochs}, batch size = {batch_size}, '
-            f'output path = {output_path}'
+            f'train {self.name}, epochs = {epochs}, weights = {weights}, '
+            f'batch size = {batch_size}, output path = {output_path}'
         )
 
         train_writer = tf.summary.create_file_writer(os.path.join(output_path, 'train'))
@@ -701,7 +717,12 @@ class EncoderBase(tf.Module):
 
         while manager.checkpoint.save_counter < epochs:
             epoch = manager.checkpoint.save_counter.numpy()
-            loss, acc = self.train(optimizer, train_data.batch(batch_size))
+            loss, acc = self.train(
+                optimizer,
+                train_data.batch(batch_size),
+                weights
+            )
+
             logging.info(
                 f'epoch {epoch}/{epochs}: '
                 f'train loss = {loss}, train accuracy = {acc}'
@@ -716,7 +737,7 @@ class EncoderBase(tf.Module):
                     tf.summary.histogram(v.name, v, step=epoch)
 
             if eval_data is not None:
-                loss, acc = self.evaluate(eval_data.batch(batch_size))
+                loss, acc = self.evaluate(eval_data.batch(batch_size), weights)
                 logging.info(
                     f'epoch {epoch}/{epochs}: '
                     f'eval loss = {loss}, eval accuracy = {acc}'
