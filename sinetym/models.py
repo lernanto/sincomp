@@ -357,8 +357,9 @@ class EncoderBase(tf.Module):
         2. transform: 输入向量变换为输出向量
         3. decode: 根据输出向量预测读音
 
-    子类需实现函数 transform(self, dialect_emb, input_emb)，其中 dialect_emb 为方言向量，
-    input_emb 为输入向量，返回值为变换得到的输出向量。
+    子类需实现函数 _transform(self, dialect_emb, input_emb)，其中 dialect_emb 为方言向量，
+    input_emb 为输入向量。当 self.residual 为假时，_transform 返回变换后的输出变量，
+    否则返回残差，该残差与 input_emb 相加得变换后的输出变量。
     """
 
     def __init__(
@@ -370,6 +371,7 @@ class EncoderBase(tf.Module):
         input_emb_size=20,
         output_emb_sizes=20,
         output_bias=True,
+        residual=False,
         name='encoder'
     ):
         """
@@ -381,6 +383,7 @@ class EncoderBase(tf.Module):
             input_emb_size (int): 输入向量长度
             output_emb_sizes (int): 输出向量长度
             output_bias (bool): 是否为输出添加偏置
+            residual (bool): 为真时，子类 _transform 返回值为残差
             name (str): 生成的模型名字
         """
 
@@ -392,6 +395,7 @@ class EncoderBase(tf.Module):
         self.dialect_emb_size = dialect_emb_size
         self.input_emb_size = input_emb_size
         self.output_emb_sizes = tuple(output_emb_sizes)
+        self.residual = residual
 
         init = tf.random_normal_initializer()
 
@@ -434,6 +438,23 @@ class EncoderBase(tf.Module):
                 for i in range(len(self.input_embs))],
             axis=2
         ), axis=-1)
+
+    def transform(self, dialect_emb, input_emb):
+        """
+        把输入向量变换为输出向量.
+
+        Parameters:
+            dialect_emb (tensorflow.Tensor): 方言向量
+            input_emb (tensorflow.Tensor): 输出向量
+
+        Returns:
+            output_emb (tensorflow.Tensor):
+                输出向量，形状为 dialect_emb.shape[0] * self.output_emb_size
+        """
+
+        output_emb = self._transform(dialect_emb, input_emb)
+        # self.residual 为真时，_transform 返回的是残差，需加上 input_emb 得输出向量
+        return input_emb + output_emb if self.residual else output_emb
 
     def decode(self, output_emb):
         """
@@ -753,17 +774,9 @@ class LinearEncoder(EncoderBase):
             name='weight'
         )
 
-    def transform(self, dialect_emb, input_emb):
+    def _transform(self, dialect_emb, input_emb):
         """
         把输入向量变换为输出向量.
-
-        Parameters:
-            dialect_emb (tensorflow.Tensor): 方言向量
-            input_emb (tensorflow.Tensor): 输出向量
-
-        Returns:
-            output_emb (tensorflow.Tensor):
-                输出向量，形状为 dialect_emb.shape[0] * self.output_emb_size
 
         输出向量为输入向量的线性变换，该变换的参数由方言向量经模型参数线性变换而来。
         """
