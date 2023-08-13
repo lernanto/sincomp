@@ -421,12 +421,12 @@ class EncoderBase(tf.Module):
         把输入编码成向量.
 
         Parameters:
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            inputs (tensorflow.Tensor):
+                输入张量，形状为 batch_size * len(self.input_nums)，内容为整数编码
 
         Returns:
             input_emb (tensorflow.Tensor):
-                编码的输入向量，形状为 inputs.shape[0] * self.input_emb_size
+                编码的输入向量，形状为 batch_size * self.input_emb_size
         """
 
         return tf.reduce_mean(tf.stack(
@@ -461,14 +461,10 @@ class EncoderBase(tf.Module):
         正向传播，根据方言编码和输入输出对数几率.
 
         Parameters:
-            dialect (tensorflow.Tensor): 方言编码，形状为批大小
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            dialect, inputs: self.encode 的输入
 
         Returns:
-            logits (list of tensorflow.Tensor):
-                输出张量的数组，每个张量形状为 dialect.shape[0] * self.output_nums[i]，
-                内容为对数几率
+            logits: self.decode 的输出
         """
 
         dialect_emb = tf.nn.embedding_lookup(self.dialect_emb, dialect)
@@ -476,19 +472,23 @@ class EncoderBase(tf.Module):
         output_emb = self.transform(dialect_emb, input_emb)
         return self.decode(output_emb)
 
+    @tf.function
     def predict(self, dialect, inputs):
         """
         根据方言编码和输入预测输出编码.
 
         Parameters:
-            dialect (tensorflow.Tensor): 方言编码，形状为批大小
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            dialect (aray-like): 方言编码，形状为 batch_size，batch_size 为批大小
+            inputs (array-like):
+                输入张量，形状为 batch_size * len(inputs_nums)，数组内容为整数编码
 
         Returns:
-            outputs (list of tensorflow.Tensor):
-                输出张量的数组，每个张量的形状为 dialect.shape[0]，内容为输出编码
+            outputs (tensorflow.Tensor):
+                输出张量，每个张量的形状为 batch_size，内容为输出编码
         """
+
+        dialect = tf.convert_to_tensor(dialect)
+        inputs = tf.convert_to_tensor(inputs)
 
         logits = self.forward(dialect, inputs)
         return tf.stack(
@@ -496,20 +496,23 @@ class EncoderBase(tf.Module):
             axis=1
         )
 
+    @tf.function
     def predict_proba(self, dialect, inputs):
         """
         根据方言编码和输入预测输出的概率.
 
         Parameters:
-            dialect (tensorflow.Tensor): 方言编码，形状为批大小
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
+            dialect (aray-like): 方言编码，形状为 batch_size，batch_size 为批大小
+            inputs (array-like):
+                输入张量，形状为 batch_size * len(inputs_nums)，数组内容为整数编码
 
         Returns:
-            probs (list of tensorflow.Tensor):
-                输出张量的数组，每个张量的形状为 dialect.shape[0] * self.output_nums[i]，
-                内容为输出的概率
+            probs (list of tensorflow.Tensor): 输出张量的数组，每个张量的形状为
+                batch_size * self.output_nums[i]，内容为输出的概率
         """
+
+        dialect = tf.convert_to_tensor(dialect)
+        inputs = tf.convert_to_tensor(inputs)
 
         logits = self.forward(dialect, inputs)
         return [tf.nn.softmax(l) for l in logits]
@@ -520,17 +523,21 @@ class EncoderBase(tf.Module):
         根据方言编码、输入和目标输出计算损失.
 
         Parameters:
-            dialect (tensorflow.Tensor): 方言编码，形状为批大小
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
-            targets (list of tensorflow.Tensor):
+            dialect (aray-like): 方言编码，形状为 batch_size，batch_size 为批大小
+            inputs (array-like):
+                输入张量，形状为 batch_size * len(inputs_nums)，数组内容为整数编码
+            targets (array-like):
                 目标输出张量的数组，每个张量的形状为批大小，内容为输出编码
 
         Returns:
-            loss (tensorflow.Tensor): 每个样本的损失，形状为 dialect.shape[0]
+            loss (tensorflow.Tensor): 每个样本的损失，形状为 batch_size
             acc (tensorflow.Tensor): 每个样本的预测是否等于目标，
-                形状为 dialect.shape[0] * len(self.output_nums)
+                形状为 batch_size * len(self.output_nums)
         """
+
+        dialect = tf.convert_to_tensor(dialect)
+        inputs = tf.convert_to_tensor(inputs)
+        targets = tf.convert_to_tensor(targets)
 
         logits = self.forward(dialect, inputs)
 
@@ -557,15 +564,15 @@ class EncoderBase(tf.Module):
 
         Parameters:
             optimizer (tensorflow.optimizers.Optimizer): 用于更新的优化器
-            dialect (tensorflow.Tensor): 方言编码，形状为批大小
-            inputs (array-like of tensorflow.Tensor):
-                输入张量的数组，每个张量的形状为批大小，内容为整数编码
-            targets (list of tensorflow.Tensor):
-                目标输出张量的数组，每个张量的形状为批大小，内容为输出编码
+            dialect, inputs, targets: self.loss 的输入
 
         Returns:
             loss, acc: self.loss 的返回值
         """
+
+        dialect = tf.convert_to_tensor(dialect)
+        inputs = tf.convert_to_tensor(inputs)
+        targets = tf.convert_to_tensor(targets)
 
         with tf.GradientTape() as tape:
             loss, acc = self.loss(dialect, inputs, targets)
