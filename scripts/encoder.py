@@ -21,12 +21,13 @@ from tensorboard.plugins import projector
 import sinetym
 
 
-def build_model(config):
+def build_model(config, dialect_num, input_nums, output_nums):
     """
     根据配置创建模型和优化器.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
+        dialect_num, input_nums, output_nums: 创建模型的参数
 
     Returns:
         model (sinetym.models.EncoderBase): 创建的编码器模型
@@ -36,12 +37,7 @@ def build_model(config):
     # 创建模型
     model_config = config.pop('model').copy()
     model_class = getattr(sinetym.models, model_config.pop('class'))
-    model = model_class(
-        location.shape[0],
-        (char.shape[0],),
-        (initial.shape[0], final.shape[0], tone.shape[0]),
-        **model_config
-    )
+    model = model_class(dialect_num, input_nums, output_nums, **model_config)
 
     # 创建优化器
     optimizer_config = config.pop('optimizer').copy()
@@ -130,12 +126,20 @@ def make_embeddings(
 
     projector.visualize_embeddings(output_path, config)
 
-def benchmark(config, train_data, eval_data=None):
+def benchmark(
+    config,
+    dialect_num,
+    input_nums,
+    output_nums,
+    train_data,
+    eval_data=None
+):
     """
     评估各种配置的模型效果.
 
     Parameters:
         config (dict): 用于创建模型的配置字典
+        dialect_num, input_nums, output_nums: 创建模型的参数
         train_data (`tensorflow.data.Dataset`): 训练数据
         eval_data (`tensorflow.data.Dataset`): 评估数据
 
@@ -145,7 +149,12 @@ def benchmark(config, train_data, eval_data=None):
     for conf in config['models']:
         conf = conf.copy()
         name = conf.pop('name')
-        model, optimizer = build_model(conf)
+        model, optimizer = build_model(
+            conf,
+            dialect_num,
+            input_nums,
+            output_nums
+        )
         output_path = os.path.join(config['output_dir'], name)
 
         logging.info(f'start training model {name}, output path = {output_path} ...')
@@ -161,11 +170,9 @@ def benchmark(config, train_data, eval_data=None):
 def train(
     config,
     name,
-    location,
-    char,
-    initial,
-    final,
-    tone,
+    dialect_num,
+    input_nums,
+    output_nums,
     train_data,
     eval_data=None
 ):
@@ -175,11 +182,7 @@ def train(
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
-        location (`pandas.DataFrame`): 方言点信息数据表
-        char (`pandas.DataFrame`): 字信息数据表
-        initial (`pandas.Series`): 模型的声母表
-        final (`pandas.Series`): 模型的韵母表
-        tone (`pandas.Series`): 模型的声调表
+        dialect_num, input_nums, output_nums: 创建模型的参数
         train_data (`tensorflow.data.Dataset`): 训练数据
         eval_data (`tensorflow.data.Dataset`): 评估数据
 
@@ -189,7 +192,12 @@ def train(
     # 从模型列表中查找待训练的模型
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     conf.pop('name')
-    model, optimizer = build_model(conf)
+    model, optimizer = build_model(
+        conf,
+        dialect_num,
+        input_nums,
+        output_nums
+    )
     output_path = os.path.join(config['output_dir'], name)
 
     logging.info('start training ...')
@@ -202,29 +210,26 @@ def train(
     )
     logging.info('done.')
 
-    # 为 TensorBoard embedding projector 显示向量创建需要的数据
-    make_embeddings(
-        location,
-        char,
-        initial,
-        final,
-        tone,
-        model,
-        output_path=os.path.join(output_path, 'embeddings')
-    )
-
-def evaluate(config, name, eval_data):
+def evaluate(
+    config,
+    name,
+    dialect_num,
+    input_nums,
+    output_nums,
+    eval_data
+):
     """
     评估训练完成的模型效果.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
+        dialect_num, input_nums, output_nums: 创建模型的参数
         eval_data (`tensorflow.data.Dataset`): 评估数据
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
-    model, _ = build_model(conf)
+    model, _ = build_model(conf, dialect_num, input_nums, output_nums)
 
     checkpoint = tf.train.Checkpoint(model=model)
     manager = tf.train.CheckpointManager(
@@ -282,23 +287,45 @@ if __name__ == '__main__':
         unknown_value=-1
     ).fit_transform(data[['lid', 'cid', 'initial', 'final', 'tone']])
 
-    dataset = tf.data.Dataset.from_tensor_slices((
+    data = tf.data.Dataset.from_tensor_slices((
         data[:, 0],
         data[:, 1:2],
         data[:, 2:5]
-    )).shuffle(data.shape[0])
+    ))
+    data = data.shuffle(data.cardinality(), seed=10273)
 
     if args.command == 'train':
         logging.info(f'train {args.model}, input = {config["data_dir"]}')
-        train(config, args.model, location, char, initial, final, tone, dataset)
+        train(
+            config,
+            args.model,
+            location.shape[0],
+            (char.shape[0],),
+            (initial.shape[0], final.shape[0], tone.shape[0]),
+            data
+        )
 
     elif args.command == 'evaluate':
         logging.info(f'evaluate {args.model}, input = {config["data_dir"]}')
-        evaluate(config, args.model, dataset)
+        evaluate(
+            config,
+            args.model,
+            location.shape[0],
+            (char.shape[0],),
+            (initial.shape[0], final.shape[0], tone.shape[0]),
+            data
+        )
 
     elif args.command == 'benchmark':
         logging.info(f'benchmark, input = {config["data_dir"]}')
-        eval_size = int(data.shape[0] * 0.1)
-        train_data = dataset.skip(eval_size)
-        eval_data = dataset.take(eval_size)
-        benchmark(config, train_data, eval_data)
+        eval_size = data.cardinality() // 10
+        train_data = data.skip(eval_size)
+        eval_data = data.take(eval_size)
+        benchmark(
+            config,
+            location.shape[0],
+            (char.shape[0],),
+            (initial.shape[0], final.shape[0], tone.shape[0]),
+            train_data,
+            eval_data
+        )
