@@ -32,7 +32,7 @@ class ContrastiveEncoder:
     @tf.function
     def encode(self, inputs):
         weight = tf.linalg.normalize(
-            tf.cast(inputs != -1, tf.float32),
+            tf.cast(inputs > 0, tf.float32),
             ord=1,
             axis=1
         )[0]
@@ -543,7 +543,7 @@ class EncoderBase(tf.Module):
 
         loss = tf.stack(
             [tf.nn.sparse_softmax_cross_entropy_with_logits(
-                labels=tf.maximum(targets[:, i], 0),
+                labels=targets[:, i],
                 logits=l
             ) for i, l in enumerate(logits)],
             axis=1
@@ -577,7 +577,7 @@ class EncoderBase(tf.Module):
         with tf.GradientTape() as tape:
             loss, acc = self.loss(dialect, inputs, targets)
             loss = tf.reduce_sum(tf.reduce_mean(
-                loss * tf.cast(targets >= 0, tf.float32),
+                loss * tf.cast(targets > 0, tf.float32),
                 axis=0
             ))
             acc = tf.reduce_mean(acc, axis=0)
@@ -625,7 +625,7 @@ class EncoderBase(tf.Module):
         for dialect, inputs, targets in data:
             loss, acc = self.loss(dialect, inputs, targets)
             loss = tf.reduce_sum(tf.reduce_mean(
-                loss * tf.cast(targets >= 0, tf.float32), axis=0
+                loss * tf.cast(targets > 0, tf.float32), axis=0
             ))
             loss_stat.update_state(loss)
             acc_stat.update_state(tf.reduce_mean(acc, axis=0))
