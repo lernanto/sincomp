@@ -11,9 +11,9 @@ import logging
 import pandas
 import numpy
 import scipy.sparse
-from sklearn.preprocessing import normalize, OrdinalEncoder, StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.feature_extraction.text import CountVectorizer
+import sklearn.preprocessing
+import sklearn.impute
+import sklearn.feature_extraction.text
 import matplotlib
 import shapely
 import cartopy
@@ -32,15 +32,17 @@ def encode(data, dtype=numpy.int32, missing_values='', unknown_value=-1):
         categories (list of `numpy.ndarray`): 长度为 N 的列表，每个元素是每一列的类别
     """
 
-    encoder = OrdinalEncoder(
+    encoder = sklearn.preprocessing.OrdinalEncoder(
         dtype=dtype,
         handle_unknown='use_encoded_value',
         unknown_value=unknown_value
     )
     encoder.fit(
         # 为了让编码器正常工作，先补全缺失特征
-        SimpleImputer(missing_values=missing_values, strategy='most_frequent') \
-            .fit_transform(data)
+        sklearn.impute.SimpleImputer(
+            missing_values=missing_values,
+            strategy='most_frequent'
+        ).fit_transform(data)
     )
 
     return encoder.transform(data), encoder.categories_
@@ -71,7 +73,7 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
 
     if data.ndim == 1:
         # 一维数组，直接编码返回
-        code = CountVectorizer(
+        code = sklearn.feature_extraction.text.CountVectorizer(
             lowercase=False,
             tokenizer=lambda s: s.split(sep),
             token_pattern=None,
@@ -80,7 +82,7 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
             dtype=dtype
         ).fit_transform(data)
 
-        return code if norm is None else normalize(code, norm=norm)
+        return code if norm is None else sklearn.preprocessing.normalize(code, norm=norm)
 
     # 矩阵，分别编码每列然后拼接
     categories = []
@@ -88,7 +90,7 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
     columns = []
 
     for i in range(data.shape[1]):
-        c = CountVectorizer(
+        c = sklearn.feature_extraction.text.CountVectorizer(
             lowercase=False,
             tokenizer=lambda s: s.split(sep),
             token_pattern=None,
@@ -97,7 +99,7 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
             dtype=dtype
         ).fit_transform(data[:, i])
 
-        codes.append(c if norm is None else normalize(c, norm=norm))
+        codes.append(c if norm is None else sklearn.preprocessing.normalize(c, norm=norm))
         columns.append(c.shape[1])
 
     code = scipy.sparse.hstack(codes)
@@ -106,6 +108,25 @@ def vectorize(data, sep=' ', binary=False, dtype=numpy.int32, norm=None):
     limits[0] = 0
     numpy.cumsum(columns, out=limits[1:])
     return code, limits
+
+class OrdinalEncoder(sklearn.preprocessing.OrdinalEncoder):
+    """
+    修改 `sklearn.preprocessing.OrdinalEncoder` 使未知类别的编码为0.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1,
+            **kwargs
+        )
+
+    def transform(self, X):
+        return super().transform(X) + 1
+
+    def inverse_transform(self, X):
+        return super().inverse_transform(X - 1)
 
 def pc2color(pc):
     """
@@ -122,7 +143,8 @@ def pc2color(pc):
 
     # 缩放传入的主成分使其接近标准正态分布，标准正态分布的3倍标准差区间包含99%以上概率
     rgb = numpy.empty((pc.shape[0], 3), dtype=numpy.float32)
-    rgb[:, :pc.shape[1]] = StandardScaler().fit_transform(pc[:, :3]) / 6 + 0.5
+    rgb[:, :pc.shape[1]] = sklearn.preprocessing.StandardScaler() \
+        .fit_transform(pc[:, :3]) / 6 + 0.5
     # 如果输入的主成分少于3维，剩余的维度用0.5填充
     rgb[:, pc.shape[1]:] = 0.5
 
