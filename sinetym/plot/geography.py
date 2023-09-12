@@ -25,6 +25,7 @@ def scatter(
     values=None,
     ax=None,
     extent=None,
+    scale=0,
     clip=None,
     **kwargs
 ):
@@ -38,6 +39,7 @@ def scatter(
         ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
             如果为空，创建一个新对象
         extent: 绘制的范围 (左, 右, 下, 上)
+        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
         clip (`shapely.geometry.multipolygon.MultiPolygon`):
             裁剪的范围，只绘制该范围内的方言点，为空绘制所有方言点
         kwargs: 透传给 `matplotlib.pyplot.Axes.scatter`
@@ -50,17 +52,8 @@ def scatter(
 
     if extent is None:
         # 根据样本点确定绘制边界
-        min_lat = numpy.min(latitudes)
-        max_lat = numpy.max(latitudes)
-        min_lon = numpy.min(longitudes)
-        max_lon = numpy.max(longitudes)
-        lat_margin = 0.05 * (max_lat - min_lat)
-        lon_margin = 0.05 * (max_lon - min_lon)
-        min_lat -= lat_margin
-        max_lat += lat_margin
-        min_lon -= lon_margin
-        max_lon += lon_margin
-        extent = (min_lon, max_lon, min_lat, max_lat)
+        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
+        extent = (lon0, lon1, lat0, lat1)
 
     proj = cartopy.crs.PlateCarree()
     if ax is None:
@@ -74,6 +67,8 @@ def scatter(
         clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
     )
+
+    ax.set_extent(extent, crs=proj)
     return ax, extent, pc
 
 def area(
@@ -82,6 +77,7 @@ def area(
     values,
     ax=None,
     extent=None,
+    scale=0,
     clip=None,
     resolution=100,
     **kwargs
@@ -97,6 +93,7 @@ def area(
         ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
             如果为空，创建一个新对象
         extent: 绘制的范围 (左, 右, 下, 上)
+        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
         clip (`shapely.geometry.multipolygon.MultiPolygon`):
             裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
         resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
@@ -129,20 +126,10 @@ def area(
 
     if extent is None:
         # 根据样本点确定绘制边界
-        min_lat = numpy.min(latitudes)
-        max_lat = numpy.max(latitudes)
-        min_lon = numpy.min(longitudes)
-        max_lon = numpy.max(longitudes)
-        lat_margin = 0.05 * (max_lat - min_lat)
-        lon_margin = 0.05 * (max_lon - min_lon)
-        min_lat -= lat_margin
-        max_lat += lat_margin
-        min_lon -= lon_margin
-        max_lon += lon_margin
-        extent = (min_lon, max_lon, min_lat, max_lat)
-
+        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
+        extent = (lon0, lon1, lat0, lat1)
     else:
-        min_lon, max_lon, min_lat, max_lat = extent
+        lon0, lon1, lat0, lat1 = extent
 
     # 使用径向基函数基于样本点对选定范围进行插值
     rbf = scipy.interpolate.RBFInterpolator(
@@ -152,10 +139,10 @@ def area(
     )
 
     # 计算分辨率，把长宽最多分成指定点数，且为方格
-    size = numpy.asarray([max_lon - min_lon, max_lat - min_lat])
+    size = numpy.asarray([lon1 - lon0, lat1 - lat0])
     lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
-    lon = numpy.linspace(min_lon, max_lon, lon_res)
-    lat = numpy.linspace(min_lat, max_lat, lat_res)
+    lon = numpy.linspace(lon0, lon1, lon_res)
+    lat = numpy.linspace(lat0, lat1, lat_res)
     coo = numpy.reshape(numpy.stack(numpy.meshgrid(lon, lat), axis=2), (-1, 2))
 
     val = numpy.reshape(rbf(coo), (lat_res, lon_res, -1))
@@ -174,6 +161,8 @@ def area(
         clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
     )
+
+    ax.set_extent(extent, crs=proj)
     return ax, extent, qm
 
 def _isogloss(
