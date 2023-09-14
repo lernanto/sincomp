@@ -273,18 +273,61 @@ def evaluate(config, name, eval_data):
     loss, acc = model.evaluate(eval_data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
 
+def export(config, name, prefix='.'):
+    """
+    从模型导出权重到文件.
+
+    Parameters:
+        config (dict): 多层级的配置字典，分析配置文件获得
+        name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
+        dialect_num, input_nums, output_nums: 创建模型的参数
+        prefix (str): 输出路径前缀
+    """
+
+    conf = next((c for c in config['models'] if c['name'] == name)).copy()
+    model, _ = build_model(conf)
+
+    checkpoint = tf.train.Checkpoint(model=model)
+    manager = tf.train.CheckpointManager(
+        checkpoint,
+        os.path.join(config['output_dir'], name, 'checkpoints'),
+        None
+    )
+    logging.info(f'restore model from checkpoint {manager.latest_checkpoint}...')
+    checkpoint.restore(manager.latest_checkpoint)
+    logging.info('done.')
+
+    output_dir = os.path.join(
+        prefix,
+        f'{name}_{int(manager.checkpoint.save_counter)}'
+    )
+    logging.info(f'exporting {name} weights to {output_dir}...')
+    os.makedirs(output_dir, exist_ok=True)
+    for v in model.variables:
+        a = v.numpy()
+        np.savetxt(
+            os.path.join(output_dir, v.name.partition(':')[0]),
+            np.reshape(a, (-1, a.shape[-1])) if a.ndim > 2 else a
+        )
+    logging.info('done.')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
-    parser.add_argument('command', choices=['train', 'evaluate', 'benchmark'], help='执行操作')
+    parser.add_argument(
+        'command',
+        choices=['train', 'evaluate', 'benchmark', 'export'],
+        help='执行操作'
+    )
     parser.add_argument('-D', '--debug', action='store_true', default=False, help='显示调试信息')
     parser.add_argument('config', type=argparse.FileType('r'), help='配置文件')
     parser.add_argument('model', nargs='?', help='指定训练或评估的模型')
+    parser.add_argument('output', nargs='?', help='指定输出路径前缀')
     args = parser.parse_args()
 
     logging.getLogger().setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-    logging.info(f'load configuration from {args.config}')
+    logging.info(f'load configuration from {args.config.name}')
     config = json.load(args.config)
 
     did, cid, character, initial, final, tone = load_dictionaries(config['dictionary_dir'])
@@ -295,25 +338,26 @@ if __name__ == '__main__':
     final = final[:config['output_nums'][1] - 1]
     tone = tone[:config['output_nums'][2] - 1]
 
-    data = load_datasets(config['datasets'])
-    data = sinetym.auxiliary.OrdinalEncoder(
-        categories=[
-            did.index,
-            cid.index,
-            character.index,
-            initial.index,
-            final.index,
-            tone.index
-        ],
-        dtype=np.int32
-    ).fit(data[:1]).transform(data)
+    if args.command in ('train', 'evaluate', 'benchmark'):
+        data = load_datasets(config['datasets'])
+        data = sinetym.auxiliary.OrdinalEncoder(
+            categories=[
+                did.index,
+                cid.index,
+                character.index,
+                initial.index,
+                final.index,
+                tone.index
+            ],
+            dtype=np.int32
+        ).fit(data[:1]).transform(data)
 
-    data = tf.data.Dataset.from_tensor_slices((
-        data[:, 0],
-        data[:, 1:3],
-        data[:, 3:6]
-    ))
-    data = data.shuffle(data.cardinality(), seed=10273)
+        data = tf.data.Dataset.from_tensor_slices((
+            data[:, 0],
+            data[:, 1:3],
+            data[:, 3:6]
+        ))
+        data = data.shuffle(data.cardinality(), seed=10273)
 
     if args.command == 'train':
         train(config, args.model, data)
@@ -326,3 +370,6 @@ if __name__ == '__main__':
         train_data = data.skip(eval_size)
         eval_data = data.take(eval_size)
         benchmark(config, train_data, eval_data)
+
+    elif args.command == 'export':
+        export(config, args.model, args.output)
