@@ -576,10 +576,7 @@ class EncoderBase(tf.Module):
 
         with tf.GradientTape() as tape:
             loss, acc = self.loss(dialect, inputs, targets)
-            loss = tf.reduce_sum(tf.reduce_mean(
-                loss * tf.cast(targets > 0, tf.float32),
-                axis=0
-            ))
+            loss = tf.reduce_sum(tf.reduce_mean(loss, axis=0))
             acc = tf.reduce_mean(acc, axis=0)
             grad = tape.gradient(loss, self.trainable_variables)
 
