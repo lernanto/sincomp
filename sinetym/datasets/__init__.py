@@ -97,13 +97,13 @@ def clean_data(raw, minfreq=2):
     clean = pandas.DataFrame()
 
     for col in raw.columns:
-        if col in ('initial', '聲母'):
+        if col == 'initial':
             # 部分音节切分错误，重新切分
-            clean.loc[raw['initial'] == 'Ǿŋ', col] = '∅'
-            clean.loc[raw['initial'] == 'ku', col] = 'k'
+            clean.loc[raw[col] == 'Ǿŋ', col] = '∅'
+            clean.loc[raw[col] == 'ku', col] = 'k'
             clean[col] = clean_initial(raw[col])
 
-        elif col in ('finals', '韻母'):
+        elif col == 'finals':
             # 部分音节切分错误，重新切分
             clean.loc[raw['initial'] == 'Ǿŋ', col] = 'ŋ'
             mask = raw['initial'] == 'ku'
@@ -120,6 +120,12 @@ def clean_data(raw, minfreq=2):
 
             clean.loc[~mask, col] = raw.loc[~mask, col]
             clean[col] = clean_tone(clean[col])
+
+        elif col == '聲母':
+            clean[col] = clean_initial(raw[col])
+
+        elif col == '韻母':
+            clean[col] = clean_final(raw[col])
 
         elif col == '調值':
             clean[col] = clean_tone(raw[col])
