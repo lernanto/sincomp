@@ -1,7 +1,9 @@
 # -*- encoding: utf-8 -*-
 
 """
-一些处理数据函数.
+中国语言资源保护工程采录展示平台的方言数据集.
+
+见：https://zhongguoyuyan.cn/。
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
@@ -12,6 +14,9 @@ import os
 import pandas
 import numpy
 from sklearn.neighbors import KNeighborsClassifier
+import functools
+
+from . import Dataset, clean_initial, clean_final, clean_tone
 
 
 def clean_location(location):
@@ -47,7 +52,7 @@ def clean_location(location):
                 'raw': raw[mask],
                 'clean': clean[mask]
             }).value_counts().items():
-                logging.warning(f'replace {r} -> {c} {cnt}')
+                logging.info(f'replace {r} -> {c} {cnt}')
 
         return clean
 
@@ -227,33 +232,264 @@ def predict_dialect(location, dialect):
 
     return predict
 
-def load_location(fname, predict=True):
+
+class ZhongguoyuyanDataset(Dataset):
     """
-    读取方言点信息.
+    中国语言资源保护工程采录展示平台的方言数据集.
 
-    对其中的市县名称使用规则归一化，并规范化方言区名称。对缺失方言区的，使用模型预测填充。
-
-    Parameters:
-        fname (str): 包含方言点数据的文件路径
-        predict (bool): 对缺失的方言区信息用机器学习模型预测填充，默认开启
-
-    Returns:
-        location (`pandas.DataFrame`): 方言点信息数据表
+    见：https://zhongguoyuyan.cn/。
     """
 
-    location = clean_location(pandas.read_csv(fname, index_col=0))
+    def __init__(
+        self,
+        path=None,
+        uniform_name=True,
+        did_prefix='Z',
+        cid_prefix='Z'
+    ):
+        """
+        Parameters:
+            path (str): 数据集所在的基础路径
+            uniform_name (bool): 为真时，把数据列名转为通用名称
+            did_prefix (str): 非空时在方言 ID 添加该前缀
+            cid_prefix (str): 非空时在字 ID 添加该前缀
+        """
 
-    # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
-    location['name'] = location['city'].where(
-        location['city'] == location['county'],
-        location['city'] + location['county']
-    )
+        super().__init__('zhongguoyuyan')
+        self._path = path
+        self.uniform_name = uniform_name
+        self.did_prefix = did_prefix
+        self.cid_prefix = cid_prefix
 
-    # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
-    dialect = get_dialect(location)
-    location['dialect'] = predict_dialect(location, dialect) if predict \
-        else dialect
-    location['cluster'] = get_cluster(location)
-    location['subcluster'] = get_subcluster(location)
+    @property
+    def path(self):
+        """
+        返回加载数据的基础路径，如果为空，尝试从环境变量获取路径.
 
-    return location
+        Returns:
+            path (str): 数据集存放的基础路径
+
+        如果路径为空，尝试读取环境变量 ZHONGGUOYUYAN_HONE 作为路径。
+        """
+
+        if self._path is None:
+            self._path = os.environ.get('ZHONGGUOYUYAN_HOME')
+
+        return self._path
+
+    def load(self, *ids, variant=None, minfreq=2):
+        """
+        加载方言字音数据.
+
+        Parameters:
+            ids (iterable): 要加载的方言列表，当为空时，加载路径中所有方言数据
+            variant (str): 要加载的方言变体，为空时加载所有变体，仅当 ids 为空时生效
+            minfreq (int): 只保留每个方言中出现频次不小于该值的数据
+
+        Returns:
+            data (`pandas.DataFrame`): 方言字音表
+
+        语保数据文件的编号由3部分组成：<方言 ID><发音人编号><内容编号>，其中：
+            - 方言 ID：5个字符
+            - 发音人编号：4个字符，代表老年男性、青年男性等
+            - 内容编号：2个字符，dz 代表单字音
+        """
+
+        if self.path is None:
+            logging.error('cannot load data due to empty path! '
+                'please set environment variable ZHONGGUOYUYAN_HOME.')
+            return None
+
+        path = os.path.join(self.path, 'csv', 'dialect')
+        logging.info(f'loading data from {path} ...')
+
+        if len(ids) == 0:
+            ids = sorted([e.name[:9] for e in os.scandir(path) \
+                if e.is_file() and e.name.endswith('dz.csv') \
+                and (variant is None or e.name[5:9] == variant)])
+
+            if len(ids) == 0:
+                logging.error(f'no data file in {path}!')
+                return None
+
+        data = []
+        for id in ids:
+            fname = os.path.join(path, id + 'dz.csv')
+            logging.info(f'load {fname}')
+
+            try:
+                d = pandas.read_csv(
+                    fname,
+                    encoding='utf-8',
+                    dtype=str,
+                    na_filter=False
+                )
+
+            except Exception as e:
+                logging.error(f'cannot load file {fname}: {e}')
+                continue
+
+            # 部分音节切分错误，重新切分
+            d.loc[d['initial'] == 'Ǿŋ', ['initial', 'finals']] = ['∅', 'ŋ']
+            mask = d['initial'] == 'ku'
+            d.loc[mask, 'initial'] = 'k'
+            d.loc[mask, 'finals'] = 'u' + d.loc[mask, 'finals']
+
+            # 部分声调被错误转为日期格式，还原成数字
+            mask = d['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
+            d.loc[mask, 'tone'] = pandas.to_datetime(
+                d.loc[mask, 'tone'],
+                format=r'%Y年%m月%d日'
+            ).dt.dayofyear.astype(str)
+
+            # 清洗方言字音数据中的录入错误.
+            d['initial'] = clean_initial(d['initial'])
+            d['finals'] = clean_final(d['finals'])
+            d['tone'] = clean_tone(d['tone'])
+
+            if minfreq > 1:
+                # 删除出现次数少的读音
+                for col in ('initial', 'finals', 'tone'):
+                    d.loc[
+                        d.groupby(col)[col].transform('count') < minfreq,
+                        col
+                    ] = ''
+
+            # 添加方言 ID 及变体 ID
+            # 语保提供老年男性、青年男性等不同发音人的数据，后几个字符为其编号
+            d.insert(
+                0,
+                'did',
+                id[:5] if self.did_prefix is None else self.did_prefix + id[:5]
+            )
+            d.insert(1, 'variant', id[5:9])
+            data.append(d)
+
+        logging.info(f'done, {len(data)} data files loaded.')
+
+        if len(data) == 0:
+            return None
+
+        data = pandas.concat(data, axis=0, ignore_index=True)
+
+        if self.uniform_name:
+            # 替换列名为统一的名称
+            data.rename(columns={
+                'iid': 'cid',
+                'name': 'character',
+                'finals': 'final',
+                'memo': 'note'
+            }, inplace=True)
+
+            if self.cid_prefix is not None:
+                # 字 ID 添加前缀
+                data['cid'] = self.cid_prefix + data['cid']
+
+        return data
+
+    @functools.lru_cache
+    def load_cache(self, *ids, variant=None):
+        return self.load(*ids, variant=variant)
+
+    def filter(self, id=None, variant=None):
+        """
+        筛选部分数据.
+
+        Paramters:
+            id (str or tuple): 保留的方言记录 ID
+            variant (str): 保留的变体代号，仅当未指定 id 时生效
+
+        Returns:
+            data (`pandas.DataFrame`): 符合条件的数据
+        """
+
+        if id is None:
+            id = []
+        elif isinstance(id, str):
+            id = [id]
+
+        return self.load_cache(*id, variant=variant)
+
+    def load_dialect_info(self, predict_dialect=False):
+        """
+        读取方言点信息.
+
+        对其中的市县名称使用规则归一化，并规范化方言区名称。对缺失方言区的，使用模型预测填充。
+
+        Parameters:
+            predict_dialect (bool): 对缺失的方言区信息用机器学习模型预测填充，默认开启
+
+        Returns:
+            info (`pandas.DataFrame`): 方言点信息数据表
+        """
+
+        if self.path is None:
+            logging.error('cannot load data due to empty path! '
+                'please set environment variable ZHONGGUOYUYAN_HOME.')
+            return None
+
+        fname = os.path.join(self.path, 'csv', 'location.csv')
+        logging.info(f'loading {self.name} dialect infomation from {fname}...')
+        info = clean_location(pandas.read_csv(fname, index_col=0))
+
+        # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
+        info['name'] = info['city'].where(
+            info['city'] == info['county'],
+            info['city'] + info['county']
+        )
+
+        # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
+        dialect = get_dialect(info)
+        info['dialect'] = globals()['predict_dialect'](info, dialect) \
+            if predict_dialect else dialect
+        info['cluster'] = get_cluster(info)
+        info['subcluster'] = get_subcluster(info)
+
+        if self.did_prefix is not None:
+            info.set_index(self.did_prefix + info.index, inplace=True)
+
+        if self.uniform_name:
+            info.index.rename('did', inplace=True)
+
+        logging.info(f'done, {info.shape[0]} dialects loaded.')
+        return info
+
+    def load_char_info(self):
+        """
+        读取字信息.
+
+        Returns:
+            info (`pandas.DataFrame`): 字信息数据表
+        """
+
+        info = pandas.read_csv(
+            os.path.join(self.path, 'csv', 'words.csv'),
+            dtype=str
+        )
+        
+        if self.cid_prefix is not None:
+            info['cid'] = self.cid_prefix + info['cid']
+            
+        return info.set_index('cid').rename(columns={'item': 'character'})
+
+    @functools.cached_property
+    def metadata(self):
+        """
+        Returns:
+            metadata (dict): 数据集元数据，包含：
+                - dialect_info: 方言点信息
+                - character_info: 字信息
+        """
+
+        return None if self.path is None else {
+            'dialect_info': self.load_dialect_info(),
+            'char_info': self.load_char_info()
+        }
+
+    def reset(self):
+        """
+        清除已经加载的数据和数据路径.
+        """
+
+        super().reset()
+        self._path = None
