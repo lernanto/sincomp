@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-加载数据集的公共函数.
+汉语方言比较数据集及工具集.
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
-
-
-from . import datasets, auxiliary, models, similarity, compare, plot
