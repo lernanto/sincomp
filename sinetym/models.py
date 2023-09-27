@@ -671,7 +671,7 @@ class EncoderBase(tf.Module):
         manager = tf.train.CheckpointManager(
             tf.train.Checkpoint(model=self, optimizer=optimizer),
             os.path.join(output_path, 'checkpoints'),
-            max_to_keep=epochs
+            None
         )
 
         # 如果目标路径已包含检查点，先从检查点恢复
