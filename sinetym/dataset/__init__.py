@@ -37,6 +37,7 @@ def clean_initial(raw):
     return raw.str.replace('[0\u00d8\u00f8\u01fe\u01ff]', '∅', regex=True) \
         .str.replace('(.)∅|∅(.)', r'\1\2', regex=True) \
         .str.replace('\ufffb', '_') \
+        .str.replace('\u01b2', 'ʋ') \
         .str.replace('\u02a3', 'dz') \
         .str.replace('\u02a4', 'dʒ') \
         .str.replace('\u02a5', 'dʑ') \
@@ -44,10 +45,16 @@ def clean_initial(raw):
         .str.replace('\u02a7', 'tʃ') \
         .str.replace('\u02a8', 'tɕ') \
         .str.replace('g', 'ɡ') \
-        .str.replace('(.)h', r'\1ʰ', regex=True) \
-        .str.replace('(.)ɦ', r'\1ʱ', regex=True) \
+        .str.replace(f'[^{ipa}]', '', regex=True) \
+        .str.replace('mb', 'ᵐb') \
+        .str.replace('nd', 'ⁿd') \
+        .str.replace('ŋɡ', 'ᵑɡ') \
+        .str.replace('([kɡŋhɦ].?)w', r'\1ʷ', regex=True) \
+        .str.replace('([kɡŋhɦ].?)v', r'\1ᵛ', regex=True) \
+        .str.replace('([^ʔ])h', r'\1ʰ', regex=True) \
+        .str.replace('([^ʔ])ɦ', r'\1ʱ', regex=True) \
         .str.replace('([bdɡvzʐʑʒɾ])ʰ', r'\1ʱ', regex=True) \
-        .str.replace(f'[^{ipa}]', '', regex=True)
+        .str.replace('([ʰʱ])([ʷᵛ])', r'\2\1', regex=True)
 
 def clean_final(raw):
     """
