@@ -13,6 +13,7 @@ import logging
 import os
 import functools
 import pandas
+import opencc
 
 from . import Dataset, clean_initial, clean_final, clean_tone
 
@@ -29,7 +30,8 @@ class XiaoxuetangDataset(Dataset):
         path=None,
         uniform_name=True,
         did_prefix='X',
-        cid_prefix='X'
+        cid_prefix='X',
+        uniform_info=True
     ):
         """
         Parameters:
@@ -37,6 +39,7 @@ class XiaoxuetangDataset(Dataset):
             uniform_name (bool): 为真时，把数据列名转为通用名称
             did_prefix (str): 非空时在方言 ID 添加该前缀
             cid_prefix (str): 非空时在字 ID 添加该前缀
+            uniform_info (bool): 小学堂原始数据为繁体中文，把方言信息转换成简体中文
         """
 
         super().__init__('xiaoxuetang')
@@ -44,6 +47,7 @@ class XiaoxuetangDataset(Dataset):
         self.uniform_name = uniform_name
         self.did_prefix = did_prefix
         self.cid_prefix = cid_prefix
+        self.uniform_info = uniform_info
 
     @property
     def path(self):
@@ -202,6 +206,14 @@ class XiaoxuetangDataset(Dataset):
 
         if self.did_prefix is not None:
             info.set_index(self.did_prefix + info.index, inplace=True)
+
+        if self.uniform_info:
+            # 把方言信息转换成简体中文
+            info.update(info.select_dtypes(object).fillna('') \
+                .applymap(opencc.OpenCC('t2s').convert))
+
+            # 少数方言名称转成更通行的名称
+            info['方言'].replace({'客语': '客家话', '其他土话': '土话'}, inplace=True)
 
         if self.uniform_name:
             info.index.rename('did', inplace=True)
