@@ -218,11 +218,11 @@ class XiaoxuetangDataset(Dataset):
         if self.uniform_name:
             info.index.rename('did', inplace=True)
             info.rename(columns={
-                '方言': 'dialect',
-                '區': 'subdialect',
+                '方言': 'group',
+                '區': 'subgroup',
                 '片／小區': 'cluster',
                 '小片': 'subcluster',
-                '方言點': 'name',
+                '方言點': 'spot',
                 '資料筆數': 'size',
                 '緯度': 'latitude',
                 '經度': 'longitude'
