@@ -440,8 +440,17 @@ class ZhongguoyuyanDataset(Dataset):
 
         # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
         dialect = get_dialect(info)
-        info['dialect'] = globals()['predict_dialect'](info, dialect) \
-            if predict_dialect else dialect
+        if predict_dialect:
+            dialect = globals()['predict_dialect'](info, dialect)
+
+        info['dialect'] = numpy.where(
+            dialect.str.contains('官话'),
+            '官话',
+            numpy.where(dialect.str.contains('土话'), '土话', dialect)
+        )
+        info['subdialect'] = dialect[dialect.str.contains('官话|土话', regex=True)]
+        info['subdialect'].fillna('', inplace=True)
+
         info['cluster'] = get_cluster(info)
         info['subcluster'] = get_subcluster(info)
 
