@@ -433,7 +433,7 @@ class ZhongguoyuyanDataset(Dataset):
         info = clean_location(pandas.read_csv(fname, index_col=0))
 
         # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
-        info['name'] = info['city'].where(
+        info['spot'] = info['city'].where(
             info['city'] == info['county'],
             info['city'] + info['county']
         )
@@ -443,13 +443,13 @@ class ZhongguoyuyanDataset(Dataset):
         if predict_dialect:
             dialect = globals()['predict_dialect'](info, dialect)
 
-        info['dialect'] = numpy.where(
+        info['group'] = numpy.where(
             dialect.str.contains('官话'),
             '官话',
             numpy.where(dialect.str.contains('土话'), '土话', dialect)
         )
-        info['subdialect'] = dialect[dialect.str.contains('官话|土话', regex=True)]
-        info['subdialect'].fillna('', inplace=True)
+        info['subgroup'] = dialect[dialect.str.contains('官话|土话', regex=True)]
+        info['subgroup'].fillna('', inplace=True)
 
         info['cluster'] = get_cluster(info)
         info['subcluster'] = get_subcluster(info)
