@@ -189,6 +189,35 @@ def make_embeddings(
 
     projector.visualize_embeddings(output_path, config)
 
+def mkdict(data, prefix='.', minfreq=2):
+    """
+    根据方言数据构建词典.
+
+    Parameters:
+        data (`pandas.DataFrame`): 方言读音数据表
+        prefix (str): 保存词典的目录
+        minfreq (int): 出现频次不小于该值才计入词典
+    """
+
+    logging.info(f'make dictionaries to {prefix}...')
+
+    for name in ('did', 'cid', 'character', 'initial', 'final', 'tone'):
+        dic = data.loc[data[name] != '', name].value_counts().rename('count')
+        dic.index.rename(name, inplace=True)
+
+        if minfreq is not None and minfreq > 1:
+            dic = dic[dic >= minfreq]
+
+        fname = f'{os.path.join(prefix, name)}.csv'
+        logging.info(f'save {fname}')
+        dic.sort_values(ascending=False).to_csv(
+            fname,
+            encoding='utf-8',
+            lineterminator='\n'
+        )
+
+    logging.info('done.')
+
 def benchmark(config, train_data, eval_data=None):
     """
     评估各种配置的模型效果.
@@ -316,7 +345,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
     parser.add_argument(
         'command',
-        choices=['train', 'evaluate', 'benchmark', 'export'],
+        choices=['mkdict', 'train', 'evaluate', 'benchmark', 'export'],
         help='执行操作'
     )
     parser.add_argument('-D', '--debug', action='store_true', default=False, help='显示调试信息')
@@ -330,15 +359,17 @@ if __name__ == '__main__':
     logging.info(f'load configuration from {args.config.name}')
     config = json.load(args.config)
 
-    did, cid, character, initial, final, tone = load_dictionaries(config['dictionary_dir'])
-    did = did[:config['dialect_num'] - 1]
-    cid = cid[:config['input_nums'][0] - 1]
-    character = character[:config['input_nums'][1] - 1]
-    initial = initial[:config['output_nums'][0] - 1]
-    final = final[:config['output_nums'][1] - 1]
-    tone = tone[:config['output_nums'][2] - 1]
-
     if args.command in ('train', 'evaluate', 'benchmark'):
+        did, cid, character, initial, final, tone = load_dictionaries(
+            config.get('dictionary_dir', '.')
+        )
+        did = did[:config['dialect_num'] - 1]
+        cid = cid[:config['input_nums'][0] - 1]
+        character = character[:config['input_nums'][1] - 1]
+        initial = initial[:config['output_nums'][0] - 1]
+        final = final[:config['output_nums'][1] - 1]
+        tone = tone[:config['output_nums'][2] - 1]
+
         data = load_datasets(config['datasets'])
         data = sinetym.auxiliary.OrdinalEncoder(
             categories=[
@@ -359,7 +390,14 @@ if __name__ == '__main__':
         ))
         data = data.shuffle(data.cardinality(), seed=10273)
 
-    if args.command == 'train':
+    if args.command == 'mkdict':
+        mkdict(
+            load_datasets(config['datasets']),
+            config.get('dictionary_dir', '.'),
+            config.get('min_freq')
+        )
+
+    elif args.command == 'train':
         train(config, args.model, data)
 
     elif args.command == 'evaluate':
