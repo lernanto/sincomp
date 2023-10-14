@@ -369,7 +369,7 @@ class EncoderBase(tf.Module):
         output_nums,
         dialect_emb_size=20,
         input_emb_size=20,
-        output_emb_sizes=20,
+        output_emb_size=20,
         output_bias=True,
         residual=False,
         l2=0,
@@ -382,7 +382,7 @@ class EncoderBase(tf.Module):
             output_nums (array-like of int): 每个输出的取值数，如声韵调数
             dialect_emb_size (int): 方言向量长度
             input_emb_size (int): 输入向量长度
-            output_emb_sizes (int): 输出向量长度
+            output_emb_size (int): 输出向量长度
             output_bias (bool): 是否为输出添加偏置
             residual (bool): 为真时，子类 _transform 返回值为残差
             l2 (float): L2 正则化系数
@@ -396,7 +396,7 @@ class EncoderBase(tf.Module):
         self.output_nums = tuple(output_nums)
         self.dialect_emb_size = dialect_emb_size
         self.input_emb_size = input_emb_size
-        self.output_emb_sizes = tuple(output_emb_sizes)
+        self.output_emb_size = output_emb_size
         self.residual = residual
         self.l2 = l2
 
@@ -413,15 +413,30 @@ class EncoderBase(tf.Module):
         ) for i, n in enumerate(self.input_nums)]
 
         self.output_embs = [tf.Variable(
-            init(shape=(n, s), dtype=tf.float32),
+            init(shape=(n, self.output_emb_size), dtype=tf.float32),
             name=f'output_emb{i}'
-        ) for i, (n, s) in enumerate(zip(self.output_nums, self.output_emb_sizes))]
+        ) for i, n in enumerate(self.output_nums)]
 
         if output_bias:
             self.output_biases = [tf.Variable(
                 init(shape=(n,), dtype=tf.float32),
                 name=f'output_bias{i}'
             ) for i, n in enumerate(self.output_nums)]
+
+    def encode_dialect(self, dialect):
+        """
+        把方言点编码成向量.
+
+        Parameters:
+            dialect (`tensorflow.Tensor`):
+                方言张量，形状为 batch_size * 1，内容为整数编码
+
+        Returns:
+            input_emb (`tensorflow.Tensor`):
+                编码的方言向量，形状为 batch_size * self.dialect_emb_size
+        """
+
+        return tf.nn.embedding_lookup(self.dialect_emb, dialect[:, 0])
 
     def encode(self, inputs):
         """
@@ -491,7 +506,7 @@ class EncoderBase(tf.Module):
             logits: self.decode 的输出
         """
 
-        dialect_emb = tf.nn.embedding_lookup(self.dialect_emb, dialect)
+        dialect_emb = self.encode_dialect(dialect)
         input_emb = self.encode(inputs)
         output_emb = self.transform(dialect_emb, input_emb)
         return self.decode(output_emb)
@@ -769,30 +784,8 @@ class LinearEncoder(EncoderBase):
     输入向量经过以方言向量为参数的线性变换得到输出向量。
     """
 
-    def __init__(
-        self,
-        dialect_num,
-        input_nums,
-        output_nums,
-        output_emb_size=20,
-        name='linear_encoder',
-        **kwargs
-    ):
-        """
-        Parameters:
-            output_emb_size (int): 输出向量的长度
-        """
-
-        super().__init__(
-            dialect_num,
-            input_nums,
-            output_nums,
-            output_emb_sizes=(output_emb_size,) * len(output_nums),
-            name=name,
-            **kwargs
-        )
-
-        self.output_emb_size = output_emb_size
+    def __init__(self, *args, name='linear_encoder', **kwargs):
+        super().__init__(*args, name=name, **kwargs)
 
         init = tf.random_normal_initializer()
         self.weight = tf.Variable(
