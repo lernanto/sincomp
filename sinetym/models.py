@@ -372,6 +372,7 @@ class EncoderBase(tf.Module):
         output_emb_sizes=20,
         output_bias=True,
         residual=False,
+        l2=0,
         name='encoder'
     ):
         """
@@ -384,6 +385,7 @@ class EncoderBase(tf.Module):
             output_emb_sizes (int): 输出向量长度
             output_bias (bool): 是否为输出添加偏置
             residual (bool): 为真时，子类 _transform 返回值为残差
+            l2 (float): L2 正则化系数
             name (str): 生成的模型名字
         """
 
@@ -396,6 +398,7 @@ class EncoderBase(tf.Module):
         self.input_emb_size = input_emb_size
         self.output_emb_sizes = tuple(output_emb_sizes)
         self.residual = residual
+        self.l2 = l2
 
         init = tf.random_normal_initializer()
 
@@ -602,6 +605,10 @@ class EncoderBase(tf.Module):
             loss, acc = self.loss(dialect, inputs, targets)
             loss = tf.reduce_mean(loss, axis=0)
             loss = tf.reduce_sum(loss if weights is None else loss * weights)
+            if self.l2 > 0:
+                loss += self.l2 * tf.reduce_sum(
+                    [tf.nn.l2_loss(v) for v in self.trainable_variables]
+                )
 
         grad = tape.gradient(loss, self.trainable_variables)
         optimizer.apply_gradients(zip(grad, self.trainable_variables))
