@@ -740,6 +740,11 @@ class EncoderBase(tf.Module):
                 for i in range(acc.shape[0]):
                     tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
 
+                lr = optimizer.learning_rate
+                if isinstance(lr, tf.optimizers.schedules.LearningRateSchedule):
+                    lr = lr(optimizer.iterations)
+                tf.summary.scalar('learning rate', lr, step=epoch)
+
                 for v in self.variables:
                     tf.summary.histogram(v.name, v, step=epoch)
 
@@ -747,7 +752,7 @@ class EncoderBase(tf.Module):
                 loss, acc = self.evaluate(eval_data.batch(batch_size), weights)
                 logging.info(
                     f'epoch {epoch}/{epochs}: '
-                    f'eval loss = {loss}, eval accuracy = {acc}'
+                    f'evaluation loss = {loss}, evaluation accuracy = {acc}'
                 )
 
                 with eval_writer.as_default():
