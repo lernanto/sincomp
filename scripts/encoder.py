@@ -107,8 +107,9 @@ def build_model(config):
     optimizer_class = getattr(tf.optimizers, optimizer_config.pop('class'))
 
     # 学习率可以是一个对象，根据配置创建
-    lr_config = optimizer_config.pop('learning_rate').copy()
-    if isinstance(lr_config, object):
+    lr_config = optimizer_config.pop('learning_rate')
+    if isinstance(lr_config, dict):
+        lr_config = lr_config.copy()
         lr_class = getattr(tf.optimizers.schedules, lr_config.pop('class'))
         lr = lr_class(**lr_config)
     else:
