@@ -530,20 +530,51 @@ def benchmark(config, data):
         f'output numbers = {output_nums}'
     )
 
+    # 保存词典
+    prefix = os.path.join(config['output_dir'], 'benchmark')
+    dict_dir = os.path.join(prefix, 'dictionaries')
+    os.makedirs(dict_dir, exist_ok=True)
+    logging.info(f'saving dictionaries to {dict_dir}...')
+
+    for e in (encoder, output_encoder):
+        for i, name in enumerate(e.feature_names_in_):
+            pd.Series(e.categories_[i], name=name).to_csv(
+                os.path.join(dict_dir, name + '.csv'),
+                index=False,
+                encoding='utf-8',
+                lineterminator='\n'
+            )
+
+    logging.info('done.')
+
     # 剩余数据预处理成数据集用于评估
-    data = [(n,) + make_data(
-        d,
-        output_encoder,
-        test_size=0.5,
-        encoder=encoder,
-        new_dialect=nd,
-        new_input=ni,
-        random_state=37511
-    ) for n, d, nd, ni in (
+    data = []
+    for n, d, new_dialect, new_input in (
         ('new_dialect', data2, True, False),
         ('new_input', data3, False, True),
         ('new_dialect_input', data4, True, True)
-    )]
+    ):
+        train_data, eval_data, new_encoder, new_dialect_num, new_input_num = make_data(
+            d,
+            output_encoder,
+            test_size=0.5,
+            encoder=encoder,
+            new_dialect=new_dialect,
+            new_input=new_input,
+            random_state=37511
+        )
+        data.append((n, train_data, eval_data, new_dialect_num, new_input_num))
+
+        if new_encoder is not None:
+            new_dict_dir = os.path.join(dict_dir, n)
+            os.makedirs(new_dict_dir, exist_ok=True)
+            for i, f in enumerate(new_encoder.feature_names_in_):
+                pd.Series(new_encoder.categories_[i], name=f).to_csv(
+                    os.path.join(new_dict_dir, f + '.csv'),
+                    index=False,
+                    encoding='utf-8',
+                    lineterminator='\n'
+                )
 
     for conf in config['models']:
         # 根据配置文件创建模型并训练
@@ -556,7 +587,7 @@ def benchmark(config, data):
             output_nums=output_nums
         )
 
-        output_path = os.path.join(config['output_dir'], 'benchmark', name)
+        output_path = os.path.join(prefix, name)
         logging.info(f'start training model {name}, output path = {output_path} ...')
         model.fit(
             optimizer,
@@ -568,7 +599,7 @@ def benchmark(config, data):
         logging.info('done.')
 
         # 使用剩余的数据集评估模型效果
-        for n, train_data, eval_data, _, new_dialect_num, new_input_num in data:
+        for n, train_data, eval_data, new_dialect_num, new_input_num in data:
             logging.info(
                 f'evaluate {n}, train size = {train_data.cardinality()}, '
                 f'evaluation size = {eval_data.cardinality()}.'
