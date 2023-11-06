@@ -325,31 +325,26 @@ def make_data(
         limits[2:] += 1
 
     # 为新方言 ID 和字 ID 构建编码器，并把新编码插入现有编码的后一列
-    minfreq = max(int(0.00001 * tri.shape[0]), 2)
     if encoder is None:
-        encoder = sinetym.auxiliary.OrdinalEncoder(
-            dtype=np.int32,
-            min_frequency=minfreq
-        ).fit(pd.DataFrame(
-            SimpleImputer(missing_values='', strategy='most_frequent') \
-                .fit_transform(tri),
-            index=tri.index,
-            columns=tri.columns
-        ))
+        encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
+            .fit(pd.DataFrame(
+                SimpleImputer(missing_values='', strategy='most_frequent') \
+                    .fit_transform(tri),
+                index=tri.index,
+                columns=tri.columns
+            ))
 
     train_input = encoder.transform(tri)
     test_input = encoder.transform(tei)
 
     if len(columns) > 0:
-        encoder = sinetym.auxiliary.OrdinalEncoder(
-            dtype=np.int32,
-            min_frequency=minfreq
-        ).fit(pd.DataFrame(
-            SimpleImputer(missing_values='', strategy='most_frequent') \
-                .fit_transform(tri[columns]),
-            index=tri.index,
-            columns=columns
-        ))
+        encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
+            .fit(pd.DataFrame(
+                SimpleImputer(missing_values='', strategy='most_frequent') \
+                    .fit_transform(tri[columns]),
+                index=tri.index,
+                columns=columns
+            ))
         train_input = np.insert(
             train_input,
             indeces,
@@ -504,15 +499,13 @@ def benchmark(config, data):
 
     # 输出数据必须全部编码，编码前剔除缺失值
     columns = ['initial', 'final', 'tone']
-    output_encoder = sinetym.auxiliary.OrdinalEncoder(
-        dtype=np.int32,
-        min_frequency=2
-    ).fit(pd.DataFrame(
-        SimpleImputer(missing_values='', strategy='most_frequent') \
-            .fit_transform(data[columns]),
-        index=data.index,
-        columns=columns
-    ))
+    output_encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
+        .fit(pd.DataFrame(
+            SimpleImputer(missing_values='', strategy='most_frequent') \
+                .fit_transform(data[columns]),
+            index=data.index,
+            columns=columns
+        ))
 
     # 切分数据用于训练及不同项目的评估
     data1, data2, data3, data4 = split_data(data, random_state=37511)
