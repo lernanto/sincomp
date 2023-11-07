@@ -15,7 +15,6 @@ import json
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.impute import SimpleImputer
 import tensorflow as tf
 from tensorboard.plugins import projector
 
@@ -39,11 +38,8 @@ def load_dictionaries(prefix):
 
     dics = {}
     for name in ('did', 'cid', 'character', 'initial', 'final', 'tone'):
-        dics[name] = pd.read_csv(
-            os.path.join(prefix, f'{name}.csv'),
-            index_col=0,
-            encoding='utf-8'
-        )
+        with open(os.path.join(prefix, f'{name}.txt'), 'r', encoding='utf-8') as f:
+            dics[name] = [l.rstrip('\n') for l in f.readlines()]
 
     return (
         dics['did'],
@@ -271,6 +267,7 @@ def make_data(
     encoder=None,
     new_dialect=False,
     new_input=False,
+    minfreq=0.00001,
     random_state=None
 ):
     """
@@ -278,11 +275,12 @@ def make_data(
 
     Parameters:
         data (`pandas.DataFrame`): 原始数据
-        output_encoder (`sklearn.preprocessing.OrdinalEncoder`): 编码输出数据的编码器
+        output_encoder (sinetym.auxiliary.OrdinalEncoder): 编码输出数据的编码器
         test_size (float): 切分评估数据的比例
         encoder (sinetym.auxiliary.OrdinalEncoder): 用于编码数据的基础编码器
         new_dialect (bool): 是否为新方言构造数据
         new_input (bool): 是否为新字构造数据
+        minfreq (float or int): 为数据构造编码器时只保留出现频次或比例不小于该值的值
         random_state (int or `numpy.random.RandomState`): 用于复现划分数据结果
 
     Returns:
@@ -326,25 +324,21 @@ def make_data(
 
     # 为新方言 ID 和字 ID 构建编码器，并把新编码插入现有编码的后一列
     if encoder is None:
-        encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
-            .fit(pd.DataFrame(
-                SimpleImputer(missing_values='', strategy='most_frequent') \
-                    .fit_transform(tri),
-                index=tri.index,
-                columns=tri.columns
-            ))
+        encoder = sinetym.auxiliary.OrdinalEncoder(
+            categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+                for _, c in tri.items()],
+            dtype=np.int32
+        ).fit(tri[:1])
 
     train_input = encoder.transform(tri)
     test_input = encoder.transform(tei)
 
     if len(columns) > 0:
-        encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
-            .fit(pd.DataFrame(
-                SimpleImputer(missing_values='', strategy='most_frequent') \
-                    .fit_transform(tri[columns]),
-                index=tri.index,
-                columns=columns
-            ))
+        encoder = sinetym.auxiliary.OrdinalEncoder(
+            categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+                for _, c in tri[columns].items()],
+            dtype=np.int32
+        ).fit(tri[:1][columns])
         train_input = np.insert(
             train_input,
             indeces,
@@ -461,22 +455,18 @@ def mkdict(data, prefix='.', minfreq=2):
         minfreq (int): 出现频次不小于该值才计入词典
     """
 
+    if isinstance(minfreq, float):
+        minfreq = int(minfreq * data.shape[0])
+
     logging.info(f'make dictionaries to {prefix}...')
+    os.makedirs(prefix, exist_ok=True)
 
     for name in ('did', 'cid', 'character', 'initial', 'final', 'tone'):
-        dic = data.loc[data[name] != '', name].value_counts().rename('count')
-        dic.index.rename(name, inplace=True)
-
-        if minfreq is not None and minfreq > 1:
-            dic = dic[dic >= minfreq]
-
-        fname = f'{os.path.join(prefix, name)}.csv'
+        dic = sinetym.auxiliary.make_dict(data[name], minfreq=minfreq)
+        fname = f'{os.path.join(prefix, name)}.txt'
         logging.info(f'save {fname}')
-        dic.sort_values(ascending=False).to_csv(
-            fname,
-            encoding='utf-8',
-            lineterminator='\n'
-        )
+        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
+            print('\n'.join(dic), file=f)
 
     logging.info('done.')
 
@@ -497,15 +487,13 @@ def benchmark(config, data):
     来训练新的方言向量和字向量，然后评估预测剩余另一部分数据的准确率。
     """
 
-    # 输出数据必须全部编码，编码前剔除缺失值
+    # 输出数据必须全部编码
     columns = ['initial', 'final', 'tone']
-    output_encoder = sinetym.auxiliary.OrdinalEncoder(dtype=np.int32) \
-        .fit(pd.DataFrame(
-            SimpleImputer(missing_values='', strategy='most_frequent') \
-                .fit_transform(data[columns]),
-            index=data.index,
-            columns=columns
-        ))
+    output_encoder = sinetym.auxiliary.OrdinalEncoder(
+        categories=[sinetym.auxiliary.make_dict(c, minfreq=config.get('min_freq')) \
+            for _, c in data[columns].items()],
+        dtype=np.int32
+    ).fit(data[:1][columns])
 
     # 切分数据用于训练及不同项目的评估
     data1, data2, data3, data4 = split_data(data, random_state=37511)
@@ -513,6 +501,7 @@ def benchmark(config, data):
         data1,
         output_encoder,
         test_size=0.1,
+        minfreq=config.get('min_freq'),
         random_state=37511
     )
     dialect_num = encoder.categories_[0].shape[0] + 1
@@ -531,12 +520,13 @@ def benchmark(config, data):
 
     for e in (encoder, output_encoder):
         for i, name in enumerate(e.feature_names_in_):
-            pd.Series(e.categories_[i], name=name).to_csv(
-                os.path.join(dict_dir, name + '.csv'),
-                index=False,
+            with open(
+                os.path.join(dict_dir, name + '.txt'),
+                'w',
                 encoding='utf-8',
-                lineterminator='\n'
-            )
+                newline='\n'
+            ) as f:
+                print('\n'.join(e.categories_[i]), file=f)
 
     logging.info('done.')
 
@@ -554,6 +544,7 @@ def benchmark(config, data):
             encoder=encoder,
             new_dialect=new_dialect,
             new_input=new_input,
+            minfreq=config.get('min_freq'),
             random_state=37511
         )
         data.append((n, train_data, eval_data, new_dialect_num, new_input_num))
@@ -561,13 +552,14 @@ def benchmark(config, data):
         if new_encoder is not None:
             new_dict_dir = os.path.join(dict_dir, n)
             os.makedirs(new_dict_dir, exist_ok=True)
-            for i, f in enumerate(new_encoder.feature_names_in_):
-                pd.Series(new_encoder.categories_[i], name=f).to_csv(
-                    os.path.join(new_dict_dir, f + '.csv'),
-                    index=False,
+            for i, fea in enumerate(e.feature_names_in_):
+                with open(
+                    os.path.join(new_dict_dir, fea + '.txt'),
+                    'w',
                     encoding='utf-8',
-                    lineterminator='\n'
-                )
+                    newline='\n'
+                ) as f:
+                    print('\n'.join(e.categories_[i]), file=f)
 
     for conf in config['models']:
         # 根据配置文件创建模型并训练
@@ -616,13 +608,22 @@ def benchmark(config, data):
                 output_path=os.path.join(prefix, name, n)
             )
 
-def train(config, name, train_data, eval_data=None):
+def train(
+    config,
+    name,
+    dialect_num,
+    input_nums,
+    output_nums,
+    train_data,
+    eval_data=None
+):
     """
     训练模型.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
+        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
         train_data (`tensorflow.data.Dataset`): 训练数据
         eval_data (`tensorflow.data.Dataset`): 评估数据
 
@@ -634,9 +635,9 @@ def train(config, name, train_data, eval_data=None):
     conf.pop('name')
     model, optimizer = build_model(
         conf,
-        dialect_num=config['dialect_num'],
-        input_nums=config['input_nums'],
-        output_nums=config['output_nums']
+        dialect_num=dialect_num,
+        input_nums=input_nums,
+        output_nums=output_nums
     )
     output_path = os.path.join(config['output_dir'], name)
 
@@ -650,22 +651,23 @@ def train(config, name, train_data, eval_data=None):
     )
     logging.info('done.')
 
-def evaluate(config, name, eval_data):
+def evaluate(config, name, dialect_num, input_nums, output_nums, eval_data):
     """
     评估训练完成的模型效果.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
+        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
         eval_data (`tensorflow.data.Dataset`): 评估数据
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     model, _ = build_model(
         conf,
-        dialect_num=config['dialect_num'],
-        input_nums=config['input_nums'],
-        output_nums=config['output_nums']
+        dialect_num=dialect_num,
+        input_nums=input_nums,
+        output_nums=output_nums
     )
 
     checkpoint = tf.train.Checkpoint(model=model)
@@ -682,13 +684,14 @@ def evaluate(config, name, eval_data):
     loss, acc = model.evaluate(eval_data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
 
-def export(config, name, prefix='.'):
+def export(config, name, dialect_num, input_nums, output_nums, prefix='.'):
     """
     从模型导出权重到文件.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
+        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
         dialect_num, input_nums, output_nums: 创建模型的参数
         prefix (str): 输出路径前缀
     """
@@ -696,9 +699,9 @@ def export(config, name, prefix='.'):
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     model, _ = build_model(
         conf,
-        dialect_num=config['dialect_num'],
-        input_nums=config['input_nums'],
-        output_nums=config['output_nums']
+        dialect_num=dialect_num,
+        input_nums=input_nums,
+        output_nums=output_nums
     )
 
     checkpoint = tf.train.Checkpoint(model=model)
@@ -748,23 +751,10 @@ if __name__ == '__main__':
         did, cid, character, initial, final, tone = load_dictionaries(
             config.get('dictionary_dir', '.')
         )
-        did = did[:config['dialect_num'] - 1]
-        cid = cid[:config['input_nums'][0] - 1]
-        character = character[:config['input_nums'][1] - 1]
-        initial = initial[:config['output_nums'][0] - 1]
-        final = final[:config['output_nums'][1] - 1]
-        tone = tone[:config['output_nums'][2] - 1]
 
         data = load_datasets(config['datasets'])
         data = sinetym.auxiliary.OrdinalEncoder(
-            categories=[
-                did.index,
-                cid.index,
-                character.index,
-                initial.index,
-                final.index,
-                tone.index
-            ],
+            categories=[did, cid, character, initial, final, tone],
             dtype=np.int32
         ).fit(data[:1]).transform(data)
 
@@ -783,13 +773,34 @@ if __name__ == '__main__':
         )
 
     elif args.command == 'train':
-        train(config, args.model, data)
+        train(
+            config,
+            args.model,
+            len(did) + 1,
+            [len(cid) + 1, len(character) + 1],
+            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            data
+        )
 
     elif args.command == 'evaluate':
-        evaluate(config, args.model, data)
+        evaluate(
+            config,
+            args.model,
+            len(did) + 1,
+            [len(cid) + 1, len(character) + 1],
+            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            data
+        )
 
     elif args.command == 'benchmark':
         benchmark(config, load_datasets(config['datasets']))
 
     elif args.command == 'export':
-        export(config, args.model, args.output)
+        export(
+            config,
+            args.model,
+            len(did) + 1,
+            [len(cid) + 1, len(character) + 1],
+            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            args.output
+        )

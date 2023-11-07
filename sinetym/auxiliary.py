@@ -19,6 +19,31 @@ import shapely
 import cartopy
 
 
+def make_dict(data, minfreq=None, sort=True):
+    """
+    根据方言数据构建词典.
+
+    Parameters:
+        data (array-like): 读音样本数据中的一列，空字符串代表缺失值
+        minfreq (float or int): 出现频次不小于该值才计入词典
+        sort (bool): 返回的词典按顺序排列
+
+    Returns:
+        dic (`numpy.ndarray`): data 中符号的词典
+    """
+
+    dic, counts = numpy.unique(data[data != ''], return_counts=True)
+
+    if minfreq is not None and minfreq > 1:
+        # 如果 minfreq 是实数，指定出现的最小比例
+        dic = dic[counts >= (int(minfreq * len(data)) if isinstance(minfreq) \
+            else minfreq)]
+
+    if sort:
+        dic.sort()
+
+    return dic
+
 def encode(data, dtype=numpy.int32, missing_values='', unknown_value=-1):
     """
     把方言读音编码为整数.
