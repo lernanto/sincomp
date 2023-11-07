@@ -776,7 +776,7 @@ if __name__ == '__main__':
         ).fit(data[:1]).transform(data)
 
         data = tf.data.Dataset.from_tensor_slices((
-            data[:, 0],
+            data[:, 0:1],
             data[:, 1:3],
             data[:, 3:6]
         ))
