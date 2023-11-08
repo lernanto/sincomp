@@ -620,7 +620,7 @@ def benchmark(config, data):
                 eval_data,
                 epochs=10,
                 batch_size=100,
-                output_path=os.path.join(config['output_dir'], 'benchmark', 'name', 'n')
+                output_path=os.path.join(prefix, name, n)
             )
 
 def train(config, name, train_data, eval_data=None):
