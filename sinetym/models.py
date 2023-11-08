@@ -402,24 +402,25 @@ class EncoderBase(tf.Module):
 
         init = tf.random_normal_initializer()
 
+        # 在向量表最后追加一项作为缺失值的向量，下同
         self.dialect_emb = tf.Variable(init(
-            shape=(self.dialect_num, self.dialect_emb_size),
+            shape=(self.dialect_num + 1, self.dialect_emb_size),
             dtype=tf.float32
         ), name='dialect_emb')
 
         self.input_embs = [tf.Variable(
-            init(shape=(n, self.input_emb_size), dtype=tf.float32),
+            init(shape=(n + 1, self.input_emb_size), dtype=tf.float32),
             name=f'input_emb{i}'
         ) for i, n in enumerate(self.input_nums)]
 
         self.output_embs = [tf.Variable(
-            init(shape=(n, self.output_emb_size), dtype=tf.float32),
+            init(shape=(n + 1, self.output_emb_size), dtype=tf.float32),
             name=f'output_emb{i}'
         ) for i, n in enumerate(self.output_nums)]
 
         if output_bias:
             self.output_biases = [tf.Variable(
-                init(shape=(n,), dtype=tf.float32),
+                init(shape=(n + 1,), dtype=tf.float32),
                 name=f'output_bias{i}'
             ) for i, n in enumerate(self.output_nums)]
 
@@ -436,7 +437,9 @@ class EncoderBase(tf.Module):
                 编码的方言向量，形状为 batch_size * self.dialect_emb_size
         """
 
-        return tf.nn.embedding_lookup(self.dialect_emb, dialect[:, 0])
+        # 输入中的 -1 代表缺失值，替换为最后一个向量
+        idx = tf.where(dialect[:, 0] >= 0, dialect[:, 0], self.dialect_num)
+        return tf.nn.embedding_lookup(self.dialect_emb, idx)
 
     def encode(self, inputs):
         """
@@ -451,9 +454,12 @@ class EncoderBase(tf.Module):
                 编码的输入向量，形状为 batch_size * self.input_emb_size
         """
 
+        # 输入中的 -1 代表缺失值，替换为最后一个向量
         return tf.reduce_mean(tf.stack(
-            [tf.nn.embedding_lookup(self.input_embs[i], inputs[:, i]) \
-                for i in range(len(self.input_embs))],
+            [tf.nn.embedding_lookup(
+                self.input_embs[i],
+                tf.where(inputs[:, i] >= 0, inputs[:, i], self.input_nums[i])
+            ) for i in range(len(self.input_embs))],
             axis=2
         ), axis=-1)
 
@@ -483,7 +489,7 @@ class EncoderBase(tf.Module):
 
         Returns:
             logits (list of tensorflow.Tensor):
-                输出张量的数组，每个张量形状为 output_emb.shape[0] * self.output_nums[i]，
+                输出张量的数组，每个张量形状为 output_emb.shape[0] * output_embs[i].shape[0]，
                 内容为对数几率
         """
 
@@ -530,8 +536,10 @@ class EncoderBase(tf.Module):
         inputs = tf.convert_to_tensor(inputs)
 
         logits = self.forward(dialect, inputs)
+        # 最后一项代表缺失值，预测时不输出
         return tf.stack(
-            [tf.argmax(l, axis=1, output_type=tf.int32) for l in logits],
+            [tf.argmax(l[:, :l.shape[1] - 1], axis=1, output_type=tf.int32) \
+                for l in logits],
             axis=1
         )
 
@@ -554,7 +562,8 @@ class EncoderBase(tf.Module):
         inputs = tf.convert_to_tensor(inputs)
 
         logits = self.forward(dialect, inputs)
-        return [tf.nn.softmax(l) for l in logits]
+        # 最后一项代表缺失值，预测时不输出
+        return [tf.nn.softmax(l[:, :l.shape[1] - 1]) for l in logits]
 
     @tf.function
     def loss(self, dialect, inputs, targets):
@@ -580,9 +589,14 @@ class EncoderBase(tf.Module):
 
         logits = self.forward(dialect, inputs)
 
+        # 输入中的 -1 代表缺失值，替换为最后一个向量
         loss = tf.stack(
             [tf.nn.sparse_softmax_cross_entropy_with_logits(
-                labels=targets[:, i],
+                labels=tf.where(
+                    targets[:, i] >= 0,
+                    targets[:, i],
+                    self.output_nums[i]
+                ),
                 logits=l
             ) for i, l in enumerate(logits)],
             axis=1
@@ -675,10 +689,7 @@ class EncoderBase(tf.Module):
 
         for dialect, inputs, targets in data:
             loss, acc = self.loss(dialect, inputs, targets)
-            loss = tf.reduce_mean(
-                loss * tf.cast(targets > 0, tf.float32),
-                axis=0
-            )
+            loss = tf.reduce_mean(tf.where(targets >= 0, loss, 0), axis=0)
             if weights is not None:
                 loss *= weights
             loss_stat.update_state(tf.reduce_sum(loss))
