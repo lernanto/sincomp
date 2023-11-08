@@ -15,6 +15,7 @@ import json
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder
 import tensorflow as tf
 from tensorboard.plugins import projector
 
@@ -227,9 +228,9 @@ def build_new_model(model, new_dialect_num=None, new_input_num=None):
                 return super().encode_dialect(dialect)
 
             return tf.where(
-                tf.logical_or(dialect[:, 0:1] > 0, dialect[:, 1:2] == 0),
+                tf.logical_or(dialect[:, 0:1] >= 0, dialect[:, 1:2] < 0),
                 super().encode_dialect(dialect),
-                tf.nn.embedding_lookup(self.new_dialect_emb, dialect[:, 1])
+                tf.nn.embedding_lookup(self.new_dialect_emb, tf.maximum(dialect[:, 1], 0))
             )
 
         def encode(self, inputs):
@@ -242,9 +243,9 @@ def build_new_model(model, new_dialect_num=None, new_input_num=None):
 
             n = len(self.input_embs)
             return tf.where(
-                tf.logical_or(inputs[:, 0:1] > 0, inputs[:, n:n + 1] == 0),
+                tf.logical_or(inputs[:, 0:1] >= 0, inputs[:, n:n + 1] < 0),
                 super().encode(inputs),
-                tf.nn.embedding_lookup(self.new_input_emb, inputs[:, n])
+                tf.nn.embedding_lookup(self.new_input_emb, tf.maximum(inputs[:, n], 0))
             )
 
         @property
@@ -275,9 +276,9 @@ def make_data(
 
     Parameters:
         data (`pandas.DataFrame`): 原始数据
-        output_encoder (sinetym.auxiliary.OrdinalEncoder): 编码输出数据的编码器
+        output_encoder (OrdinalEncoder): 编码输出数据的编码器
         test_size (float): 切分评估数据的比例
-        encoder (sinetym.auxiliary.OrdinalEncoder): 用于编码数据的基础编码器
+        encoder (OrdinalEncoder): 用于编码数据的基础编码器
         new_dialect (bool): 是否为新方言构造数据
         new_input (bool): 是否为新字构造数据
         minfreq (float or int): 为数据构造编码器时只保留出现频次或比例不小于该值的值
@@ -286,7 +287,7 @@ def make_data(
     Returns:
         train_data (`tensorflow.data.Dataset`): 训练数据集
         test_data (`tensorflow.data.Dataset`): 测试数据集
-        encoder (sinetym.auxiliary.OrdinalEncoder): 针对训练数据新建的编码器
+        encoder (OrdinalEncoder): 针对训练数据新建的编码器
         new_dialect_num (int): 训练集中包含的方言 ID 数，
             如果 new_dialect 为假，返回 None
         new_input_num (int): 训练集中包含的字 ID 数，
@@ -324,20 +325,26 @@ def make_data(
 
     # 为新方言 ID 和字 ID 构建编码器，并把新编码插入现有编码的后一列
     if encoder is None:
-        encoder = sinetym.auxiliary.OrdinalEncoder(
+        encoder = OrdinalEncoder(
             categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
                 for _, c in tri.items()],
-            dtype=np.int32
+            dtype=np.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
         ).fit(tri[:1])
 
     train_input = encoder.transform(tri)
     test_input = encoder.transform(tei)
 
     if len(columns) > 0:
-        encoder = sinetym.auxiliary.OrdinalEncoder(
+        encoder = OrdinalEncoder(
             categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
                 for _, c in tri[columns].items()],
-            dtype=np.int32
+            dtype=np.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
         ).fit(tri[:1][columns])
         train_input = np.insert(
             train_input,
@@ -362,8 +369,8 @@ def make_data(
             for i in range(limits.shape[0] - 1)) + (test_output,)
     )
 
-    new_dialect_num = encoder.categories_[0].shape[0] + 1 if new_dialect else None
-    new_input_num = encoder.categories_[-1].shape[0] + 1 if new_input else None
+    new_dialect_num = encoder.categories_[0].shape[0] if new_dialect else None
+    new_input_num = encoder.categories_[-1].shape[0] if new_input else None
 
     logging.info(
         f'done, train data size = {train_data.cardinality()}, '
@@ -489,10 +496,13 @@ def benchmark(config, data):
 
     # 输出数据必须全部编码
     columns = ['initial', 'final', 'tone']
-    output_encoder = sinetym.auxiliary.OrdinalEncoder(
+    output_encoder = OrdinalEncoder(
         categories=[sinetym.auxiliary.make_dict(c, minfreq=config.get('min_freq')) \
             for _, c in data[columns].items()],
-        dtype=np.int32
+        dtype=np.int32,
+        handle_unknown='use_encoded_value',
+        unknown_value=-1,
+        encoded_missing_value=-1
     ).fit(data[:1][columns])
 
     # 切分数据用于训练及不同项目的评估
@@ -504,9 +514,9 @@ def benchmark(config, data):
         minfreq=config.get('min_freq'),
         random_state=37511
     )
-    dialect_num = encoder.categories_[0].shape[0] + 1
-    input_nums = [c.shape[0] + 1 for c in encoder.categories_[1:]]
-    output_nums = [c.shape[0] + 1 for c in output_encoder.categories_]
+    dialect_num = encoder.categories_[0].shape[0]
+    input_nums = [c.shape[0] for c in encoder.categories_[1:]]
+    output_nums = [c.shape[0] for c in output_encoder.categories_]
     logging.info(
         f'dialect number = {dialect_num}, input numbers = {input_nums}, '
         f'output numbers = {output_nums}'
@@ -753,9 +763,12 @@ if __name__ == '__main__':
         )
 
         data = load_datasets(config['datasets'])
-        data = sinetym.auxiliary.OrdinalEncoder(
+        data = OrdinalEncoder(
             categories=[did, cid, character, initial, final, tone],
-            dtype=np.int32
+            dtype=np.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
         ).fit(data[:1]).transform(data)
 
         data = tf.data.Dataset.from_tensor_slices((
@@ -776,9 +789,9 @@ if __name__ == '__main__':
         train(
             config,
             args.model,
-            len(did) + 1,
-            [len(cid) + 1, len(character) + 1],
-            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            len(did),
+            [len(cid), len(character)],
+            [len(initial), len(final), len(tone)],
             data
         )
 
@@ -786,9 +799,9 @@ if __name__ == '__main__':
         evaluate(
             config,
             args.model,
-            len(did) + 1,
-            [len(cid) + 1, len(character) + 1],
-            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            len(did),
+            [len(cid), len(character)],
+            [len(initial), len(final), len(tone)],
             data
         )
 
@@ -799,8 +812,8 @@ if __name__ == '__main__':
         export(
             config,
             args.model,
-            len(did) + 1,
-            [len(cid) + 1, len(character) + 1],
-            [len(initial) + 1, len(final) + 1, len(tone) + 1],
+            len(did),
+            [len(cid), len(character)],
+            [len(initial), len(final), len(tone)],
             args.output
         )
