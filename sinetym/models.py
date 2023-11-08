@@ -364,7 +364,7 @@ class EncoderBase(tf.Module):
 
     def __init__(
         self,
-        dialect_num,
+        dialect_nums,
         input_nums,
         output_nums,
         dialect_emb_size=20,
@@ -377,7 +377,7 @@ class EncoderBase(tf.Module):
     ):
         """
         Parameters:
-            dialect_num (int): 方言点数
+            dialect_nums (array-like of int): 每个方言信息的取值数，如方言点数
             input_nums (array-like of int): 每个输入的取值数，如字数
             output_nums (array-like of int): 每个输出的取值数，如声韵调数
             dialect_emb_size (int): 方言向量长度
@@ -391,7 +391,7 @@ class EncoderBase(tf.Module):
 
         super().__init__(name=name)
 
-        self.dialect_num = dialect_num
+        self.dialect_nums = dialect_nums
         self.input_nums = tuple(input_nums)
         self.output_nums = tuple(output_nums)
         self.dialect_emb_size = dialect_emb_size
@@ -403,10 +403,10 @@ class EncoderBase(tf.Module):
         init = tf.random_normal_initializer()
 
         # 在向量表最后追加一项作为缺失值的向量，下同
-        self.dialect_emb = tf.Variable(init(
-            shape=(self.dialect_num + 1, self.dialect_emb_size),
-            dtype=tf.float32
-        ), name='dialect_emb')
+        self.dialect_embs = [tf.Variable(
+            init(shape=(n + 1, self.dialect_emb_size), dtype=tf.float32),
+            name=f'dialect_emb{i}'
+        ) for i, n in enumerate(self.dialect_nums)]
 
         self.input_embs = [tf.Variable(
             init(shape=(n + 1, self.input_emb_size), dtype=tf.float32),
@@ -438,8 +438,13 @@ class EncoderBase(tf.Module):
         """
 
         # 输入中的 -1 代表缺失值，替换为最后一个向量
-        idx = tf.where(dialect[:, 0] >= 0, dialect[:, 0], self.dialect_num)
-        return tf.nn.embedding_lookup(self.dialect_emb, idx)
+        return tf.reduce_mean(tf.stack(
+            [tf.nn.embedding_lookup(
+                self.dialect_embs[i],
+                tf.where(dialect[:, i] >= 0, dialect[:, i], self.dialect_nums[i])
+            ) for i in range(len(self.dialect_embs))],
+            axis=2
+        ), axis=-1)
 
     def encode(self, inputs):
         """
