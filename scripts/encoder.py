@@ -514,11 +514,11 @@ def benchmark(config, data):
         minfreq=config.get('min_freq'),
         random_state=37511
     )
-    dialect_num = encoder.categories_[0].shape[0]
+    dialect_nums = [c.shape[0] for c in encoder.categories_[:1]]
     input_nums = [c.shape[0] for c in encoder.categories_[1:]]
     output_nums = [c.shape[0] for c in output_encoder.categories_]
     logging.info(
-        f'dialect number = {dialect_num}, input numbers = {input_nums}, '
+        f'dialect numbers = {dialect_nums}, input numbers = {input_nums}, '
         f'output numbers = {output_nums}'
     )
 
@@ -578,7 +578,7 @@ def benchmark(config, data):
         name = conf.pop('name')
         model, optimizer = build_model(
             conf,
-            dialect_num=dialect_num,
+            dialect_nums=dialect_nums,
             input_nums=input_nums,
             output_nums=output_nums
         )
@@ -622,7 +622,7 @@ def benchmark(config, data):
 def train(
     config,
     name,
-    dialect_num,
+    dialect_nums,
     input_nums,
     output_nums,
     train_data,
@@ -634,7 +634,7 @@ def train(
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
+        dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
         train_data (`tensorflow.data.Dataset`): 训练数据
         eval_data (`tensorflow.data.Dataset`): 评估数据
 
@@ -646,7 +646,7 @@ def train(
     conf.pop('name')
     model, optimizer = build_model(
         conf,
-        dialect_num=dialect_num,
+        dialect_nums=dialect_nums,
         input_nums=input_nums,
         output_nums=output_nums
     )
@@ -662,21 +662,21 @@ def train(
     )
     logging.info('done.')
 
-def evaluate(config, name, dialect_num, input_nums, output_nums, eval_data):
+def evaluate(config, name, dialect_nums, input_nums, output_nums, eval_data):
     """
     评估训练完成的模型效果.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
+        dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
         eval_data (`tensorflow.data.Dataset`): 评估数据
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     model, _ = build_model(
         conf,
-        dialect_num=dialect_num,
+        dialect_nums=dialect_nums,
         input_nums=input_nums,
         output_nums=output_nums
     )
@@ -695,22 +695,21 @@ def evaluate(config, name, dialect_num, input_nums, output_nums, eval_data):
     loss, acc = model.evaluate(eval_data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
 
-def export(config, name, dialect_num, input_nums, output_nums, prefix='.'):
+def export(config, name, dialect_nums, input_nums, output_nums, prefix='.'):
     """
     从模型导出权重到文件.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_num, input_nums, output_nums (int): 传给模型构造函数的参数
-        dialect_num, input_nums, output_nums: 创建模型的参数
+        dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
         prefix (str): 输出路径前缀
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     model, _ = build_model(
         conf,
-        dialect_num=dialect_num,
+        dialect_nums=dialect_nums,
         input_nums=input_nums,
         output_nums=output_nums
     )
