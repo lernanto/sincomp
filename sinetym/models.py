@@ -690,17 +690,29 @@ class EncoderBase(tf.Module):
             weights = tf.convert_to_tensor(weights, dtype=tf.float32)
 
         loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
-        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+        acc_stats = [tf.keras.metrics.Mean(dtype=tf.float32) \
+            for _ in self.output_embs]
 
         for dialect, inputs, targets in data:
             loss, acc = self.loss(dialect, inputs, targets)
-            loss = tf.reduce_mean(tf.where(targets >= 0, loss, 0), axis=0)
-            if weights is not None:
-                loss *= weights
-            loss_stat.update_state(tf.reduce_sum(loss))
-            acc_stat.update_state(tf.reduce_mean(acc, axis=0))
 
-        return loss_stat.result(), acc_stat.result()
+            # 目标数据中的缺失值不计入
+            loss = tf.where(targets >= 0, loss, 0)
+            if weights is not None:
+                loss = tf.tensordot(loss, weights, [-1, 0])
+            loss_stat.update_state(loss)
+
+            for i, s in enumerate(acc_stats):
+                mask = targets[:, i] >= 0
+                s.update_state(
+                    tf.where(mask, acc[:, i], 0),
+                    sample_weight=tf.cast(mask, tf.float32)
+                )
+
+        return (
+            loss_stat.result(),
+            tf.convert_to_tensor([s.result() for s in acc_stats])
+        )
 
     def fit(
         self,
