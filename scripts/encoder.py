@@ -523,8 +523,9 @@ def benchmark(config, data):
     )
 
     # 保存词典
-    prefix = os.path.join(config['output_dir'], 'benchmark')
-    dict_dir = os.path.join(prefix, 'dictionaries')
+    prefix = config.get('output_dir', '.')
+    dict_dir = config.get('dictionary_dir', os.path.join(prefix, 'dictionaries'))
+    os.makedirs(prefix, exist_ok=True)
     os.makedirs(dict_dir, exist_ok=True)
     logging.info(f'saving dictionaries to {dict_dir}...')
 
