@@ -24,7 +24,7 @@ import sinetym.models
 import sinetym.auxiliary
 
 
-def load_dictionaries(prefix):
+def load_dictionaries(prefix='.'):
     """
     加载词典.
 
@@ -32,24 +32,19 @@ def load_dictionaries(prefix):
         prefix (str): 词典路径前缀
 
     Returns:
-        did, cid, intitial, final, tone (pd.Series): 词典列表
+        dialect_dicts, input_dicts, output_dicts (array-like): 词典列表
     """
 
     logging.info(f'load dictionaries from {prefix}')
 
-    dics = {}
-    for name in ('did', 'cid', 'character', 'initial', 'final', 'tone'):
-        with open(os.path.join(prefix, f'{name}.txt'), 'r', encoding='utf-8') as f:
-            dics[name] = [l.rstrip('\n') for l in f.readlines()]
+    dicts = {}
+    for e in os.scandir(prefix):
+        if e.is_file():
+            with open(e.path, 'r', encoding='utf-8') as f:
+                dicts[os.path.splitext(e.name)[0]] \
+                    = [l.rstrip('\n') for l in f.readlines()]
 
-    return (
-        dics['did'],
-        dics['cid'],
-        dics['character'],
-        dics['initial'],
-        dics['final'],
-        dics['tone']
-    )
+    return dicts
 
 def load_datasets(config):
     """
@@ -77,61 +72,11 @@ def load_datasets(config):
         if 'variant' in dataset.columns:
             dataset = dataset.assign(did=dataset['did'] + dataset['variant'])
 
-        data.append(dataset[['did', 'cid', 'character', 'initial', 'final', 'tone']])
+        data.append(dataset)
 
     data = pd.concat(data, axis=0, ignore_index=True)
 
     logging.info(f'done, {data.shape[0]} data loaded.')
-    return data
-
-def split_data(data, test_did_size=0.1, test_cid_size=0.1, random_state=None):
-    """
-    根据方言 ID 和字 ID 切分数据集.
-
-    Parameters:
-        data (`pandas.DataFrame`): 原始数据集
-        test_did_size (float): 测试方言 ID 占总样本的比例
-        test_cid_size (float): 测试字 ID 占总样本的比例
-        random_state (int or `numpy.random.RandomState`): 用于复现划分结果
-
-    Returns:
-        data1, data2, data3, data4 (`pandas.DataFrame`): 切分后的数据集
-
-    从 data 中随机选择一批方言 ID 和字 ID，作为测试 ID，把数据集切分为如下部分：
-        - data1: 不包含测试方言 ID 和测试字 ID
-        - data2: 只包含测试方言 ID 且不包含测试字 ID
-        - data3: 不包含测试方言 ID 且只包含测试字 ID
-        - data4: 只包含测试方言 ID 和测试字 ID
-    """
-
-    logging.info(f'split data, size = {data.shape[0]}')
-
-    if random_state is None:
-        random_state = np.random.mtrand._rand
-    elif isinstance(random_state, int):
-        random_state = np.random.RandomState(random_state)
-
-    # 随机选择测试方言 ID 和字 ID，使满足在样本中占指定的比例，但尽量选择常见的方言和字加入训练集
-    did = data['did'].value_counts() / data.shape[0]
-    weight = did + random_state.normal(scale=did.std(), size=did.shape[0])
-    did = did[weight.sort_values().index].cumsum()
-    test_did = pd.Series(True, index=did[did < test_did_size].index) \
-        .reindex(data['did']).fillna(False).values
-
-    cid = data['cid'].value_counts() / data.shape[0]
-    weight = cid + random_state.normal(scale=cid.std(), size=cid.shape[0])
-    cid = cid[weight.sort_values().index].cumsum()
-    test_cid = pd.Series(True, index=cid[cid < test_cid_size].index) \
-        .reindex(data['cid']).fillna(False).values
-
-    data = (
-        data[~(test_did | test_cid)],
-        data[test_did & ~test_cid],
-        data[~test_did & test_cid],
-        data[test_did & test_cid]
-    )
-
-    logging.info(f'done, result data size = {[d.shape[0] for d in data]}')
     return data
 
 def build_model(config, **kwargs):
@@ -169,84 +114,51 @@ def build_model(config, **kwargs):
 
     return model, optimizer
 
-def build_new_model(model, new_dialect_num=None, new_input_num=None):
+def build_new_model(model, dialect_nums=None, input_nums=None):
     """
     基于已训练的模型创建新模型.
 
     Parameters:
         model (sinetym.models.EncoderBase): 已训练的基线模型
-        new_dialect_num (int): 新增方言数量，为空时无新增方言
-        new_input_num (int): 新增字数量，为空时无新增字
+        dialect_nums (array-like of int): 新方言数量，为空时沿用旧方言
+        input_nums (array-like of int): 新字数量，为空时沿用旧字数
 
     Returns:
         new_model: 新模型，该模型为以 model.__class__ 为基类的新类型
 
-    沿用 model 内部所有变量，只针对 new_dialect_num 和 new_input_num 在 new_model 内创建新变量。
-    new_model 预测时，对于输入方言 ID 和字 ID 优先检索新变量，不命中才使用 model 的旧变量。
-    new_model 训练时只更新新变量，但 model 的变量由于其他原因改变时，也会影响 new_model 的预测结果。
+    针对非空的 dialect_nums 和 input_nums 在 model 内创建新变量，其他变量沿用 model 现有的。
     """
-
-    logging.info(
-        f'build new model from {model.name}, '
-        f'with {new_dialect_num} new dialects, {new_input_num} new inputs.'
-    )
 
     class NewModel(model.__class__):
         """
         为新模型动态构造新类型，继承 model.
         """
 
-        def __init__(self, model, new_dialect_num=None, new_input_num=None):
+        def __init__(self, model, dialect_nums=None, input_nums=None):
             """
-            为 new_dialect_num 和 new_input_num 创建相应的变量，其他变量沿用 model 的.
+            为 dialect_nums 和 input_nums 创建相应的变量，其他变量沿用 model 的.
             """
 
             self.__dict__.update(model.__dict__)
+            self._trainable_variables = []
 
-            if new_dialect_num is not None:
-                self.new_dialect_emb = tf.Variable(
-                    tf.random_normal_initializer()(
-                        shape=(new_dialect_num, self.dialect_emb_size),
-                        dtype=tf.float32
-                    ), name='new_dialect_emb'
-                )
+            init = tf.random_normal_initializer()
 
-            if new_input_num is not None:
-                self.new_input_emb = tf.Variable(
-                    tf.random_normal_initializer()(
-                        shape=(new_input_num, self.input_emb_size),
-                        dtype=tf.float32
-                    ), name='new_input_emb'
-                )
+            if dialect_nums is not None:
+                self.dialect_nums = dialect_nums
+                self.dialect_embs = [tf.Variable(
+                    init(shape=(n + 1, self.dialect_emb_size), dtype=tf.float32),
+                    name=f'dialect_emb{i}'
+                ) for i, n in enumerate(dialect_nums)]
+                self._trainable_variables.extend(self.dialect_embs)
 
-        def encode_dialect(self, dialect):
-            """
-            方言 ID 在原模型中找不到尝试在 new_dialect_emb 中查找.
-            """
-
-            if not hasattr(self, 'new_dialect_emb'):
-                return super().encode_dialect(dialect)
-
-            return tf.where(
-                tf.logical_or(dialect[:, 0:1] >= 0, dialect[:, 1:2] < 0),
-                super().encode_dialect(dialect),
-                tf.nn.embedding_lookup(self.new_dialect_emb, tf.maximum(dialect[:, 1], 0))
-            )
-
-        def encode(self, inputs):
-            """
-            字 ID 在原模型中找不到尝试在 new_input_emb 中查找.
-            """
-
-            if not hasattr(self, 'new_input_emb'):
-                return super().encode(inputs)
-
-            n = len(self.input_embs)
-            return tf.where(
-                tf.logical_or(inputs[:, 0:1] >= 0, inputs[:, n:n + 1] < 0),
-                super().encode(inputs),
-                tf.nn.embedding_lookup(self.new_input_emb, tf.maximum(inputs[:, n], 0))
-            )
+            if input_nums is not None:
+                self.input_nums = input_nums
+                self.input_embs = [tf.Variable(
+                    init(shape=(n + 1, self.input_emb_size), dtype=tf.float32),
+                    name=f'input_emb{i}'
+                ) for i, n in enumerate(input_nums)]
+                self._trainable_variables.extend(self.input_embs)
 
         @property
         def trainable_varialbes(self):
@@ -254,20 +166,22 @@ def build_new_model(model, new_dialect_num=None, new_input_num=None):
             改写 trainable_variables 属性使训练时只更新新变量.
             """
 
-            return tuple(getattr(self, n) for n in (
-                'new_dialect_emb',
-                'new_input_emb'
-            ) if hasattr(self, n))
+            return self._trainable_variables
 
-    return NewModel(model, new_dialect_num, new_input_num)
+    logging.info(
+        f'build new model from {model.name}, '
+        f'dialect numbers = {dialect_nums}, input numbers = {input_nums}.'
+    )
+    return NewModel(model, dialect_nums, input_nums)
 
 def make_data(
-    data,
-    output_encoder,
+    dialect,
+    inputs,
+    outputs,
+    output_dicts,
+    dialect_dicts=None,
+    input_dicts=None,
     test_size=0.2,
-    encoder=None,
-    new_dialect=False,
-    new_input=False,
     minfreq=0.00001,
     random_state=None
 ):
@@ -275,111 +189,84 @@ def make_data(
     为模型构造训练及测试数据集.
 
     Parameters:
-        data (`pandas.DataFrame`): 原始数据
-        output_encoder (OrdinalEncoder): 编码输出数据的编码器
+        dialect (`pandas.DataFrame`): 输入的方言数据
+        inputs (`pandas.DataFrame`): 输入的字数据
+        outputs (`pandas.DataFrame`): 目标输出数据
+        output_dicts (array-like): 输出数据的词典列表
+        dialect_dicts (array-like): 方言数据的词典列表
+        input_dicts (array-like): 字数据的词典列表
         test_size (float): 切分评估数据的比例
-        encoder (OrdinalEncoder): 用于编码数据的基础编码器
-        new_dialect (bool): 是否为新方言构造数据
-        new_input (bool): 是否为新字构造数据
         minfreq (float or int): 为数据构造编码器时只保留出现频次或比例不小于该值的值
         random_state (int or `numpy.random.RandomState`): 用于复现划分数据结果
 
     Returns:
         train_data (`tensorflow.data.Dataset`): 训练数据集
         test_data (`tensorflow.data.Dataset`): 测试数据集
-        encoder (OrdinalEncoder): 针对训练数据新建的编码器
-        new_dialect_num (int): 训练集中包含的方言 ID 数，
-            如果 new_dialect 为假，返回 None
-        new_input_num (int): 训练集中包含的字 ID 数，
-            如果 new_input 为假，返回 None
+        dialect_dicts (array-like): 最终的方言数据词典列表
+        input_dicts (array-like): 最终的字数据词典列表
 
-    把原始数据按 test_size 随机分为训练集和评估集，并用 encoder 和 output_encoder 编码数据。
-    当 new_dialect 为真时，对训练和测试集中的方言 ID 作额外的新编码，
-    当 new_input 为真时，对训练和测试集中的字 ID 作额外的新编码，
-    把新编码作为新列插入原始编码数据。
+    把原始数据按 test_size 随机分为训练集和评估集，并用 dialect_dicts、
+    input_dicts 和 output_dicts 编码数据。如果 dialect_dicts 或 input_dicts 为空，
+    根据相应的训练数据构建。
     """
 
-    logging.info(f'making train/test data from {data.shape[0]} data...')
+    logging.info(f'making train/test data from {dialect.shape[0]} data...')
 
-    tri, tei, train_output, test_output = train_test_split(
-        data[['did', 'cid', 'character']],
-        output_encoder.transform(data[['initial', 'final', 'tone']]),
+    # 分割数据为训练集和测试集
+    (
+        train_dialect, test_dialect,
+        train_input, test_input,
+        train_output, test_output
+    ) = train_test_split(
+        dialect,
+        inputs,
+        outputs,
         test_size=test_size,
         random_state=random_state
     )
 
-    # 计算需要插入新编码的位置
-    columns = []
-    indeces = []
-    limits = np.asarray([0, 1, 3])
+    # 如果输入词典为空，根据训练数据创建
+    if dialect_dicts is None:
+        dialect_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+            for _, c in train_dialect.items()]
 
-    if new_dialect:
-        columns.append('did')
-        indeces.append(1)
-        limits[1:] += 1
+    if input_dicts is None:
+        input_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+            for _, c in train_input.items()]
 
-    if new_input:
-        columns.append('cid')
-        indeces.append(3)
-        limits[2:] += 1
+    # 根据词典编码训练和测试数据
+    dialect_encoder, input_encoder, output_encoder = [OrdinalEncoder(
+        categories=dicts,
+        dtype=np.int32,
+        handle_unknown='use_encoded_value',
+        unknown_value=-1,
+        encoded_missing_value=-1
+    ).fit(data[:1]) for dicts, data in (
+        (dialect_dicts, train_dialect),
+        (input_dicts, train_input),
+        (output_dicts, train_output)
+    )]
 
-    # 为新方言 ID 和字 ID 构建编码器，并把新编码插入现有编码的后一列
-    if encoder is None:
-        encoder = OrdinalEncoder(
-            categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
-                for _, c in tri.items()],
-            dtype=np.int32,
-            handle_unknown='use_encoded_value',
-            unknown_value=-1,
-            encoded_missing_value=-1
-        ).fit(tri[:1])
-
-    train_input = encoder.transform(tri)
-    test_input = encoder.transform(tei)
-
-    if len(columns) > 0:
-        encoder = OrdinalEncoder(
-            categories=[sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
-                for _, c in tri[columns].items()],
-            dtype=np.int32,
-            handle_unknown='use_encoded_value',
-            unknown_value=-1,
-            encoded_missing_value=-1
-        ).fit(tri[:1][columns])
-        train_input = np.insert(
-            train_input,
-            indeces,
-            encoder.transform(tri[columns]),
-            axis=1
-        )
-        test_input = np.insert(
-            test_input,
-            indeces,
-            encoder.transform(tei[columns]),
-            axis=1
-        )
-
-    train_data = tf.data.Dataset.from_tensor_slices(
-        tuple(train_input[:, limits[i]:limits[i + 1]] \
-            for i in range(limits.shape[0] - 1)) + (train_output,)
-    )
+    train_data = tf.data.Dataset.from_tensor_slices((
+        dialect_encoder.transform(train_dialect),
+        input_encoder.transform(train_input),
+        output_encoder.transform(train_output)
+    ))
     train_data = train_data.shuffle(train_data.cardinality())
-    test_data = tf.data.Dataset.from_tensor_slices(
-        tuple(test_input[:, limits[i]:limits[i + 1]] \
-            for i in range(limits.shape[0] - 1)) + (test_output,)
-    )
-
-    new_dialect_num = encoder.categories_[0].shape[0] if new_dialect else None
-    new_input_num = encoder.categories_[-1].shape[0] if new_input else None
+    test_data = tf.data.Dataset.from_tensor_slices((
+        dialect_encoder.transform(test_dialect),
+        input_encoder.transform(test_input),
+        output_encoder.transform(test_output)
+    ))
 
     logging.info(
         f'done, train data size = {train_data.cardinality()}, '
         f'test data size = {test_data.cardinality()}, '
-        f'new dialect number = {new_dialect_num}, '
-        f'new input number = {new_input_num}.'
+        f'dialect numbers = {[len(d) for d in dialect_dicts]}, '
+        f'input numbers = {[len(d) for d in input_dicts]}'
     )
 
-    return (train_data, test_data, encoder, new_dialect_num, new_input_num)
+    return train_data, test_data, dialect_dicts, input_dicts
 
 def make_embeddings(
     location,
@@ -452,24 +339,26 @@ def make_embeddings(
 
     projector.visualize_embeddings(output_path, config)
 
-def mkdict(data, prefix='.', minfreq=2):
+def mkdict(config):
     """
     根据方言数据构建词典.
 
     Parameters:
-        data (`pandas.DataFrame`): 方言读音数据表
-        prefix (str): 保存词典的目录
-        minfreq (int): 出现频次不小于该值才计入词典
+        config (dict): 全局配置字典
     """
 
-    if isinstance(minfreq, float):
-        minfreq = int(minfreq * data.shape[0])
-
+    prefix = config.get('dictionary_dir', '.')
     logging.info(f'make dictionaries to {prefix}...')
+
+    data = load_datasets(config['datasets'])
+
     os.makedirs(prefix, exist_ok=True)
 
-    for name in ('did', 'cid', 'character', 'initial', 'final', 'tone'):
-        dic = sinetym.auxiliary.make_dict(data[name], minfreq=minfreq)
+    for name in sum(config['columns'].values(), []):
+        dic = sinetym.auxiliary.make_dict(
+            data[name],
+            minfreq=config.get('min_freq')
+        )
         fname = f'{os.path.join(prefix, name)}.txt'
         logging.info(f'save {fname}')
         with open(fname, 'w', encoding='utf-8', newline='\n') as f:
@@ -482,7 +371,7 @@ def benchmark(config, data):
     评估各种配置的模型效果.
 
     Parameters:
-        config (dict): 用于创建模型的配置字典
+        config (dict): 全局配置字典
         data (`pandas.DataFrame`): 用于训练及评估的数据集
 
     从 config 读取所有模型配置，为每一组配置创建一个模型，训练并评估效果。
@@ -495,28 +384,39 @@ def benchmark(config, data):
     """
 
     # 输出数据必须全部编码
-    columns = ['initial', 'final', 'tone']
-    output_encoder = OrdinalEncoder(
-        categories=[sinetym.auxiliary.make_dict(c, minfreq=config.get('min_freq')) \
-            for _, c in data[columns].items()],
-        dtype=np.int32,
-        handle_unknown='use_encoded_value',
-        unknown_value=-1,
-        encoded_missing_value=-1
-    ).fit(data[:1][columns])
+    output_dicts = [sinetym.auxiliary.make_dict(
+        data[c],
+        minfreq=config.get('min_freq')
+    ) for c in config['columns']['output']]
 
-    # 切分数据用于训练及不同项目的评估
-    data1, data2, data3, data4 = split_data(data, random_state=37511)
-    train_data1, eval_data1, encoder, _, _ = make_data(
-        data1,
-        output_encoder,
+    # 切分数据用于训练及不同项目的评估：
+    #   - 包含训练方言 ID 和训练字 ID
+    #   - 包含测试方言 ID 和训练字 ID
+    #   - 包含训练方言 ID 和测试字 ID
+    #   - 包含测试方言 ID 和测试字 ID
+    random_state = np.random.RandomState(37511)
+    train_dialect, test_dialect = sinetym.auxiliary.split_data(
+        data[config['columns']['dialect'][0]],
+        return_mask=True,
+        random_state=random_state
+    )
+    train_input, test_input = sinetym.auxiliary.split_data(
+        data[config['columns']['input'][0]],
+        return_mask=True,
+        random_state=random_state
+    )
+    data1 = data[train_dialect & train_input]
+    train_data1, eval_data1, dialect_dicts1, input_dicts1 = make_data(
+        data1[config['columns']['dialect']],
+        data1[config['columns']['input']],
+        data1[config['columns']['output']],
+        output_dicts,
         test_size=0.1,
         minfreq=config.get('min_freq'),
-        random_state=37511
+        random_state=random_state
     )
-    dialect_nums = [c.shape[0] for c in encoder.categories_[:1]]
-    input_nums = [c.shape[0] for c in encoder.categories_[1:]]
-    output_nums = [c.shape[0] for c in output_encoder.categories_]
+    dialect_nums, input_nums, output_nums = [[len(d) for d in dicts] \
+        for dicts in (dialect_dicts1, input_dicts1, output_dicts)]
     logging.info(
         f'dialect numbers = {dialect_nums}, input numbers = {input_nums}, '
         f'output numbers = {output_nums}'
@@ -529,48 +429,60 @@ def benchmark(config, data):
     os.makedirs(dict_dir, exist_ok=True)
     logging.info(f'saving dictionaries to {dict_dir}...')
 
-    for e in (encoder, output_encoder):
-        for i, name in enumerate(e.feature_names_in_):
-            with open(
-                os.path.join(dict_dir, name + '.txt'),
-                'w',
-                encoding='utf-8',
-                newline='\n'
-            ) as f:
-                print('\n'.join(e.categories_[i]), file=f)
+    for name, dic in zip(
+        config['columns']['dialect'] + config['columns']['input'] \
+            + config['columns']['output'],
+        dialect_dicts1 + input_dicts1 + output_dicts
+    ):
+        with open(
+            os.path.join(dict_dir, name + '.txt'),
+            'w',
+            encoding='utf-8',
+            newline='\n'
+        ) as f:
+            print('\n'.join(dic), file=f)
 
     logging.info('done.')
 
     # 剩余数据预处理成数据集用于评估
-    data = []
-    for n, d, new_dialect, new_input in (
-        ('new_dialect', data2, True, False),
-        ('new_input', data3, False, True),
-        ('new_dialect_input', data4, True, True)
+    datasets = []
+    for n, d, dd, id in (
+        ('new_dialect', data[test_dialect & train_input], None, input_dicts1),
+        ('new_input', data[train_dialect & test_input], dialect_dicts1, None),
+        ('new_dialect_input', data[test_dialect & test_input], None, None)
     ):
-        train_data, eval_data, new_encoder, new_dialect_num, new_input_num = make_data(
-            d,
-            output_encoder,
-            test_size=0.5,
-            encoder=encoder,
-            new_dialect=new_dialect,
-            new_input=new_input,
-            minfreq=config.get('min_freq'),
-            random_state=37511
-        )
-        data.append((n, train_data, eval_data, new_dialect_num, new_input_num))
+        if d.shape[0] > 0:
+            train_data, eval_data, dialect_dicts, input_dicts = make_data(
+                d[config['columns']['dialect']],
+                d[config['columns']['input']],
+                d[config['columns']['output']],
+                output_dicts,
+                dialect_dicts=dd,
+                input_dicts=id,
+                test_size=0.5,
+                minfreq=config.get('min_freq'),
+                random_state=random_state
+            )
+            datasets.append((n,
+                train_data,
+                eval_data,
+                dialect_dicts if dd is None else None,
+                input_dicts if id is None else None
+            ))
 
-        if new_encoder is not None:
             new_dict_dir = os.path.join(dict_dir, n)
             os.makedirs(new_dict_dir, exist_ok=True)
-            for i, fea in enumerate(e.feature_names_in_):
+            for nm, dic in zip(
+                config['columns']['dialect'] + config['columns']['input'],
+                dialect_dicts + input_dicts
+            ):
                 with open(
-                    os.path.join(new_dict_dir, fea + '.txt'),
+                    os.path.join(new_dict_dir, nm + '.txt'),
                     'w',
                     encoding='utf-8',
                     newline='\n'
                 ) as f:
-                    print('\n'.join(e.categories_[i]), file=f)
+                    print('\n'.join(dic), file=f)
 
     for conf in config['models']:
         # 根据配置文件创建模型并训练
@@ -595,7 +507,7 @@ def benchmark(config, data):
         logging.info('done.')
 
         # 使用剩余的数据集评估模型效果
-        for n, train_data, eval_data, new_dialect_num, new_input_num in data:
+        for n, train_data, eval_data, dialect_dicts, input_dicts in datasets:
             logging.info(
                 f'evaluate {n}, train size = {train_data.cardinality()}, '
                 f'evaluation size = {eval_data.cardinality()}.'
@@ -604,8 +516,10 @@ def benchmark(config, data):
             # 从上面训练完成的模型复制一个副本，针对数据微调然后评估
             new_model = build_new_model(
                 model,
-                new_dialect_num=new_dialect_num,
-                new_input_num=new_input_num
+                dialect_nums=None if dialect_dicts is None \
+                    else [len(d) for d in dialect_dicts],
+                input_nums=None if input_dicts is None \
+                    else [len(d) for d in input_dicts]
             )
             optimizer = tf.optimizers.SGD(
                 tf.optimizers.schedules.ExponentialDecay(0.1, 100000, 0.9)
@@ -758,40 +672,34 @@ if __name__ == '__main__':
     config = json.load(args.config)
 
     if args.command in ('train', 'evaluate'):
-        did, cid, character, initial, final, tone = load_dictionaries(
-            config.get('dictionary_dir', '.')
-        )
+        dicts = load_dictionaries(config.get('dictionary_dir', '.'))
+        dialect_dicts, input_dicts, output_dicts \
+            = [[dicts[c] for c in config['columns'][name]] \
+                for name in ('dialect', 'input', 'output')]
 
         data = load_datasets(config['datasets'])
-        data = OrdinalEncoder(
-            categories=[did, cid, character, initial, final, tone],
+        data = tuple([OrdinalEncoder(
+            categories=[dicts[c] for c in config['columns'][name]],
             dtype=np.int32,
             handle_unknown='use_encoded_value',
             unknown_value=-1,
             encoded_missing_value=-1
-        ).fit(data[:1]).transform(data)
+        ).fit(data[:1][config['columns'][name]]) \
+            .transform(data[config['columns'][name]]) \
+            for name in ('dialect', 'input', 'output')])
 
-        data = tf.data.Dataset.from_tensor_slices((
-            data[:, 0:1],
-            data[:, 1:3],
-            data[:, 3:6]
-        ))
-        data = data.shuffle(data.cardinality(), seed=10273)
+        data = tf.data.Dataset.from_tensor_slices(data) \
+            .shuffle(data[0].shape[0], seed=10273)
 
     if args.command == 'mkdict':
-        mkdict(
-            load_datasets(config['datasets']),
-            config.get('dictionary_dir', '.'),
-            config.get('min_freq')
-        )
+        mkdict(config)
 
     elif args.command == 'train':
         train(
             config,
             args.model,
-            len(did),
-            [len(cid), len(character)],
-            [len(initial), len(final), len(tone)],
+            *[[len(d) for d in dicts] \
+                for dicts in (dialect_dicts, input_dicts, output_dicts)],
             data
         )
 
@@ -799,9 +707,8 @@ if __name__ == '__main__':
         evaluate(
             config,
             args.model,
-            len(did),
-            [len(cid), len(character)],
-            [len(initial), len(final), len(tone)],
+            *[[len(d) for d in dicts] \
+                for dicts in (dialect_dicts, input_dicts, output_dicts)],
             data
         )
 
@@ -812,8 +719,7 @@ if __name__ == '__main__':
         export(
             config,
             args.model,
-            len(did),
-            [len(cid), len(character)],
-            [len(initial), len(final), len(tone)],
+            *[[len(d) for d in dicts] \
+                for dicts in (dialect_dicts, input_dicts, output_dicts)],
             args.output
         )
