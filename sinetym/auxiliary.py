@@ -44,6 +44,55 @@ def make_dict(data, minfreq=None, sort=True):
 
     return dic
 
+def split_data(values, *data, test_size=0.1, return_mask=False, random_state=None):
+    """
+    根据数值及比例切分数据.
+
+    Parameters:
+        values (array-like): 待切分数据
+        data (array-like): 额外的待切分数据
+        test_size (float): 切分后测试集占样本的比例
+        return_mask (bool): 为真时返回切分的结果掩码
+        random_state (int or `numpy.random.RandomState`): 用于复现划分结果
+
+    Returns:
+        train_values, test_values, ...: 切分后的数据
+
+    从 values 的取值中随机选择一批用作测试，使切分后的训练集不包含该值，测试集只包含该值，
+    且测试集占比大致等于 test_size。为增加测试集的多样性，尽可能选择出现次数少的值用作测试集。
+    """
+
+    if random_state is None:
+        random_state = numpy.random.mtrand._rand
+    elif isinstance(random_state, int):
+        random_state = numpy.random.RandomState(random_state)
+
+    # 计算每个值在样本中出现的比例及反向索引
+    _, idx, counts = numpy.unique(values, return_inverse=True, return_counts=True)
+    size = counts / len(values)
+    # 根据比例及一定随机性排定值进入测试集的优先级
+    prior = size + random_state.normal(scale=numpy.std(size), size=size.shape[0])
+    # 根据优先级排序，根据在总样本中的占比截取需要的数量
+    cumsize = size[numpy.argsort(prior)].cumsum()
+    mask = cumsize < test_size
+    # 保证训练集、测试集均不为空
+    mask[0] = True
+    mask[-1] = False
+    # 把切分结果根据反向索引映射回原始样本
+    mask = mask[idx]
+
+    if return_mask:
+        # 返回训练集、测试集的掩码
+        return ~mask, mask
+
+    else:
+        # 返回切分结果
+        results = [values[~mask], values[mask]]
+        for d in data:
+            results.extend(d[~mask], d[mask])
+
+        return results
+
 def encode(data, dtype=numpy.int32, missing_values='', unknown_value=-1):
     """
     把方言读音编码为整数.
