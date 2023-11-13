@@ -68,18 +68,23 @@ def split_data(values, *data, test_size=0.1, return_mask=False, random_state=Non
         random_state = numpy.random.RandomState(random_state)
 
     # 计算每个值在样本中出现的比例及反向索引
-    _, idx, counts = numpy.unique(values, return_inverse=True, return_counts=True)
-    size = counts / len(values)
+    _, inverse, counts = numpy.unique(
+        values,
+        return_inverse=True,
+        return_counts=True
+    )
+    ratio = counts / len(values)
     # 根据比例及一定随机性排定值进入测试集的优先级
-    prior = size + random_state.normal(scale=numpy.std(size), size=size.shape[0])
+    prior = ratio + random_state.normal(scale=numpy.std(ratio), size=ratio.shape[0])
     # 根据优先级排序，根据在总样本中的占比截取需要的数量
-    cumsize = size[numpy.argsort(prior)].cumsum()
-    mask = cumsize < test_size
+    mask = numpy.empty(ratio.shape, dtype=numpy.bool8)
+    idx = numpy.argsort(prior)
+    mask[idx] = ratio[idx].cumsum() < test_size
     # 保证训练集、测试集均不为空
-    mask[0] = True
-    mask[-1] = False
+    mask[idx[0]] = True
+    mask[idx[-1]] = False
     # 把切分结果根据反向索引映射回原始样本
-    mask = mask[idx]
+    mask = mask[inverse]
 
     if return_mask:
         # 返回训练集、测试集的掩码
