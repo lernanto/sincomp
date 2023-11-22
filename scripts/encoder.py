@@ -606,23 +606,23 @@ def evaluate(config, name, dialect_nums, input_nums, output_nums, eval_data):
     loss, acc = model.evaluate(eval_data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
 
-def export(config, name, dialect_nums, input_nums, output_nums, prefix='.'):
+def export(config, name, dicts, prefix='.'):
     """
-    从模型导出权重到文件.
+    从模型导出向量及其他权重到文件.
 
     Parameters:
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
+        dicts (dict): 模型输入输出字典
         prefix (str): 输出路径前缀
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
     model, _ = build_model(
         conf,
-        dialect_nums=dialect_nums,
-        input_nums=input_nums,
-        output_nums=output_nums
+        dialect_nums=[dicts[c].shape[0] for c in config['columns']['dialect']],
+        input_nums=[dicts[c].shape[0] for c in config['columns']['input']],
+        output_nums=[dicts[c].shape[0] for c in config['columns']['output']]
     )
 
     checkpoint = tf.train.Checkpoint(model=model)
@@ -635,18 +635,43 @@ def export(config, name, dialect_nums, input_nums, output_nums, prefix='.'):
     checkpoint.restore(manager.latest_checkpoint)
     logging.info('done.')
 
-    output_dir = os.path.join(
-        prefix,
-        f'{name}_{int(manager.checkpoint.save_counter)}'
-    )
+    output_dir = os.path.join(prefix, name)
     logging.info(f'exporting {name} weights to {output_dir}...')
     os.makedirs(output_dir, exist_ok=True)
+
+    # 导出输入输出向量，保存为 CSV 格式
+    for name in ('dialect', 'input', 'output'):
+        columns = config['columns'][name]
+
+        for c, e in zip(columns, (getattr(model, f'{name}_embs'))):
+            fname = os.path.join(output_dir, c + '.csv')
+            logging.info(f'save {fname}')
+            idx = dicts[c].index
+            pd.DataFrame(e.numpy(), index=idx.insert(idx.shape[0], '')).to_csv(
+                fname,
+                header=False,
+                encoding='utf-8',
+                lineterminator='\n'
+            )
+
+        for c, b in zip(columns, (getattr(model, f'{name}_biases', []))):
+            fname = os.path.join(output_dir, c + '_bias.csv')
+            logging.info(f'save {fname}')
+            idx = dicts[c].index
+            pd.Series(b.numpy(), index=idx.insert(idx.shape[0], '')).to_csv(
+                fname,
+                header=False,
+                encoding='utf-8',
+                lineterminator='\n'
+            )
+
+    # 导出所有模型权重
     for v in model.variables:
+        fname = os.path.join(output_dir, v.name.partition(':')[0] + '.txt')
+        logging.info(f'save {fname}')
         a = v.numpy()
-        np.savetxt(
-            os.path.join(output_dir, v.name.partition(':')[0]),
-            np.reshape(a, (-1, a.shape[-1])) if a.ndim > 2 else a
-        )
+        np.savetxt(fname, np.reshape(a, (-1, a.shape[-1])) if a.ndim > 2 else a)
+
     logging.info('done.')
 
 
@@ -668,12 +693,13 @@ if __name__ == '__main__':
     logging.info(f'load configuration from {args.config.name}')
     config = json.load(args.config)
 
-    if args.command in ('train', 'evaluate'):
+    if args.command in ('train', 'evaluate', 'export'):
         dicts = load_dictionaries(config.get('dictionary_dir', '.'))
         dialect_dicts, input_dicts, output_dicts \
             = [[dicts[c] for c in config['columns'][name]] \
                 for name in ('dialect', 'input', 'output')]
 
+    if args.command in ('train', 'evaluate'):
         data = load_datasets(config['datasets'])
         data = tuple([OrdinalEncoder(
             categories=[dicts[c].index for c in config['columns'][name]],
@@ -713,10 +739,4 @@ if __name__ == '__main__':
         benchmark(config, load_datasets(config['datasets']))
 
     elif args.command == 'export':
-        export(
-            config,
-            args.model,
-            *[[d.shape[0] for d in dicts] \
-                for dicts in (dialect_dicts, input_dicts, output_dicts)],
-            args.output
-        )
+        export(config, args.model, dicts, args.output)
