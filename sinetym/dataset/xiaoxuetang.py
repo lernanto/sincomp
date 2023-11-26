@@ -114,16 +114,6 @@ class XiaoxuetangDataset(Dataset):
                 logging.error(f'cannot load file {fname}: {e}')
                 continue
 
-            # 清洗方言字音数据中的录入错误.
-            d['聲母'] = clean_initial(d['聲母'])
-            d['韻母'] = clean_final(d['韻母'])
-            d['調值'] = clean_tone(d['調值'])
-            d['調類'] = d['調類'].replace(
-                r'[^上中下變陰陽平去入輕聲]',
-                '',
-                regex=True
-            )
-
             if minfreq > 1:
                 # 删除出现次数少的读音
                 for col in ('聲母', '韻母', '調值', '調類'):
@@ -145,6 +135,27 @@ class XiaoxuetangDataset(Dataset):
             return None
 
         data = pandas.concat(data, axis=0, ignore_index=True)
+
+        # 清洗方言字音数据中的录入错误
+        for col, func in (
+            ('聲母', clean_initial),
+            ('韻母', clean_final),
+            ('調值', clean_tone)
+        ):
+            # 一个格子可能记录了多个音，用点分隔，只取第一个
+            raw = data[col].str.split('.').str[0]
+            mapping = raw.value_counts().to_frame(name='count')
+            mapping['clean'] = func(mapping.index)
+            data[col] = raw.map(mapping['clean'])
+
+            for i, r in mapping[mapping.index != mapping['clean']].iterrows():
+                logging.info(f'{i} -> {r["clean"]} {r["count"]}')
+
+        data['調類'] = data['調類'].str.split('.').str[0] \
+            .str.replace(r'[^上中下變陰陽平去入輕聲]', '', regex=True)
+
+        # 删除声韵调均为空的记录
+        data = data[(data[['聲母', '韻母', '調值', '調類']] != '').any(axis=1)]
 
         if self.uniform_name:
             # 替换列名为统一的名称
