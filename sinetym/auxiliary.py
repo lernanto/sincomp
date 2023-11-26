@@ -19,28 +19,37 @@ import shapely
 import cartopy
 
 
-def make_dict(data, minfreq=None, sort=True):
+def make_dict(data, minfreq=None, sort=None):
     """
     根据方言数据构建词典.
 
     Parameters:
         data (array-like): 读音样本数据中的一列，空字符串代表缺失值
         minfreq (float or int): 出现频次不小于该值才计入词典
-        sort (bool): 返回的词典按顺序排列
+        sort (str): 指定返回的词典排列：
+            - value: 按符号的字典序
+            - frequency: 按出现频率从大到小
 
     Returns:
-        dic (`numpy.ndarray`): data 中符号的词典
+        dic (`pandas.Series`): 构建的词典，索引为 data 中出现的符号，值为出现频率
     """
 
-    dic, counts = numpy.unique(data[data != ''], return_counts=True)
+    data = pandas.Series(data)
+    dic = data[data != ''].value_counts().rename('frequency')
 
-    if minfreq is not None and minfreq > 1:
+    if minfreq is not None:
         # 如果 minfreq 是实数，指定出现的最小比例
-        dic = dic[counts >= (int(minfreq * len(data)) if isinstance(minfreq) \
-            else minfreq)]
+        if isinstance(minfreq, float):
+            minfreq = int(minfreq * len(data))
 
-    if sort:
-        dic.sort()
+        if minfreq > 1:
+            dic = dic[dic >= minfreq]
+
+    # 按指定的方式排序
+    if sort == 'value':
+        dic = dic.sort_index()
+    elif sort == 'frequency':
+        dic = dic.sort_values(ascending=False)
 
     return dic
 

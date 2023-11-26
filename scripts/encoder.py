@@ -39,10 +39,9 @@ def load_dictionaries(prefix='.'):
 
     dicts = {}
     for e in os.scandir(prefix):
-        if e.is_file():
-            with open(e.path, 'r', encoding='utf-8') as f:
-                dicts[os.path.splitext(e.name)[0]] \
-                    = [l.rstrip('\n') for l in f.readlines()]
+        if e.is_file() and e.name.endswith('.csv'):
+            dicts[os.path.splitext(e.name)[0]] \
+                = pd.read_csv(e.path, index_col=0, encoding='utf-8')
 
     return dicts
 
@@ -236,7 +235,7 @@ def make_data(
 
     # 根据词典编码训练和测试数据
     dialect_encoder, input_encoder, output_encoder = [OrdinalEncoder(
-        categories=dicts,
+        categories=[d.index for d in dicts],
         dtype=np.int32,
         handle_unknown='use_encoded_value',
         unknown_value=-1,
@@ -262,8 +261,8 @@ def make_data(
     logging.info(
         f'done, train data size = {train_data.cardinality()}, '
         f'test data size = {test_data.cardinality()}, '
-        f'dialect numbers = {[len(d) for d in dialect_dicts]}, '
-        f'input numbers = {[len(d) for d in input_dicts]}'
+        f'dialect numbers = {[d.shape[0] for d in dialect_dicts]}, '
+        f'input numbers = {[d.shape[0] for d in input_dicts]}'
     )
 
     return train_data, test_data, dialect_dicts, input_dicts
@@ -357,12 +356,14 @@ def mkdict(config):
     for name in sum(config['columns'].values(), []):
         dic = sinetym.auxiliary.make_dict(
             data[name],
-            minfreq=config.get('min_freq')
+            minfreq=config.get('min_freq'),
+            sort='value'
         )
-        fname = f'{os.path.join(prefix, name)}.txt'
-        logging.info(f'save {fname}')
-        with open(fname, 'w', encoding='utf-8', newline='\n') as f:
-            print('\n'.join(dic), file=f)
+        dic.index.rename(name, inplace=True)
+
+        fname = os.path.join(prefix, name + '.csv')
+        logging.info(f'save {dic.shape[0]} values to {fname}')
+        dic.to_csv(fname, encoding='utf-8', lineterminator='\n')
 
     logging.info('done.')
 
@@ -415,7 +416,7 @@ def benchmark(config, data):
         minfreq=config.get('min_freq'),
         random_state=random_state
     )
-    dialect_nums, input_nums, output_nums = [[len(d) for d in dicts] \
+    dialect_nums, input_nums, output_nums = [[d.shape[0] for d in dicts] \
         for dicts in (dialect_dicts1, input_dicts1, output_dicts)]
     logging.info(
         f'dialect numbers = {dialect_nums}, input numbers = {input_nums}, '
@@ -434,13 +435,11 @@ def benchmark(config, data):
             + config['columns']['output'],
         dialect_dicts1 + input_dicts1 + output_dicts
     ):
-        with open(
-            os.path.join(dict_dir, name + '.txt'),
-            'w',
+        dic.to_csv(
+            os.path.join(dict_dir, name + '.csv'),
             encoding='utf-8',
-            newline='\n'
-        ) as f:
-            print('\n'.join(dic), file=f)
+            lineterminator='\n'
+        )
 
     logging.info('done.')
 
@@ -476,13 +475,11 @@ def benchmark(config, data):
                 config['columns']['dialect'] + config['columns']['input'],
                 dialect_dicts + input_dicts
             ):
-                with open(
-                    os.path.join(new_dict_dir, nm + '.txt'),
-                    'w',
+                dic.to_csv(
+                    os.path.join(new_dict_dir, nm + '.csv'),
                     encoding='utf-8',
-                    newline='\n'
-                ) as f:
-                    print('\n'.join(dic), file=f)
+                    lineterminator='\n'
+                )
 
     for conf in config['models']:
         # 根据配置文件创建模型并训练
@@ -517,9 +514,9 @@ def benchmark(config, data):
             new_model = build_new_model(
                 model,
                 dialect_nums=None if dialect_dicts is None \
-                    else [len(d) for d in dialect_dicts],
+                    else [d.shape[0] for d in dialect_dicts],
                 input_nums=None if input_dicts is None \
-                    else [len(d) for d in input_dicts]
+                    else [d.shape[0] for d in input_dicts]
             )
             optimizer = tf.optimizers.SGD(
                 tf.optimizers.schedules.ExponentialDecay(0.1, 100000, 0.9)
@@ -679,7 +676,7 @@ if __name__ == '__main__':
 
         data = load_datasets(config['datasets'])
         data = tuple([OrdinalEncoder(
-            categories=[dicts[c] for c in config['columns'][name]],
+            categories=[dicts[c].index for c in config['columns'][name]],
             dtype=np.int32,
             handle_unknown='use_encoded_value',
             unknown_value=-1,
@@ -698,7 +695,7 @@ if __name__ == '__main__':
         train(
             config,
             args.model,
-            *[[len(d) for d in dicts] \
+            *[[d.shape[0] for d in dicts] \
                 for dicts in (dialect_dicts, input_dicts, output_dicts)],
             data
         )
@@ -707,7 +704,7 @@ if __name__ == '__main__':
         evaluate(
             config,
             args.model,
-            *[[len(d) for d in dicts] \
+            *[[d.shape[0] for d in dicts] \
                 for dicts in (dialect_dicts, input_dicts, output_dicts)],
             data
         )
@@ -719,7 +716,7 @@ if __name__ == '__main__':
         export(
             config,
             args.model,
-            *[[len(d) for d in dicts] \
+            *[[d.shape[0] for d in dicts] \
                 for dicts in (dialect_dicts, input_dicts, output_dicts)],
             args.output
         )
