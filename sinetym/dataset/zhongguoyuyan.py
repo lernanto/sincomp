@@ -111,8 +111,8 @@ def get_dialect(location):
                 tag.str.contains('平'),
                 '平话',
                 numpy.where(
-                    tag.str.contains('湘南|韶州'),
-                    tag.str.replace('.*(湘南|韶州).*', r'\1土话', regex=True),
+                    tag.str.contains('土'),
+                    '土话',
                     numpy.where(
                         tag.str.contains('[吴闽赣粤湘晋徽]'),
                         tag.str.replace('.*([吴闽赣粤湘晋徽]).*', r'\1语', regex=True),
@@ -329,24 +329,6 @@ class ZhongguoyuyanDataset(Dataset):
                 logging.error(f'cannot load file {fname}: {e}')
                 continue
 
-            # 部分音节切分错误，重新切分
-            d.loc[d['initial'] == 'Ǿŋ', ['initial', 'finals']] = ['∅', 'ŋ']
-            mask = d['initial'] == 'ku'
-            d.loc[mask, 'initial'] = 'k'
-            d.loc[mask, 'finals'] = 'u' + d.loc[mask, 'finals']
-
-            # 部分声调被错误转为日期格式，还原成数字
-            mask = d['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
-            d.loc[mask, 'tone'] = pandas.to_datetime(
-                d.loc[mask, 'tone'],
-                format=r'%Y年%m月%d日'
-            ).dt.dayofyear.astype(str)
-
-            # 清洗方言字音数据中的录入错误.
-            d['initial'] = clean_initial(d['initial'])
-            d['finals'] = clean_final(d['finals'])
-            d['tone'] = clean_tone(d['tone'])
-
             if minfreq > 1:
                 # 删除出现次数少的读音
                 for col in ('initial', 'finals', 'tone'):
@@ -371,6 +353,36 @@ class ZhongguoyuyanDataset(Dataset):
             return None
 
         data = pandas.concat(data, axis=0, ignore_index=True)
+
+        # 清洗方言字音数据中的录入错误
+        # 部分音节切分错误，重新切分
+        data.loc[data['initial'] == 'Ǿŋ', ['initial', 'finals']] = ['∅', 'ŋ']
+        mask = data['initial'] == 'ku'
+        data.loc[mask, 'initial'] = 'k'
+        data.loc[mask, 'finals'] = 'u' + data.loc[mask, 'finals']
+
+        # 部分声调被错误转为日期格式，还原成数字
+        mask = data['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
+        data.loc[mask, 'tone'] = pandas.to_datetime(
+            data.loc[mask, 'tone'],
+            format=r'%Y年%m月%d日'
+        ).dt.dayofyear.astype(str)
+
+        for col, func in (
+            ('initial', clean_initial),
+            ('finals', clean_final),
+            ('tone', clean_tone)
+        ):
+            raw = data[col]
+            mapping = raw.value_counts().to_frame(name='count')
+            mapping['clean'] = func(mapping.index)
+            data[col] = raw.map(mapping['clean'])
+
+            for i, r in mapping[mapping.index != mapping['clean']].iterrows():
+                logging.info(f'{i} -> {r["clean"]} {r["count"]}')
+
+        # 删除声韵调均为空的记录
+        data = data[(data[['initial', 'finals', 'tone']] != '').any(axis=1)]
 
         if self.uniform_name:
             # 替换列名为统一的名称
@@ -443,12 +455,8 @@ class ZhongguoyuyanDataset(Dataset):
         if predict_dialect:
             dialect = globals()['predict_dialect'](info, dialect)
 
-        info['group'] = numpy.where(
-            dialect.str.contains('官话'),
-            '官话',
-            numpy.where(dialect.str.contains('土话'), '土话', dialect)
-        )
-        info['subgroup'] = dialect[dialect.str.contains('官话|土话', regex=True)]
+        info['group'] = numpy.where(dialect.str.contains('官话'), '官话', dialect)
+        info['subgroup'] = dialect[dialect.str.contains('官话')]
         info['subgroup'].fillna('', inplace=True)
 
         info['cluster'] = get_cluster(info)
