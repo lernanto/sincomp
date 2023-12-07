@@ -25,6 +25,13 @@ import sinetym.models
 import sinetym.auxiliary
 
 
+def get_value(obj, key):
+    '''
+    当 obj 为字典时，从里面检索 key 的值，否则直接返回 obj.
+    '''
+
+    return obj.get(key) if isinstance(obj, dict) else obj
+
 def load_dictionaries(prefix='.'):
     """
     加载词典.
@@ -196,7 +203,7 @@ def make_data(
         dialect_dicts (array-like): 方言数据的词典列表
         input_dicts (array-like): 字数据的词典列表
         test_size (float): 切分评估数据的比例
-        minfreq (float or int): 为数据构造编码器时只保留出现频次或比例不小于该值的值
+        minfreq (float, int or dict): 为数据构造编码器时只保留出现频次或比例不小于该值的值
         random_state (int or `numpy.random.RandomState`): 用于复现划分数据结果
 
     Returns:
@@ -227,12 +234,16 @@ def make_data(
 
     # 如果输入词典为空，根据训练数据创建
     if dialect_dicts is None:
-        dialect_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
-            for _, c in train_dialect.items()]
+        dialect_dicts = [sinetym.auxiliary.make_dict(
+            c,
+            minfreq=get_value(minfreq, n)
+        ) for n, c in train_dialect.items()]
 
     if input_dicts is None:
-        input_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
-            for _, c in train_input.items()]
+        input_dicts = [sinetym.auxiliary.make_dict(
+            c,
+            minfreq=get_value(minfreq, n)
+        ) for n, c in train_input.items()]
 
     if any(d.shape[0] <= 0 for d in itertools.chain(
             dialect_dicts, input_dicts, output_dicts
@@ -362,7 +373,7 @@ def mkdict(config):
     for name in sum(config['columns'].values(), []):
         dic = sinetym.auxiliary.make_dict(
             data[name],
-            minfreq=config.get('min_freq'),
+            minfreq=get_value(config.get('min_freq'), name),
             sort='value'
         )
         dic.index.rename(name, inplace=True)
@@ -393,7 +404,7 @@ def benchmark(config, data):
     # 输出数据必须全部编码
     output_dicts = [sinetym.auxiliary.make_dict(
         data[c],
-        minfreq=config.get('min_freq')
+        minfreq=get_value(config.get('min_freq'), c)
     ) for c in config['columns']['output']]
 
     # 切分数据用于训练及不同项目的评估：
