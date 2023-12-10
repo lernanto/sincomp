@@ -718,7 +718,7 @@ class EncoderBase(tf.Module):
         self,
         optimizer,
         train_data,
-        eval_data=None,
+        validate_data=None,
         weights=None,
         epochs=20,
         batch_size=100,
@@ -730,7 +730,7 @@ class EncoderBase(tf.Module):
         Parameters:
             optimizer (tensorflow.optimizers.Optimizer): 用于训练的优化器
             train_data (tensorflow.data.Dataset): 训练数据集
-            eval_data (tensorflow.data.Dataset): 测试数据集
+            validate_data (tensorflow.data.Dataset): 测试数据集
             weights (array-like): 各目标的权重
             epochs (int): 训练轮次
             batch_size (int): 批大小
@@ -752,8 +752,8 @@ class EncoderBase(tf.Module):
         )
 
         train_writer = tf.summary.create_file_writer(os.path.join(output_path, 'train'))
-        if eval_data is not None:
-            eval_writer = tf.summary.create_file_writer(os.path.join(output_path, 'eval'))
+        if validate_data is not None:
+            validate_writer = tf.summary.create_file_writer(os.path.join(output_path, 'validate'))
 
         manager = tf.train.CheckpointManager(
             tf.train.Checkpoint(model=self, optimizer=optimizer),
@@ -766,7 +766,7 @@ class EncoderBase(tf.Module):
             logging.info(f'restored from checkpoint {manager.latest_checkpoint}')
 
         while manager.checkpoint.save_counter < epochs:
-            epoch = manager.checkpoint.save_counter.numpy()
+            epoch = manager.checkpoint.save_counter.numpy() + 1
             loss, acc = self.train(
                 optimizer,
                 train_data.batch(batch_size),
@@ -775,7 +775,7 @@ class EncoderBase(tf.Module):
 
             logging.info(
                 f'epoch {epoch}/{epochs}: '
-                f'train loss = {loss}, train accuracy = {acc}'
+                f'training loss = {loss}, accuracy = {acc}'
             )
 
             with train_writer.as_default():
@@ -791,14 +791,14 @@ class EncoderBase(tf.Module):
                 for v in self.variables:
                     tf.summary.histogram(v.name, v, step=epoch)
 
-            if eval_data is not None:
-                loss, acc = self.evaluate(eval_data.batch(batch_size), weights)
+            if validate_data is not None:
+                loss, acc = self.evaluate(validate_data.batch(batch_size), weights)
                 logging.info(
                     f'epoch {epoch}/{epochs}: '
-                    f'evaluation loss = {loss}, evaluation accuracy = {acc}'
+                    f'validation loss = {loss}, accuracy = {acc}'
                 )
 
-                with eval_writer.as_default():
+                with validate_writer.as_default():
                     tf.summary.scalar('loss', loss, step=epoch)
                     for i in range(acc.shape[0]):
                         tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
