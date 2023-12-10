@@ -413,7 +413,7 @@ def benchmark(config, data):
         random_state=random_state
     )
     data1 = data[train_dialect & train_input]
-    train_data1, eval_data1, dialect_dicts1, input_dicts1 = make_data(
+    train_data1, validate_data1, dialect_dicts1, input_dicts1 = make_data(
         data1[config['columns']['dialect']],
         data1[config['columns']['input']],
         data1[config['columns']['output']],
@@ -457,7 +457,7 @@ def benchmark(config, data):
         ('new_dialect_input', data[test_dialect & test_input], None, None)
     ):
         if d.shape[0] > 0:
-            train_data, eval_data, dialect_dicts, input_dicts = make_data(
+            train_data, validate_data, dialect_dicts, input_dicts = make_data(
                 d[config['columns']['dialect']],
                 d[config['columns']['input']],
                 d[config['columns']['output']],
@@ -470,7 +470,7 @@ def benchmark(config, data):
             )
             datasets.append((n,
                 train_data,
-                eval_data,
+                validate_data,
                 dialect_dicts if dd is None else None,
                 input_dicts if id is None else None
             ))
@@ -503,17 +503,17 @@ def benchmark(config, data):
         model.fit(
             optimizer,
             train_data1,
-            eval_data1,
+            validate_data1,
             output_path=output_path,
             **conf
         )
         logging.info('done.')
 
         # 使用剩余的数据集评估模型效果
-        for n, train_data, eval_data, dialect_dicts, input_dicts in datasets:
+        for n, train_data, validate_data, dialect_dicts, input_dicts in datasets:
             logging.info(
-                f'evaluate {n}, train size = {train_data.cardinality()}, '
-                f'evaluation size = {eval_data.cardinality()}.'
+                f'evaluate {n}, training size = {train_data.cardinality()}, '
+                f'validation size = {validate_data.cardinality()}.'
             )
 
             # 从上面训练完成的模型复制一个副本，针对数据微调然后评估
@@ -530,7 +530,7 @@ def benchmark(config, data):
             new_model.fit(
                 optimizer,
                 train_data,
-                eval_data,
+                validate_data,
                 epochs=10,
                 batch_size=100,
                 output_path=os.path.join(prefix, name, n)
@@ -543,7 +543,7 @@ def train(
     input_nums,
     output_nums,
     train_data,
-    eval_data=None
+    validate_data=None
 ):
     """
     训练模型.
@@ -553,7 +553,7 @@ def train(
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
         dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
         train_data (`tensorflow.data.Dataset`): 训练数据
-        eval_data (`tensorflow.data.Dataset`): 评估数据
+        validate_data (`tensorflow.data.Dataset`): 评估数据
 
     从 config 中读取由 name 指定的配置，创建并训练模型。
     """
@@ -573,13 +573,13 @@ def train(
     model.fit(
         optimizer,
         train_data,
-        eval_data=eval_data,
+        validate_data=validate_data,
         output_path=output_path,
         **conf
     )
     logging.info('done.')
 
-def evaluate(config, name, dialect_nums, input_nums, output_nums, eval_data):
+def evaluate(config, name, dialect_nums, input_nums, output_nums, data):
     """
     评估训练完成的模型效果.
 
@@ -587,7 +587,7 @@ def evaluate(config, name, dialect_nums, input_nums, output_nums, eval_data):
         config (dict): 多层级的配置字典，分析配置文件获得
         name (str): 用于训练的模型配置名称，用于从 config 中读取指定配置
         dialect_nums, input_nums, output_nums: 传给模型构造函数的参数
-        eval_data (`tensorflow.data.Dataset`): 评估数据
+        data (`tensorflow.data.Dataset`): 评估数据
     """
 
     conf = next((c for c in config['models'] if c['name'] == name)).copy()
@@ -609,7 +609,7 @@ def evaluate(config, name, dialect_nums, input_nums, output_nums, eval_data):
     logging.info('done.')
 
     logging.info('evaluating model ...')
-    loss, acc = model.evaluate(eval_data.batch(conf.get('batch_size', 100)))
+    loss, acc = model.evaluate(data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
 
 def export(config, name, dicts, prefix='.'):
