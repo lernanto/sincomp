@@ -41,7 +41,7 @@ def encode_features(features):
 
     # 为了让编码器正常工作，先补全缺失特征
     encoder = OneHotEncoder(
-        sparse=True,
+        sparse_output=True,
         dtype=numpy.float32,
         handle_unknown='ignore'
     )
