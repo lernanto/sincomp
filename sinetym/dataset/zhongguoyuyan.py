@@ -68,53 +68,92 @@ def clean_location(location):
 
     return clean
 
-def get_dialect(location):
+def get_group(location):
     """
-    从方言点信息中获取所属方言区.
+    从方言点信息中提取所属方言区.
 
     Parameters:
         location (`pandas.DataFrame`): 原始方言点信息数据表
 
     Returns:
-        dialect (`pandas.Series`): 方言点对应的方言区列表
+        group (`pandas.Series`): 方言点对应的方言区列表
     """
 
-    def clean(tag):
+    def try_get_group(tag):
         """清洗原始的方言区标记."""
 
         tag = tag.fillna('')
-
         return numpy.where(
             tag.str.contains('客'),
             '客家话',
             numpy.where(
-                tag.str.contains('平'),
-                '平话',
+                tag.str.contains('[官平土]'),
+                tag.str.replace('.*([官平土]).*', r'\1话', regex=True),
                 numpy.where(
-                    tag.str.contains('土'),
-                    '土话',
-                    numpy.where(
-                        tag.str.contains('[吴闽赣粤湘晋徽]'),
-                        tag.str.replace('.*([吴闽赣粤湘晋徽]).*', r'\1语', regex=True),
-                        numpy.where(
-                            tag.str.contains('北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南'),
-                            tag.str.replace(
-                                '.*(北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南).*',
-                                r'\1官话',
-                                regex=True
-                            ),
-                            ''
-                        )
-                    )
+                    tag.str.contains('[吴闽赣粤湘晋徽]'),
+                    tag.str.replace('.*([吴闽赣粤湘晋徽]).*', r'\1语', regex=True),
+                    ''
                 )
             )
         ).astype(str)
 
     # 有些方言区，主要是官话的大区被标在不同的字段，尽力尝试获取
-    dialect = clean(location['area'])
-    dialect = numpy.where(dialect != '', dialect, clean(location['slice']))
+    group = try_get_group(location['area'])
+    group = numpy.where(group != '', group, try_get_group(location['slice']))
 
-    return pandas.Series(dialect, index=location.index)
+    return pandas.Series(group, index=location.index)
+
+def get_subgroup(location):
+    """
+    从方言点信息中提取所属子分区.
+
+    只有官话、闽语、平话、土话有子分区。
+
+    Parameters:
+        location (`pandas.DataFrame`): 原始方言点信息数据表
+
+    Returns:
+        subgroup (`pandas.Series`): 方言点对应的方言子分区列表
+    """
+
+    def try_get_subgroup(tag):
+        """尝试从标记字符串中匹配方言子分区."""
+
+        tag = tag.fillna('')
+        return numpy.where(
+            tag.str.contains('北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南'),
+            tag.str.replace('.*(北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南).*', r'\1官话', regex=True),
+            numpy.where(
+                tag.str.contains('闽东|闽南|闽北|闽中|莆仙|邵将|琼文'),
+                tag.str.replace('.*(闽东|闽南|闽北|闽中|莆仙|邵将|琼文).*', r'\1区', regex=True),
+                numpy.where(
+                    tag.str.contains('雷琼|琼雷'),
+                    '琼文区',
+                    numpy.where(
+                        tag.str.contains('桂南|桂北'),
+                        tag.str.replace('.*(桂南|桂北).*', r'\1平话', regex=True),
+                        numpy.where(
+                            tag.str.contains('湘南|粤北'),
+                            tag.str.replace('.*(湘南|粤北).*', r'\1土话', regex=True),
+                            numpy.where(
+                                tag.str.contains('韶州|邵州'),
+                                '粤北土话',
+                                ''
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+    subgroup = try_get_subgroup(location['slice'])
+    subgroup = numpy.where(
+        subgroup != '',
+        subgroup,
+        try_get_subgroup(location['area'])
+    )
+
+    return pandas.Series(subgroup, index=location.index)
 
 def get_cluster(location):
     """
@@ -187,8 +226,7 @@ def get_subcluster(location):
 
     return subcluster.fillna('')
 
-
-def predict_dialect(location, dialect):
+def predict_group(location, dialect):
     """
     使用 KNN 算法根据经纬度信息预测方言区.
 
@@ -216,7 +254,7 @@ def load_dialect_info(
     fname,
     did_prefix=None,
     uniform_name=False,
-    predict_dialect=False
+    predict_group=False
 ):
     """
     读取方言点信息.
@@ -227,7 +265,7 @@ def load_dialect_info(
         fname (str): 方言信息文件路径
         uniform_name (bool): 为真时，把数据列名转为通用名称
         did_prefix (str): 非空时在方言 ID 添加该前缀
-        predict_dialect (bool): 对缺失的方言区信息用机器学习模型预测填充，默认开启
+        predict_group (bool): 对缺失的方言区信息用机器学习模型预测填充，默认开启
 
     Returns:
         info (`pandas.DataFrame`): 方言点信息数据表
@@ -243,14 +281,12 @@ def load_dialect_info(
     )
 
     # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
-    dialect = get_dialect(info)
-    if predict_dialect:
-        dialect = globals()['predict_dialect'](info, dialect)
+    group = get_group(info)
+    if predict_group:
+        group = globals()['predict_group'](info, group)
 
-    info['group'] = numpy.where(dialect.str.contains('官话'), '官话', dialect)
-    info['subgroup'] = dialect[dialect.str.contains('官话')]
-    info['subgroup'].fillna('', inplace=True)
-
+    info['group'] = group
+    info['subgroup'] = get_subgroup(info)
     info['cluster'] = get_cluster(info)
     info['subcluster'] = get_subcluster(info)
 
