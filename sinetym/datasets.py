@@ -12,10 +12,20 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import os
+import logging
 
 from .dataset.xiaoxuetang import XiaoxuetangDataset
 from .dataset.zhongguoyuyan import ZhongguoyuyanDataset
 
 
-xiaoxuetang = XiaoxuetangDataset(os.environ.get('XIAOXUETANG_HOME'))
-zhongguoyuyan = ZhongguoyuyanDataset(os.environ.get('ZHONGGUOYUYAN_HOME'))
+path = os.environ.get('XIAOXUETANG_HOME')
+if path is None:
+    logging.error('Set variable environment XIAOXUETANG_HOME then reload this module.')
+else:
+    xiaoxuetang = XiaoxuetangDataset(path)
+
+path = os.environ.get('ZHONGGUOYUYAN_HOME')
+if path is None:
+    logging.error('Set variable environment ZHONGGUOYUYAN_HOME then reload this module.')
+else:
+    zhongguoyuyan = ZhongguoyuyanDataset(path)

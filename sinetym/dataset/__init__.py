@@ -121,26 +121,72 @@ def clean_tone(raw):
 
 
 class Dataset:
-    """
-    数据集基类，支持延迟加载.
+    """数据集基类."""
 
-    子类必须实现 load() 和 load_metadata() 函数。
-    """
-
-    def __init__(self, name):
+    def __init__(self, name, data=None, metadata=dict()):
         """
         Parameters:
             name (str): 数据集名称
+            data (`pandas.DataFrame`): 方言字音数据表
+            metadata (dict): 数据集元信息
         """
 
         self.name = name
+        self._data = data
+        self.metadata = metadata
 
-    @functools.cached_property
+    @property
     def data(self):
-        return self.load()
+        return self._data
 
     @functools.lru_cache
-    def transform(self, index='did', values=None, aggfunc=' '.join):
+    def _force_complete(self, columns=None):
+        """
+        保证一行数据指定的列都有值，否则删除该读音.
+
+        Parameters:
+            columns (array-like): 需要保证有值的列，空表示所有列
+
+        Returns:
+            output (`pandas.DataFrame`): 删除不完整读音后的方言字音数据表
+        """
+
+        if columns is None:
+            columns = self.data.columns
+        else:
+            columns = list(columns)
+
+        invalid = (self.data[columns].isna() | (self.data[columns] == '')) \
+            .any(axis=1)
+        return self.data.drop(self.data.index[invalid])
+
+    def force_complete(self, columns=['initial', 'final', 'tone']):
+        """
+        保证一行数据指定的列都有值，否则删除该读音.
+
+        Parameters:
+            columns (array-like): 需要保证有值的列
+
+        Returns:
+            other (`sinetym.dataset.Dataset`): 删除不完整读音后的方言字音数据集
+        """
+
+        if self.data is None:
+            return Dataset(self.name, metadata=self.metadata)
+
+        try:
+            columns = tuple(columns)
+        except ValueError:
+            ...
+
+        return Dataset(
+            self.name,
+            data=self._force_complete(columns=columns),
+            metadata=self.metadata
+        )
+
+    @functools.lru_cache
+    def _transform(self, index='did', values=None, aggfunc=' '.join):
         """
         把方言读音数据长表转换为宽表.
 
@@ -155,9 +201,6 @@ class Dataset:
             output (`pandas.DataFrame`): 变换格式后的数据表
         """
 
-        if self.data is None:
-            return None
-
         output = self.data.pivot_table(
             values,
             index=index,
@@ -168,16 +211,45 @@ class Dataset:
         )
 
         # 如果列名为多层级，把指定的列名上移到最高层级
-        if transorm_data.columns.nlevels > 1:
-            transorm_data = output.swaplevel(axis=1).reindex(
+        if output.columns.nlevels > 1:
+            output = output.swaplevel(axis=1).reindex(
                 pandas.MultiIndex.from_product((
-                    transorm_data.columns.levels[1],
-                    transorm_data.columns.levels[0]
+                    output.columns.levels[1],
+                    output.columns.levels[0]
                 )),
                 axis=1
             )
 
         return output
+
+    def transform(self, index='did', values=None, aggfunc=' '.join):
+        """
+        把方言读音数据长表转换为宽表.
+
+        当 index 为 did 时，以地点为行，字为列，声韵调为子列。
+        当 index 为 cid 时，以字为行，地点为列，声韵调为子列。
+
+        Parameters:
+            index (str): 指明以原始表的哪一列为行，did 一个地点为一行，cid 一个字为一行
+            aggfunc (str or callable): 相同的 did 和 cid 有多个记录的，使用 aggfunc 函数合并
+
+        Returns:
+            other (`sinetym.dataset.Dataset`): 变换格式后的数据集
+        """
+
+        if self.data is None:
+            return Dataset(self.name, metadata=self.metadata)
+
+        try:
+            values = tuple(values)
+        except ValueError:
+            ...
+
+        return Dataset(
+            self.name,
+            data=self._transform(index, values, aggfunc),
+            metadata=self.metadata
+        )
 
     def __iter__(self):
         return iter(()) if self.data is None else iter(self.data)
@@ -186,12 +258,37 @@ class Dataset:
         return None if self.data is None else self.data.__getitem__(key)
 
     def __getattr__(self, name):
+        if name.startswith('_'):
+            raise(AttributeError(
+                f'{repr(type(self).__name__)} object has no attribute {repr(name)}',
+                name=name,
+                obj=self
+            ))
+
         return None if self.data is None else self.data.__getattr__(name)
 
-    def reset(self):
-        """
-        清除已经加载的数据和所有缓存.
-        """
+    def __repr__(self):
+        return f'{type(self).__name__}({repr(self.name)})'
 
-        self.__dict__.pop('data', None)
-        self.__dict__.pop('metadata', None)
+    def __str__(self):
+        return self.name
+
+def concat(*datasets):
+    """
+    把多个数据集按顺序拼接为一个.
+
+    Parameters:
+        datasets (iterable of Dataset or `pandas.DataFrame`): 待拼接的数据集
+
+    Returns:
+        output (Dataset): 拼接后的数据集
+    """
+
+    return Dataset(
+        'dataset',
+        data=pandas.concat(
+            [d.data if isinstance(d, Dataset) else d for d in datasets],
+            axis=0,
+            ignore_index=True
+        )
+    )
