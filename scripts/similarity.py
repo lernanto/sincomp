@@ -14,7 +14,8 @@ import argparse
 import logging
 import pandas
 
-import sinetym
+import sinetym.datasets
+import sinetym.similarity
 
 
 if __name__ == '__main__':
@@ -26,29 +27,32 @@ if __name__ == '__main__':
         default='entropy',
         help='计算方言间相似度的方法'
     )
+    parser.add_argument('dataset', nargs='?', default='zhongguoyuyan', help='输入数据集')
     parser.add_argument('-o', '--output', help='输出文件名')
-    parser.add_argument('input', default='.', help='输入方言字音文件所在目录')
     args = parser.parse_args()
 
-    logging.getLogger().setLevel(logging.INFO)
+    output = f'{args.dataset}_{args.method}.csv' if args.output is None \
+        else args.output
 
-    output = f'{args.method}.csv' if args.output is None else args.output
-    logging.info(f'compute {args.method} similarity between dialects, ' \
-        f'input = {args.input}, output = {output}')
+    logging.getLogger().setLevel(logging.INFO)
+    logging.info(
+        f'compute {args.method} similarity between dialects, '
+        f'dataset = {args.dataset}, output = {output}'
+    )
+
+    data = getattr(sinetym.datasets, args.dataset)
+    if data is sinetym.datasets.zhongguoyuyan:
+        data = data.filter(variant='mb01')
 
     # 对每个字取第一个声母、韵母、声调均非空的读音
     # 声韵调部分有值部分为空会导致统计数据细微偏差
-    data = sinetym.datasets.transform_data(
-        sinetym.datasets.zhongguoyuyan.force_complete(
-            sinetym.datasets.load_data(args.input, suffix='mb01dz.csv')
-        ),
+    data = data.force_complete().transform(
         index='cid',
         values=['initial', 'final', 'tone'],
         aggfunc='first'
     )
-
     ids = data.columns.levels[0]
 
     sim = getattr(sinetym.similarity, args.method)(data.values, parallel=4)
     pandas.DataFrame(sim, index=ids, columns=ids) \
-        .to_csv(output, line_terminator='\n')
+        .to_csv(output, lineterminator='\n')
