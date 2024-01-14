@@ -67,6 +67,33 @@ def load_dialect_info(
     logging.info(f'done, {info.shape[0]} dialects loaded.')
     return info
 
+def load_char_info(fname, did_prefix=None, uniform_name=False):
+    """
+    加载字信息.
+
+    Parameters:
+        fname (str): 字信息文件路径
+        did_prefix (str): 非空时在字 ID 添加该前缀
+        uniform_name (bool): 为真时，把数据列名转为通用名称
+
+    Returns:
+        info (`pandas.DataFrame`): 字信息数据表
+    """
+
+    logging.debug(f'load character information from {fname}') 
+    info = pandas.read_csv(fname, dtype=str)
+    info = info[info['字號'].notna()].set_index('字號')
+
+    if did_prefix is not None:
+        info.set_index(did_prefix + info.index, inplace=True)
+
+    if uniform_name:
+        info.index.rename('cid', inplace=True)
+        info.rename(columns={'字': 'character'}, inplace=True)
+
+    logging.debug(f'{info.shape[0]} dialects loaded.')
+    return info
+
 
 class XiaoxuetangDataset(Dataset):
     """
@@ -102,6 +129,11 @@ class XiaoxuetangDataset(Dataset):
                 did_prefix,
                 uniform_name,
                 uniform_info
+            ),
+            'char_info': load_char_info(
+                os.path.join(path, 'data', 'csv', 'char.csv'),
+                cid_prefix,
+                uniform_name
             )
         })
 
