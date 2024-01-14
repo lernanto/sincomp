@@ -11,6 +11,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import logging
 import argparse
 import os
+import itertools
 import json
 import pandas as pd
 import numpy as np
@@ -73,7 +74,7 @@ def load_datasets(config):
 
         data.append(dataset)
 
-    data = pd.concat(data, axis=0, ignore_index=True)
+    data = sinetym.dataset.concat(*data)
 
     logging.info(f'done, {data.shape[0]} data loaded.')
     return data
@@ -232,6 +233,11 @@ def make_data(
     if input_dicts is None:
         input_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
             for _, c in train_input.items()]
+
+    if any(d.shape[0] <= 0 for d in itertools.chain(
+            dialect_dicts, input_dicts, output_dicts
+        )) or any(d.shape[0] <= 0 for d in (train_dialect, train_input, train_output)):
+        raise RuntimeError('Empty dictionary or training data, check your data!')
 
     # 根据词典编码训练和测试数据
     dialect_encoder, input_encoder, output_encoder = [OrdinalEncoder(
