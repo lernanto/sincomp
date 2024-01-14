@@ -13,9 +13,43 @@ import logging
 import os
 import functools
 import pandas
+import numpy
 import opencc
 
 from . import Dataset, clean_initial, clean_final, clean_tone
+
+
+def clean_subgroup(subgroup):
+    """
+    清洗方言子分区信息.
+
+    只有官话、闽语、平话、土话有子分区。
+
+    Parameters:
+        subgroup (array-like): 原始方言子分区信息列表
+
+    Returns:
+        cleand (array-like): 清洗后的方言子分区列表
+    """
+
+    subgroup = subgroup.fillna('')
+    return numpy.where(
+        subgroup.str.contains('北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南'),
+        subgroup.str.replace('.*(北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南).*', r'\1官话', regex=True),
+        numpy.where(
+            subgroup.str.contains('闽东|闽南|闽北|闽中|莆仙|邵将|琼文'),
+            subgroup.str.replace('.*(闽东|闽南|闽北|闽中|莆仙|邵将|琼文).*', r'\1区', regex=True),
+            numpy.where(
+                subgroup.str.contains('桂南|桂北'),
+                subgroup.str.replace('.*(桂南|桂北).*', r'\1平话', regex=True),
+                numpy.where(
+                    subgroup.str.contains('湘南|粤北'),
+                    subgroup.str.replace('.*(湘南|粤北).*', r'\1土话', regex=True),
+                    ''
+                )
+            )
+        )
+    )
 
 def load_dialect_info(
     fname,
@@ -39,6 +73,15 @@ def load_dialect_info(
     logging.info(f'loading dialect information from {fname}...')
     info = pandas.read_csv(fname, dtype={'編號': str})
     info = info[info['編號'].notna()].set_index('編號')
+
+    info['區'] = clean_subgroup(info['區'])
+    # 部分方言点包含来源文献，删除
+    info['方言點'] = info['方言點'].str.replace(
+        r'\(安徽省志\)|\(珠江三角洲\)|\(客贛方言調查報告\)|\(廣西漢語方言\)'
+        r'|\(平話音韻研究\)|\(廣東閩方言\)|\(漢語方音字匯\)|\(當代吳語\)',
+        '',
+        regex=True
+    )
 
     if did_prefix is not None:
         info.set_index(did_prefix + info.index, inplace=True)
