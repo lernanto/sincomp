@@ -805,14 +805,14 @@ class EncoderBase(tf.Module):
 
             manager.save()
 
-class LinearEncoder(EncoderBase):
+class BilinearEncoder(EncoderBase):
     """
     线性编码器.
 
     输入向量经过以方言向量为参数的线性变换得到输出向量。
     """
 
-    def __init__(self, *args, name='linear_encoder', **kwargs):
+    def __init__(self, *args, name='bilinear_encoder', **kwargs):
         super().__init__(*args, name=name, **kwargs)
 
         init = tf.random_normal_initializer()
