@@ -501,7 +501,7 @@ class EncoderBase(tf.Module):
         logits = [tf.matmul(output_emb, e, transpose_b=True) \
             for e in self.output_embs]
         if hasattr(self, 'output_biases'):
-            logits = [l + b[None, :] \
+            logits = [tf.nn.bias_add(l, b) \
                 for l, b in zip(logits, self.output_biases)]
 
         return logits
