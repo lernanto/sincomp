@@ -11,6 +11,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import collections
 import pandas
 import functools
 
@@ -222,19 +223,25 @@ class Dataset:
 
         return output
 
-    def transform(self, index='did', values=None, aggfunc=' '.join):
+    def transform(
+        self,
+        index: str = 'did',
+        values: list[str] = ['initial', 'final', 'tone'],
+        aggfunc: collections.abc.Callable | str = ' '.join
+    ):
         """
-        把方言读音数据长表转换为宽表.
+        把方言读音数据长表转换为宽表
 
         当 index 为 did 时，以地点为行，字为列，声韵调为子列。
         当 index 为 cid 时，以字为行，地点为列，声韵调为子列。
 
         Parameters:
-            index (str): 指明以原始表的哪一列为行，did 一个地点为一行，cid 一个字为一行
-            aggfunc (str or callable): 相同的 did 和 cid 有多个记录的，使用 aggfunc 函数合并
+            index: 指明以原始表的哪一列为行，did 一个地点为一行，cid 一个字为一行
+            values: 用于变换的列，变换后成为二级列
+            aggfunc: 相同的 did 和 cid 有多个记录的，使用 aggfunc 函数合并
 
         Returns:
-            other (`sinetym.dataset.Dataset`): 变换格式后的数据集
+            other: 变换格式后的数据集
         """
 
         if self.data is None:
@@ -242,7 +249,7 @@ class Dataset:
 
         try:
             values = tuple(values)
-        except ValueError:
+        except (TypeError, ValueError):
             ...
 
         return Dataset(
