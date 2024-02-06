@@ -509,3 +509,58 @@ def dist2sim(dist):
 
     max_sqrt = numpy.sqrt(numpy.max(dist, axis=0))
     return 1 - dist / max_sqrt[:, None] / max_sqrt[None, :]
+
+
+if __name__ == '__main__':
+    import os
+    import argparse
+
+    from . import datasets
+
+    parser = argparse.ArgumentParser('计算方言之间的预测相似度')
+    parser.add_argument(
+        '-m',
+        '--method',
+        choices=('chi2', 'entropy'),
+        help='计算方言间相似度的方法，如果不指定，计算所有方法的结果'
+    )
+    parser.add_argument('-o', '--output', help='输出文件名')
+    parser.add_argument(
+        'dataset',
+        nargs='?',
+        choices=('xiaoxuetang', 'zhongguoyuyan'),
+        help='输入数据集，如果不指定，输出所有数据集的结果'
+    )
+    args = parser.parse_args()
+
+    if args.dataset is None:
+        dtss = 'xiaoxuetang', 'zhongguoyuyan'
+    else:
+        dtss = (args.dataset,)
+
+    if args.method is None:
+        methods = 'chi2', 'entropy'
+    else:
+        methods = (args.method,)
+
+    for dts in dtss:
+        for method in methods:
+            if len(dtss) > 1 or len(methods) > 1:
+                output = os.path.join(
+                    os.getcwd() if args.output is None else args.output,
+                    f'{dts}_{method}.csv'
+                )
+            else:
+                output = os.path.join(os.getcwd(), f'{dts}_{method}.csv') \
+                    if args.output is None else args.output
+
+            print(f'compute {method} between {dts} dialects -> {output}')
+
+            data = getattr(datasets, dts)
+            if data is datasets.zhongguoyuyan:
+                data = data.filter(variant='mb01')
+
+            sim = globals()[method](data.transform(index='cid'), parallel=4)
+
+            os.makedirs(os.path.dirname(output), exist_ok=True)
+            sim.to_csv(output, lineterminator='\n')
