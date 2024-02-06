@@ -134,14 +134,26 @@ def chi2_block(
     return (chisq - dof) / numpy.sqrt(2 * dof)
 
 def chi2(
-    src,
-    dest=None,
-    column=3,
-    blocksize=(100, 100),
-    parallel=1
-):
-    '''
+    src: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str],
+    dest: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
+    feature_num: int = 3,
+    blocksize: tuple[int, int] = (100, 100),
+    parallel: int = 1
+) -> pandas.DataFrame | numpy.ndarray[float]:
+    """
     使用卡方检验计算方言之间的相似度
+
+    Parameters:
+        src: 源方言数据表
+        dest: 目标方言数据表，为 None 时和 `src` 相同
+        feature_num: `src` 和 `dest` 中特征数量，当 `src` 为 pandas.DataFrame 时，
+            从 `src` 自动推导
+        blocksize: 指定并行计算时每块数据的大小
+        parallel: 并行计算的并行数
+
+    Returns:
+        chi2: 源方言和目标方言两两之间的条件熵矩阵，当 `src` 和 `dest` 为
+            pandas.DataFrame 包含方言名称时，指定 `chi2` 的行列为相应名称
 
     思路为，如果 A 方言的声母 + 韵母能很大程度预测 B 方言的声母 + 韵母，说明 B 方言接近 A 方言。
     这种预测能力通过卡方检验来衡量，卡方值越大表示越相似。
@@ -153,24 +165,37 @@ def chi2(
 
     卡方检验对于 A、B 方言是对称的，即理论上相似度矩阵是对称阵，但由于计算精度的原因可能出现极小的误差导致不对称。
     可以取相似度矩阵和其转置的平均来强制保证对称性。
-    '''
+    """
 
-    src_num = src.shape[1] // column
-    dest_num = src_num if dest is None else dest.shape[1] // column
+    if dest is None:
+        dest = src
 
-    logging.info(('compute chi square for {} x {} dialects, ' \
-        + 'characters = {}, columns = {}, block size = {}, parallel = {}').format(
-        src_num,
-        dest_num,
-        src.shape[0],
-        column,
-        blocksize,
-        parallel
-    ))
+    if isinstance(src, dataset.Dataset | pandas.DataFrame):
+        index = src.columns.levels[0]
+        src_num = index.shape[0]
+        feature_num = src.columns.levels[1].shape[0]
+        src = src.values
+    else:
+        index = None
+        src_num = src.shape[1] // feature_num
+
+    if isinstance(dest, dataset.Dataset | pandas.DataFrame):
+        columns = dest.columns.levels[0]
+        dest_num = columns.shape[0]
+        dest = dest.values
+    else:
+        columns = None
+        dest_num = dest.shape[1] // feature_num
+
+    logging.info(
+        f'compute X2 for {src_num} x {dest_num} dialects, '
+        f'characters = {src.shape[0]}, features = {feature_num}, '
+        f'block size = {blocksize}, parallel = {parallel}'
+    )
 
     # 特征交叉
-    if column > 1:
-        features = cross_features(src, column)
+    if feature_num > 1:
+        features = cross_features(src, feature_num)
         feature_column = features.shape[2]
         features = numpy.swapaxes(features, 1, 2).reshape(features.shape[0], -1)
     else:
@@ -190,8 +215,8 @@ def chi2(
         target_probs = feature_probs
     else:
         # 由于卡方统计的对称性，对预测目标做和特征相同处理
-        if column > 1:
-            targets = cross_features(dest, column)
+        if feature_num > 1:
+            targets = cross_features(dest, feature_num)
             targets = numpy.swapaxes(targets, 1, 2).reshape(targets.shape[0], -1)
         else:
             targets = dest
@@ -204,12 +229,10 @@ def chi2(
     row_block = (src_num + blocksize[0] - 1) // blocksize[0]
     col_block = (dest_num + blocksize[1] - 1) // blocksize[1]
 
-    logging.info('computing chi square for {} x {} x {} blocks, block size = {} ...'.format(
-        feature_column,
-        row_block,
-        col_block,
-        blocksize
-    ))
+    logging.info(
+        f'computing X2 for {feature_num} x {row_block} x {col_block} blocks, '
+        f'block size = {blocksize} ...'
+    )
 
     chisq = numpy.zeros((src_num, dest_num), dtype=numpy.float32)
 
@@ -241,15 +264,16 @@ def chi2(
 
             count += 1
             if count % 10 == 0:
-                logging.info('finished {} blocks'.format(count))
+                logging.info(f'finished {count} blocks')
 
-        logging.info('done. finished {} blocks'.format(count))
+        logging.info(f'done. finished {count} blocks')
 
     # 取多组特征卡方的均值
     if feature_column > 1:
         chisq /= feature_column
 
-    return chisq
+    return chisq if index is None and columns is None \
+        else pandas.DataFrame(chisq, index=index, columns=columns)
 
 def _entropy(
     features: scipy.sparse.csr_matrix,
