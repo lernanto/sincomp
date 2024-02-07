@@ -13,7 +13,6 @@ import logging
 import os
 import pandas
 import numpy
-from sklearn.neighbors import KNeighborsClassifier
 import functools
 
 from . import Dataset, clean_initial, clean_final, clean_tone
@@ -226,49 +225,23 @@ def get_subcluster(location):
 
     return subcluster.fillna('')
 
-def predict_group(location, dialect):
-    """
-    使用 KNN 算法根据经纬度信息预测方言区.
-
-    Parameters:
-        location (`pandas.DataFrame`): 原始方言点信息
-        dialect (`pandas.Series`): 从原始信息中提取的方言区信息，无法获取方言区的为空字符串
-
-    Returns:
-        predict (`pandas.Series`): 带预测的方言区信息，已知的方言区保持不变，其余使用 KNN 预测
-    """
-
-    mask = location['latitude'].notna() & location['longitude'].notna()
-    knn = KNeighborsClassifier().fit(
-        location.loc[mask & (dialect != ''), ['latitude', 'longitude']],
-        dialect[mask & (dialect != '')]
-    )
-    predict = dialect.copy()
-    predict[mask & (dialect == '')] = knn.predict(
-        location.loc[mask & (dialect == ''), ['latitude', 'longitude']]
-    )
-
-    return predict
-
 def load_dialect_info(
-    fname,
-    did_prefix=None,
-    uniform_name=False,
-    predict_group=False
-):
+    fname: str,
+    did_prefix: str | None = None,
+    uniform_name: bool = False
+) -> pandas.DataFrame:
     """
-    读取方言点信息.
+    读取方言点信息
 
-    对其中的市县名称使用规则归一化，并规范化方言区名称。对缺失方言区的，使用模型预测填充。
+    使用规则归一化原始数据中的市县名称，以及方言大区、子区名称等信息。
 
     Parameters:
-        fname (str): 方言信息文件路径
-        uniform_name (bool): 为真时，把数据列名转为通用名称
-        did_prefix (str): 非空时在方言 ID 添加该前缀
-        predict_group (bool): 对缺失的方言区信息用机器学习模型预测填充，默认开启
+        fname: 方言信息文件路径
+        uniform_name: 为真时，把数据列名转为通用名称
+        did_prefix: 非空时在方言 ID 添加该前缀
 
     Returns:
-        info (`pandas.DataFrame`): 方言点信息数据表
+        info: 方言点信息数据表
     """
 
     logging.info(f'loading dialect information from {fname}...')
@@ -280,15 +253,21 @@ def load_dialect_info(
         info['city'] + info['county']
     )
 
-    # 清洗方言区、片、小片名称，需要的话预测空缺的方言区
-    group = get_group(info)
-    if predict_group:
-        group = globals()['predict_group'](info, group)
-
-    info['group'] = group
+    # 清洗方言区、片、小片名称
+    info['group'] = get_group(info)
     info['subgroup'] = get_subgroup(info)
     info['cluster'] = get_cluster(info)
     info['subcluster'] = get_subcluster(info)
+
+    # 个别官话方言点标注的大区和子区不一致，去除
+    info.loc[
+        (info['group'] == '官话') & ~info['subgroup'].str.endswith('官话'),
+        ['group', 'subgroup']
+    ] = ''
+
+    # 个别方言点的经纬度有误，去除
+    info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.nan
+    info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.nan
 
     if did_prefix is not None:
         info.set_index(did_prefix + info.index, inplace=True)
