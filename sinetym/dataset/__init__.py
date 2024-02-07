@@ -37,7 +37,7 @@ _initial_table = {
     0x0241: 0x0294,     # ʔ
     0x207f: 0x006e,     # n
     0xff4b: 0x006b,     # k
-    0xfffb: 0x005f      # _
+    0xfffb: 0x2205,     # ∅
 }
 
 # 清洗韵母的字符映射表
