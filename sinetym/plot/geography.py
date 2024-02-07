@@ -72,47 +72,51 @@ def scatter(
     return ax, extent, pc
 
 def area(
-    latitudes,
-    longitudes,
-    values,
-    ax=None,
-    extent=None,
-    scale=0,
+    latitudes: numpy.ndarray[float] | pandas.Series,
+    longitudes: numpy.ndarray[float] | pandas.Series,
+    values: numpy.ndarray | pandas.Series,
+    ax: matplotlib.axes.Axes | None = None,
+    extent: tuple[float, float, float, float] | None = None,
+    scale: float = 0,
     clip=None,
-    resolution=100,
+    resolution: int = 100,
     **kwargs
-):
+) -> tuple[
+    matplotlib.axes.Axes,
+    tuple[float, float, float, float],
+    matplotlib.collections.QuadMesh
+]:
     """
-    绘制方言分区图.
+    绘制方言分区图
 
     Parameters:
-        latitudes (`numpy.ndarray`): 样本点的纬度数组
-        longitudes (`numpy.ndarray`): 样本点的经度数组
-        values (`numpy.ndarray`): 当为1维数组时，表示样本点的分类，
-            当为2维数组时，表示样本点属于各分类的概率
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
-            如果为空，创建一个新对象
-        extent: 绘制的范围 (左, 右, 下, 上)
-        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
-        clip (`shapely.geometry.multipolygon.MultiPolygon`):
+        latitudes: 样本点的纬度数组
+        longitudes: 样本点的经度数组
+        values: 当为1维数组时，表示样本点的分类，当为2维数组时，表示样本点属于各分类的概率
+        ax: 作图使用的 Axes 对象，如果为空，创建一个新 `cartopy.mpl.geoaxes.GeoAxes` 对象
+        extent: 绘制的范围
+        scale: 当未指定绘制范围时，用于根据样本点计算范围的系数
+        clip(shapely.geometry.multipolygon.MultiPolygon):
             裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
-        resolution (int): 分辨率，把绘制范围的长宽最多分为多少个点来插值，
+        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，
             实际分的点数由长宽比决定
         kwargs: 透传给 `matplotlib.pyplot.Axes.pcolormesh`
 
     Returns:
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
+        ax: 作图使用的 Axes 对象
         extent: 绘制的范围
-        qm (`matplotlib.collectoins.QuadMesh`): 绘制的色块集
+        qm: 绘制的色块集
     """
+
+    mask = numpy.isfinite(latitudes) & numpy.isfinite(longitudes)
 
     # 如果传入的是原始分类，先转化为 one-hont 编码
     if values.ndim == 1:
-        mask = numpy.isfinite(values)
+        mask &= numpy.isfinite(values)
         values = OneHotEncoder(dtype=numpy.int32) \
             .fit_transform(numpy.expand_dims(values[mask], 1)).A
     else:
-        mask = numpy.all(numpy.isfinite(values), axis=1)
+        mask &= numpy.all(numpy.isfinite(values), axis=1)
         values = values[mask]
 
     # 针对完全相同的经纬度，对经度稍作偏移，使能正常计算
@@ -353,32 +357,33 @@ def isoglosses(
     return ax
 
 def interactive_scatter(
-    latitudes,
-    longitudes,
-    values,
-    m=None,
-    tips={},
-    marker_kwds={'radius': 5},
+    latitudes: numpy.ndarray[float] | pandas.Series,
+    longitudes: numpy.ndarray[float] | pandas.Series,
+    values: numpy.ndarray | pandas.Series,
+    m: folium.Map | None = None,
+    tips: dict[str, numpy.ndarray | pandas.Series] = {},
+    marker_kwds: dict = {'radius': 5},
     **kwargs
-):
+) -> folium.Map:
     """
-    绘制可交互的方言地图.
+    绘制可交互的方言地图
 
     Parameters:
-        latitudes (`numpy.ndarray`): 方言点的纬度数组
-        longitudes (`numpy.ndarray`): 方言点的经度数组
-        values (`numpy.ndarray`): 方言点的属性值，可为连续或离散值
-        m (`folium.Map`): 指定在现有的地图上绘制
-        tips (dict of (str, `numpy.ndarray`)): 鼠标悬停在方言点上时显示的提示，每组元素对应一个标签
+        latitudes: 方言点的纬度数组
+        longitudes: 方言点的经度数组
+        values: 方言点的属性值，可为连续或离散值
+        m: 指定在现有的地图上绘制
+        tips: 鼠标悬停在方言点上时显示的提示，每组元素对应一个标签
         marker_kwds, kwargs: 透传给 `geopandas.GeoDataFrame.explore`
 
     Returns:
-        m (`folium.Map`): 生成的地图对象
+        m: 生成的地图对象
     """
 
+    mask = numpy.isfinite(longitudes) & numpy.isfinite(latitudes)
     location = geopandas.GeoDataFrame(
-        dict(tips, value=values),
-        geometry=geopandas.points_from_xy(longitudes, latitudes)
+        dict([(k, v[mask]) for k, v in tips.items()], value=values[mask]),
+        geometry=geopandas.points_from_xy(longitudes[mask], latitudes[mask])
     )
 
     return location[location['value'].notna()].explore(
