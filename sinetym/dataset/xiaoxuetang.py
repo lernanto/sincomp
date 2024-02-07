@@ -92,7 +92,7 @@ def load_dialect_info(
             .applymap(opencc.OpenCC('t2s').convert))
 
         # 少数方言名称转成更通行的名称
-        info['方言'].replace({'客语': '客家话', '其他土话': '土话'}, inplace=True)
+        info.replace({'方言': {'客语': '客家话', '其他土话': '土话'}}, inplace=True)
 
     if uniform_name:
         info.index.rename('did', inplace=True)

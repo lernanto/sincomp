@@ -13,7 +13,9 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import collections
 import pandas
+import numpy
 import functools
+from sklearn.neighbors import KNeighborsClassifier
 
 
 _ipa = 'a-z\u00c0-\u03ff\u1d00-\u1dbf\u1e00-\u1eff\u207f\u2205\u2c60-\u2c7f' \
@@ -119,6 +121,31 @@ def clean_tone(raw):
     """
 
     return raw.str.replace(r'[^1-5↗]', '', regex=True)
+
+def predict_group(
+    features: pandas.DataFrame | numpy.ndarray,
+    labels: pandas.Series | numpy.ndarray[str]
+) -> pandas.Series | numpy.ndarray[str]:
+    """
+    使用 KNN 算法根据经纬度信息预测方言区
+
+    Parameters:
+        features: 作为预测特征的方言点信息
+        labels: 从原始信息中提取的方言区信息，无法获取方言区的为空字符串
+
+    Returns:
+        predict: 带预测的方言区信息，已知的方言区保持不变，其余使用 KNN 预测
+    """
+
+    predict = labels.copy()
+
+    mask = numpy.all(numpy.isfinite(features), axis=1)
+    predict[mask & (labels == '')] = KNeighborsClassifier().fit(
+        features[mask & (labels != '')],
+        labels[mask & (labels != '')]
+    ).predict(features[mask & (labels == '')])
+
+    return predict
 
 
 class Dataset:
