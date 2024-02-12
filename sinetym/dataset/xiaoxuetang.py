@@ -89,7 +89,7 @@ def load_dialect_info(
     if uniform_info:
         # 把方言信息转换成简体中文
         info.update(info.select_dtypes(object).fillna('') \
-            .applymap(opencc.OpenCC('t2s').convert))
+            .map(opencc.OpenCC('t2s').convert))
 
         # 少数方言名称转成更通行的名称
         info.replace({'方言': {'客语': '客家话', '其他土话': '土话'}}, inplace=True)
