@@ -16,8 +16,32 @@ import pandas
 import numpy
 import opencc
 
-from . import Dataset, clean_initial, clean_final, clean_tone
+from .. import preprocess
+from . import Dataset
 
+
+def load(path: str) -> pandas.DataFrame:
+    """
+    加载指定方言读音数据
+
+    Parameters:
+        path: 要加载的数据文件路径
+
+    Returns:
+        data: 加载的读音数据表
+    """
+
+    data = pandas.read_csv(
+        path,
+        encoding='utf-8',
+        dtype=str
+    )
+
+    # 清洗读音 IPA
+    data['聲母'] = preprocess.clean_ipa(data['聲母']).replace('ø', '∅')
+    data['韻母'] = preprocess.clean_ipa(data['韻母'])
+
+    return data.replace('', numpy.NAN)
 
 def clean_subgroup(subgroup):
     """
@@ -148,19 +172,27 @@ class XiaoxuetangDataset(Dataset):
 
     def __init__(
         self,
-        path=None,
-        uniform_name=True,
-        did_prefix='X',
-        cid_prefix='X',
-        uniform_info=True
+        path: str | None = None,
+        normalize: bool = True,
+        superscript_tone: bool = False,
+        na: str | None = None,
+        empty: str | None = None,
+        uniform_name: bool = True,
+        did_prefix: str | None = 'X',
+        cid_prefix: str | None = 'X',
+        uniform_info: bool = True
     ):
         """
         Parameters:
-            path (str): 数据集所在的基础路径
-            uniform_name (bool): 为真时，把数据列名转为通用名称
-            did_prefix (str): 非空时在方言 ID 添加该前缀
-            cid_prefix (str): 非空时在字 ID 添加该前缀
-            uniform_info (bool): 小学堂原始数据为繁体中文，把方言信息转换成简体中文
+            path: 数据集所在的基础路径
+            normalize: 为真时，进一步清洗读音数据，改写为规范的形式
+            superscript_tone: 为真时，把声调中的普通数字转成上标数字
+            na: 代表缺失的字符串，为 None 时保持原状
+            empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
+            uniform_name: 为真时，把数据列名转为通用名称
+            did_prefix: 非空时在方言 ID 添加该前缀
+            cid_prefix: 非空时在字 ID 添加该前缀
+            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
         """
 
         if path is None:
@@ -181,21 +213,24 @@ class XiaoxuetangDataset(Dataset):
         })
 
         self.path = os.path.join(path, 'data', 'csv', 'dialects')
+        self.normalize = normalize
+        self.superscript_tone = superscript_tone
+        self.na = na
+        self.empty = empty
         self.uniform_name = uniform_name
         self.did_prefix = did_prefix
         self.cid_prefix = cid_prefix
 
     @functools.lru_cache
-    def load(self, *ids, minfreq=2):
+    def load(self, *ids: tuple[str]) -> pandas.DataFrame:
         """
-        加载方言字音数据.
+        加载方言字音数据
 
         Parameters:
-            ids (iterable): 要加载的方言 ID 列表，当为空时，加载路径中所有方言数据
-            minfreq (int): 只保留每个方言中出现频次不小于该值的数据
+            ids: 要加载的方言 ID 列表，当为空时，加载路径中所有方言数据
 
         Returns:
-            data (`pandas.DataFrame`): 方言字音表
+            data: 方言字音表
         """
 
         logging.info(f'loading data from {self.path} ...')
@@ -218,24 +253,10 @@ class XiaoxuetangDataset(Dataset):
             logging.info(f'load {fname}')
 
             try:
-                d = pandas.read_csv(
-                    fname,
-                    encoding='utf-8',
-                    dtype=str,
-                    na_filter=False
-                )
-
+                d = load(fname)
             except Exception as e:
                 logging.error(f'cannot load file {fname}: {e}')
                 continue
-
-            if minfreq > 1:
-                # 删除出现次数少的读音
-                for col in ('聲母', '韻母', '調值', '調類'):
-                    d.loc[
-                        d.groupby(col)[col].transform('count') < minfreq,
-                        col
-                    ] = ''
 
             d.insert(
                 0,
@@ -251,26 +272,40 @@ class XiaoxuetangDataset(Dataset):
 
         data = pandas.concat(data, axis=0, ignore_index=True)
 
-        # 清洗方言字音数据中的录入错误
-        for col, func in (
-            ('聲母', clean_initial),
-            ('韻母', clean_final),
-            ('調值', clean_tone)
-        ):
-            # 一个格子可能记录了多个音，用点分隔，只取第一个
-            raw = data[col].str.split('.').str[0]
-            mapping = raw.value_counts().to_frame(name='count')
-            mapping['clean'] = func(mapping.index)
-            data[col] = raw.map(mapping['clean'])
-
-            for i, r in mapping[mapping.index != mapping['clean']].iterrows():
-                logging.info(f'{i} -> {r["clean"]} {r["count"]}')
-
+        # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
+        data['聲母'] = preprocess.clean_initial(data['聲母'].str.split('.').str[0])
+        data['韻母'] = preprocess.clean_final(data['韻母'].str.split('.').str[0])
+        data['調值'] = preprocess.clean_tone(data['調值'].str.split('.').str[0])
         data['調類'] = data['調類'].str.split('.').str[0] \
             .str.replace(r'[^上中下變陰陽平去入輕聲]', '', regex=True)
 
+        if self.normalize:
+            # 把读音改写为规范的形式
+            data['聲母'] = preprocess.normalize_initial(data['聲母'])
+
+        data.replace(
+            {'聲母': '', '韻母': '', '調值': '', '調類': ''},
+            numpy.NAN,
+            inplace=True
+        )
         # 删除声韵调均为空的记录
-        data = data[(data[['聲母', '韻母', '調值', '調類']] != '').any(axis=1)]
+        data = data[data[['聲母', '韻母', '調值', '調類']].notna().any(axis=1)]
+
+        if self.superscript_tone:
+            # 把声调中的普通数字转成上标数字
+            data['調值'] = preprocess.tone2super(data['調值'])
+
+        # 根据需要替换缺失值及空值
+        if self.na is not None:
+            data[['聲母', '韻母', '調值', '調類']] \
+                = data[['聲母', '韻母', '調值', '調類']].fillna(self.na)
+
+        if self.empty is not None:
+            data.replace(
+                {'聲母': '∅', '韻母': '∅', '調值': '∅'},
+                self.empty,
+                inplace=True
+            )
 
         if self.uniform_name:
             # 替换列名为统一的名称

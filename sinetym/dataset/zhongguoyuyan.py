@@ -15,8 +15,42 @@ import pandas
 import numpy
 import functools
 
-from . import Dataset, clean_initial, clean_final, clean_tone
+from .. import preprocess
+from . import Dataset
 
+
+def load(path: str) -> pandas.DataFrame:
+    """
+    加载指定方言读音数据
+
+    Parameters:
+        path: 要加载的数据文件路径
+
+    Returns:
+        data: 加载的读音数据表
+    """
+
+    data = pandas.read_csv(
+        path,
+        encoding='utf-8',
+        dtype=str
+    )
+
+    # 清洗读音 IPA
+    data['initial'] = preprocess.clean_ipa(data['initial']).replace('ø', '∅')
+    data['finals'] = preprocess.clean_ipa(data['finals'])
+
+    # 部分声调被错误转为日期格式，还原成数字
+    mask = data['tone'].str.fullmatch(r'\d+年\d+月\d+日', na=False)
+    data.loc[mask, 'tone'] = pandas.to_datetime(
+        data.loc[mask, 'tone'],
+        format=r'%Y年%m月%d日'
+    ).dt.dayofyear.astype(str)
+
+    # 个别声调被错误转成浮点数
+    data['tone'] = data['tone'].str.replace(r'\.0$', '', regex=True)
+
+    return data.replace('', numpy.NAN)
 
 def clean_location(location):
     """
@@ -313,17 +347,25 @@ class ZhongguoyuyanDataset(Dataset):
 
     def __init__(
         self,
-        path=None,
-        uniform_name=True,
-        did_prefix='Z',
-        cid_prefix='Z'
+        path: str | None = None,
+        normalize: bool = True,
+        superscript_tone: bool = False,
+        na: str | None = None,
+        empty: str | None = None,
+        uniform_name: bool = True,
+        did_prefix: str | None = 'Z',
+        cid_prefix: str | None = 'Z'
     ):
         """
         Parameters:
-            path (str): 数据集所在的基础路径
-            uniform_name (bool): 为真时，把数据列名转为通用名称
-            did_prefix (str): 非空时在方言 ID 添加该前缀
-            cid_prefix (str): 非空时在字 ID 添加该前缀
+            path: 数据集所在的基础路径
+            normalize: 为真时，进一步清洗读音数据，改写为规范的形式
+            superscript_tone: 为真时，把声调中的普通数字转成上标数字
+            na: 代表缺失数据的字符串，为 None 时保持原状
+            empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
+            uniform_name: 为真时，把数据列名转为通用名称
+            did_prefix: 非空时在方言 ID 添加该前缀
+            cid_prefix: 非空时在字 ID 添加该前缀
         """
 
         if path is None:
@@ -343,22 +385,29 @@ class ZhongguoyuyanDataset(Dataset):
         })
 
         self.path = os.path.join(path, 'csv', 'dialect')
+        self.normalize = normalize
+        self.superscript_tone = superscript_tone
+        self.na = na
+        self.empty = empty
         self.uniform_name = uniform_name
         self.did_prefix = did_prefix
         self.cid_prefix = cid_prefix
 
     @functools.lru_cache
-    def load(self, *ids, variant=None, minfreq=2):
+    def load(
+        self,
+        *ids: tuple[str],
+        variant: str | None = None
+    ) -> pandas.DataFrame:
         """
-        加载方言字音数据.
+        加载方言字音数据
 
         Parameters:
-            ids (iterable): 要加载的方言列表，当为空时，加载路径中所有方言数据
-            variant (str): 要加载的方言变体，为空时加载所有变体，仅当 ids 为空时生效
-            minfreq (int): 只保留每个方言中出现频次不小于该值的数据
+            ids: 要加载的方言列表，当为空时，加载路径中所有方言数据
+            variant: 要加载的方言变体，为空时加载所有变体，仅当 ids 为空时生效
 
         Returns:
-            data (`pandas.DataFrame`): 方言字音表
+            data: 方言字音表
 
         语保数据文件的编号由3部分组成：<方言 ID><发音人编号><内容编号>，其中：
             - 方言 ID：5个字符
@@ -383,24 +432,10 @@ class ZhongguoyuyanDataset(Dataset):
             logging.info(f'load {fname}')
 
             try:
-                d = pandas.read_csv(
-                    fname,
-                    encoding='utf-8',
-                    dtype=str,
-                    na_filter=False
-                )
-
+                d = load(fname)
             except Exception as e:
                 logging.error(f'cannot load file {fname}: {e}')
                 continue
-
-            if minfreq > 1:
-                # 删除出现次数少的读音
-                for col in ('initial', 'finals', 'tone'):
-                    d.loc[
-                        d.groupby(col)[col].transform('count') < minfreq,
-                        col
-                    ] = ''
 
             # 添加方言 ID 及变体 ID
             # 语保提供老年男性、青年男性等不同发音人的数据，后几个字符为其编号
@@ -419,35 +454,38 @@ class ZhongguoyuyanDataset(Dataset):
 
         data = pandas.concat(data, axis=0, ignore_index=True)
 
-        # 清洗方言字音数据中的录入错误
-        # 部分音节切分错误，重新切分
-        data.loc[data['initial'] == 'Ǿŋ', ['initial', 'finals']] = ['∅', 'ŋ']
-        mask = data['initial'] == 'ku'
-        data.loc[mask, 'initial'] = 'k'
-        data.loc[mask, 'finals'] = 'u' + data.loc[mask, 'finals']
+        # 清洗读音数据
+        data['initial'] = preprocess.clean_initial(data['initial'])
+        data['finals'] = preprocess.clean_final(data['finals'])
+        data['tone'] = preprocess.clean_tone(data['tone'])
 
-        # 部分声调被错误转为日期格式，还原成数字
-        mask = data['tone'].str.match(r'^\d+年\d+月\d+日$', na='')
-        data.loc[mask, 'tone'] = pandas.to_datetime(
-            data.loc[mask, 'tone'],
-            format=r'%Y年%m月%d日'
-        ).dt.dayofyear.astype(str)
+        if self.normalize:
+            # 把读音改写为规范的形式
+            data['initial'] = preprocess.normalize_initial(data['initial'])
 
-        for col, func in (
-            ('initial', clean_initial),
-            ('finals', clean_final),
-            ('tone', clean_tone)
-        ):
-            raw = data[col]
-            mapping = raw.value_counts().to_frame(name='count')
-            mapping['clean'] = func(mapping.index)
-            data[col] = raw.map(mapping['clean'])
-
-            for i, r in mapping[mapping.index != mapping['clean']].iterrows():
-                logging.info(f'{i} -> {r["clean"]} {r["count"]}')
-
+        data.replace(
+            {'initial': '', 'finals': '', 'tone': ''},
+            numpy.NAN,
+            inplace=True
+        )
         # 删除声韵调均为空的记录
-        data = data[(data[['initial', 'finals', 'tone']] != '').any(axis=1)]
+        data = data[data[['initial', 'finals', 'tone']].notna().any(axis=1)]
+
+        if self.superscript_tone:
+            # 把声调中的普通数字转成上标数字
+            data['tone'] = preprocess.tone2super(data['tone'])
+
+        # 根据需要替换缺失值及空值
+        if self.na is not None:
+            data[['initial', 'finals', 'tone']] \
+                = data[['initial', 'finals', 'tone']].fillna(self.na)
+
+        if self.empty is not None:
+            data.replace(
+                {'initial': '∅', 'finals': '∅', 'tone': '∅'},
+                self.empty,
+                inplace=True
+            )
 
         if self.uniform_name:
             # 替换列名为统一的名称
