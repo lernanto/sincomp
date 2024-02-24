@@ -2,12 +2,17 @@
 
 """
 预处理方言读音数据的功能函数
+
+基于正则表达式或 CRF 模型切分汉语音节声母、韵母、声调。
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import re
+import numpy
 import pandas
+from sklearn_crfsuite import CRF
 
 
 # 把读音中不规范的字符映射成规范 IPA 字符的映射表
@@ -391,6 +396,124 @@ _TONES = {
 _LETTERS = _CONSONANTS | _VOWELS
 _IPA = _LETTERS | _DIACRITICS | _SUPRASEGMENTALS | _TONES
 
+# IPA 字符对应的类型映射表
+_TYPE_MAP = {}
+for s, t in (
+    (_CONSONANTS, 'consonant'),
+    (_VOWELS, 'vowel'),
+    (_DIACRITICS, 'diacritic'),
+    (_SUPRASEGMENTALS, 'suprasegmental'),
+    (_TONES, 'tone')
+):
+    _TYPE_MAP.update((c, t) for c in s)
+
+# IPA 字符对应的发音方法映射表
+_MANNER_MAP = {
+    'b': 'plosive',
+    'c': 'plosive',
+    'd': 'plosive',
+    'f': 'non-sibilant-fricative',
+    'h': 'non-sibilant-fricative',
+    'j': 'approximant',
+    'k': 'plosive',
+    'l': 'lateral-approximant',
+    'm': 'nasal',
+    'n': 'nasal',
+    'p': 'plosive',
+    'q': 'plosive',
+    'r': 'trill',
+    's': 'sibilant-fricative',
+    't': 'plosive',
+    'v': 'non-sibilant-fricative',
+    'w': 'approximant',
+    'x': 'non-sibilant-fricative',
+    'z': 'sibilant-fricative',
+    'ç': 'non-sibilant-fricative',
+    'ð': 'non-sibilant-fricative',
+    'ħ': 'non-sibilant-fricative',
+    'ŋ': 'nasal',
+    'ƈ': 'implosive',
+    'ƙ': 'implosive',
+    'ƛ': 'lateral-affricate',
+    'ƥ': 'implosive',
+    'ƭ': 'implosive',
+    'ǀ': 'click',
+    'ǁ': 'lateral-click',
+    'ǂ': 'click',
+    'ǃ': 'click',
+    'ȴ': 'lateral-approximant',
+    'ɓ': 'implosive',
+    'ɕ': 'sibilant-fricative',
+    'ɖ': 'plosive',
+    'ɗ': 'implosive',
+    'ɟ': 'plosive',
+    'ɠ': 'implosive',
+    'ɡ': 'plosive',
+    'ɢ': 'plosive',
+    'ɣ': 'non-sibilant-fricative',
+    'ɥ': 'approximant',
+    'ɦ': 'non-sibilant-fricative',
+    'ɧ': 'sibilant-fricative',
+    'ɫ': 'lateral-approximant',
+    'ɬ': 'lateral-fricative',
+    'ɭ': 'lateral-approximant',
+    'ɮ': 'lateral-fricative',
+    'ɰ': 'approximant',
+    'ɱ': 'nasal',
+    'ɲ': 'nasal',
+    'ɳ': 'nasal',
+    'ɴ': 'nasal',
+    'ɸ': 'non-sibilant-fricative',
+    'ɹ': 'approximant',
+    'ɺ': 'lateral-flap',
+    'ɻ': 'approximant',
+    'ɽ': 'flap',
+    'ɾ': 'flap',
+    'ʀ': 'trill',
+    'ʁ': 'non-sibilant-fricative',
+    'ʂ': 'sibilant-fricative',
+    'ʃ': 'sibilant-fricative',
+    'ʄ': 'implosive',
+    'ʇ': 'click',
+    'ʈ': 'plosive',
+    'ʋ': 'approximant',
+    'ʍ': 'approximant',
+    'ʎ': 'lateral-approximant',
+    'ʐ': 'sibilant-fricative',
+    'ʑ': 'sibilant-fricative',
+    'ʒ': 'sibilant-fricative',
+    'ʔ': 'plosive',
+    'ʕ': 'non-sibilant-fricative',
+    'ʖ': 'lateral-click',
+    'ʗ': 'click',
+    'ʘ': 'click',
+    'ʙ': 'trill',
+    'ʛ': 'implosive',
+    'ʜ': 'trill',
+    'ʝ': 'non-sibilant-fricative',
+    'ʞ': 'click',
+    'ʟ': 'lateral-approximant',
+    'ʠ': 'implosive',
+    'ʡ': 'plosive',
+    'ʢ': 'trill',
+    'ʣ': 'sibilant-affricate',
+    'ʤ': 'sibilant-affricate',
+    'ʥ': 'sibilant-affricate',
+    'ʦ': 'sibilant-affricate',
+    'ʧ': 'sibilant-affricate',
+    'ʨ': 'sibilant-affricate',
+    'Φ': 'non-sibilant-fricative',
+    'β': 'non-sibilant-fricative',
+    'θ': 'non-sibilant-fricative',
+    'λ': 'lateral-affricate',
+    'χ': 'non-sibilant-fricative',
+    'ᶑ': 'implosive',
+    '‼': 'click',
+    'ⱱ': 'flap',
+    'ⱳ': 'flap',
+    'ꞎ': 'lateral-fricative',
+}
+
 # 声调从常规数字转换成上标
 _TONE_TO_SUPERSCRIPT = {
     0x0031: 0x00b9, # DIGIT ONE -> SUPERSCRIPT ONE
@@ -521,3 +644,203 @@ def tone2super(origin: pandas.Series) -> pandas.Series:
     """
 
     return origin.str.translate(_TONE_TO_SUPERSCRIPT)
+
+def str2fea(s: str) -> dict[str, str]:
+    """
+    把字符串转化成序列标注模型需要的输入特征序列
+
+    Parameters:
+        s: 原始字符串
+
+    Returns:
+        features: 特征列表，每个元素是一个包含多组特征 key-value 对的字典
+    """
+
+    features = []
+
+    for i in range(len(s)):
+        fea = {}
+        for p in range(-1, 2):
+            pos = i + p
+            if pos < 0:
+                fea[f'{p:+d}:char'] = 'BOS'
+            elif pos >= len(s):
+                fea[f'{p:+d}:char'] = 'EOS'
+            else:
+                c = s[pos]
+                fea.update({
+                    f'{p:+d}:char': c,
+                    f'{p:+d}:type': _TYPE_MAP.get(c, 'other')
+                })
+
+                try:
+                    fea[f'{p:+d}:manner'] = _MANNER_MAP[c]
+                except KeyError:
+                    ...
+
+        features.append(fea)
+
+    return features
+
+def segment(s: str, tags: list[str]) -> tuple[str | None, str | None, str | None]:
+    """
+    根据模型预测的标注序列切分音节
+
+    Parameters:
+        s: 待切分的音节字符串
+        tags: 标注列表，长度和 `s` 相同
+
+    Returns:
+        initial, final, tone: 切分出的声母、韵母、声调字符串，如果切分失败均返回 None
+
+    `tags` 必须遵循 BIOSE 标注形式，即每个标注最多由前后2部分组成，由横杠 - 分隔。
+    前段表示某个元素的开始或结束：
+        - B 表示 `s` 对应位置的字符为某个元素的开始
+        - I 元素的中间
+        - E 元素的结束
+        - S 单个字符单独构成一个元素
+        - O 不属于任何元素的其他字符，这种标签没有后段
+
+    后段表示属于什么元素：
+        - I 声母
+        - F 韵母
+        - T 声调
+    """
+
+    elements = {}
+
+    for c, l in zip(s, tags):
+        pos, _, e = l.partition('-')
+        if pos == 'B' or pos == 'S':
+            elements[e] = c
+        elif pos == 'I' or pos == 'E':
+            elements[e] = elements.get(e, '') + c
+
+    return elements.get('I'), elements.get('F'), elements.get('T')
+
+
+class RegexParser:
+    """
+    基于正则表达式切分方言音节声母、韵母、声调
+    """
+
+    def __init__(self, pattern: str):
+        """
+        Parameters:
+            pattern: 用于切分音节的正则表达式，必须包含3个组，按顺序分别表示声母、韵母、声调
+        """
+
+        self.pattern = pattern
+
+    def parse(self, syllable: str) -> tuple[str | None, str | None, str | None]:
+        """
+        切分单个音节
+
+        Parameters:
+            syllable: 待切分音节字符串
+
+        Returns:
+            initial, final, tone: 切分出的声母、韵母、声调字符串，如果切分失败均返回 None
+        """
+
+        match = re.search(self.pattern, syllable)
+        return (None, None, None) if match is None else match.groups()
+
+    def parse_batch(
+        self,
+        syllables: numpy.ndarray[str] | pandas.Series
+    ) -> numpy.ndarray[str] | pandas.DataFrame:
+        """
+        切分批量音节
+
+        Parameters:
+            syllables: 待切分音节列表
+
+        Returns:
+            elements: 切分结果列表，行数和 `syllables` 相同，列依次为声母、韵母、声调
+        """
+
+        elements = pandas.Series(syllables).str.extract(self.pattern)
+        if isinstance(syllables, pandas.Series):
+            elements.columns = ['initial', 'final', 'tone']
+        else:
+            elements = elements.values
+
+        return elements
+
+    def __call__(
+        self,
+        input: str | numpy.ndarray[str] | pandas.Series
+    ) -> tuple[str, str, str] | numpy.ndarray[str] | pandas.DataFrame:
+        return self.parse(input) if isinstance(input, str) \
+            else self.parse_batch(input)
+
+class CRFParser:
+    """
+    基于 CRF 序列标注模型切分方言音节声母、韵母、声调
+    """
+
+    def __init__(self, path: str):
+        """
+        Parameters:
+            path: 模型文件路径
+        """
+
+        self.model = CRF(model_filename=path)
+
+    def parse(self, syllable: str) -> tuple[str | None, str | None, str | None]:
+        """
+        切分单个音节
+
+        Parameters:
+            syllable: 待切分音节字符串
+
+        Returns:
+            initial, final, tone: 切分出的声母、韵母、声调字符串，如果切分失败均返回 None
+        """
+
+        tags = self.model.predict_single(syllable)
+        return segment(syllable, tags)
+
+    def parse_batch(
+        self,
+        syllables: numpy.ndarray[str] | pandas.Series
+    ) -> numpy.ndarray[str] | pandas.DataFrame:
+        """
+        切分批量音节
+
+        Parameters:
+            syllables: 待切分音节列表
+
+        Returns:
+            elements: 切分结果列表，行数和 `syllables` 相同，列依次为声母、韵母、声调
+        """
+
+        tags = self.model.predict(
+            syllables.map(str2fea) if isinstance(syllables, pandas.Series) \
+                else (str2fea(s) for s in syllables)
+        )
+        elements = numpy.asarray([segment(s, t) for s, t in zip(syllables, tags)])
+
+        if isinstance(syllables, pandas.Series):
+            elements = pandas.DataFrame(
+                elements,
+                index=syllables.index,
+                columns=['initial', 'final', 'tone']
+            )
+
+        return elements
+
+    def __call__(
+        self,
+        input: str | numpy.ndarray[str] | pandas.Series
+    ) -> tuple[str, str, str] | numpy.ndarray[str] | pandas.DataFrame:
+        return self.parse(input) if isinstance(input, str) else self.parse_batch(input)
+
+
+# 默认的音节切分函数
+parse = RegexParser(
+    f'([{"".join(_DIACRITICS)}]*[{"".join(_CONSONANTS)}][{"".join(_CONSONANTS)}{"".join(_DIACRITICS)}]*|)'
+    f'([{"".join(_DIACRITICS)}]*[{"".join(_LETTERS)}][{"".join(_LETTERS | _DIACRITICS | _SUPRASEGMENTALS)}]*)'
+    f'([{"".join(_TONES)}]*|)'
+)
