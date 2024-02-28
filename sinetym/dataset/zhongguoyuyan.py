@@ -15,8 +15,8 @@ import pandas
 import numpy
 import functools
 
-from .. import preprocess
 from . import Dataset
+from .. import preprocess
 
 
 def load(path: str) -> pandas.DataFrame:
@@ -36,9 +36,12 @@ def load(path: str) -> pandas.DataFrame:
         dtype=str
     )
 
-    # 清洗读音 IPA
-    data['initial'] = preprocess.clean_ipa(data['initial']).replace('ø', '∅')
-    data['finals'] = preprocess.clean_ipa(data['finals'])
+    # 清洗数据集特有的错误
+    if os.path.basename(path)[:5] == '02135':
+        data['finals'] = data['finals'].str.translate({
+            0xf175: 0x0303, # -> COMBINING TILDE
+            0xf179: 0x0303, # -> COMBINING TILDE
+        })
 
     # 部分声调被错误转为日期格式，还原成数字
     mask = data['tone'].str.fullmatch(r'\d+年\d+月\d+日', na=False)
@@ -49,6 +52,15 @@ def load(path: str) -> pandas.DataFrame:
 
     # 个别声调被错误转成浮点数
     data['tone'] = data['tone'].str.replace(r'\.0$', '', regex=True)
+
+    # 清洗读音 IPA
+    data['initial'] = preprocess.clean_ipa(data['initial']).str.translate({
+        0x00a4: 0x0272, # CURRENCY SIGN -> LATIN SMALL LETTER N WITH LEFT HOOK
+        0x00f8: 0x2205, # LATIN SMALL LETTER O WITH STROKE -> EMPTY SET
+    })
+    data['finals'] = preprocess.clean_ipa(data['finals']).str.translate({
+        0xf20d: 0x0264, # -> LATIN SMALL LETTER RAMS HORN
+    })
 
     return data.replace('', numpy.NAN)
 
@@ -347,7 +359,7 @@ class ZhongguoyuyanDataset(Dataset):
 
     def __init__(
         self,
-        path: str | None = None,
+        path: str,
         normalize: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
@@ -367,9 +379,6 @@ class ZhongguoyuyanDataset(Dataset):
             did_prefix: 非空时在方言 ID 添加该前缀
             cid_prefix: 非空时在字 ID 添加该前缀
         """
-
-        if path is None:
-            raise ValueError('Empty data path.')
 
         super().__init__('zhongguoyuyan', metadata={
             'dialect_info': load_dialect_info(
@@ -469,7 +478,11 @@ class ZhongguoyuyanDataset(Dataset):
             inplace=True
         )
         # 删除声韵调均为空的记录
-        data = data[data[['initial', 'finals', 'tone']].notna().any(axis=1)]
+        data.dropna(
+            how='all',
+            subset=['initial', 'finals', 'tone'],
+            inplace=True
+        )
 
         if self.superscript_tone:
             # 把声调中的普通数字转成上标数字

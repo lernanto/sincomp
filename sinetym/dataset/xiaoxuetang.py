@@ -16,8 +16,8 @@ import pandas
 import numpy
 import opencc
 
-from .. import preprocess
 from . import Dataset
+from .. import preprocess
 
 
 def load(path: str) -> pandas.DataFrame:
@@ -37,9 +37,23 @@ def load(path: str) -> pandas.DataFrame:
         dtype=str
     )
 
+    # 清洗数据集特有的错误
+    id = os.path.basename(path).partition('.')[0]
+    if id == '118':
+        data['韻母'] = data['韻母'].str.translate({
+            0x003f: 0x028f, # QUESTION MARK -> LATIN LETTER SMALL CAPITAL Y
+        })
+    elif id == '178':
+        data['聲母'] = data['聲母'].str.translate({
+            0x0237: 0x0255, # LATIN SMALL LETTER DOTLESS J -> LATIN SMALL LETTER C WITH CURL
+        })
+
     # 清洗读音 IPA
-    data['聲母'] = preprocess.clean_ipa(data['聲母']).replace('ø', '∅')
+    data['聲母'] = preprocess.clean_ipa(data['聲母'])
     data['韻母'] = preprocess.clean_ipa(data['韻母'])
+    data['調值'] = data['調值'].str.translate({
+        0x0030: 0x2205, # DIGIT ZERO -> EMPTY SET
+    })
 
     return data.replace('', numpy.NAN)
 
@@ -172,7 +186,7 @@ class XiaoxuetangDataset(Dataset):
 
     def __init__(
         self,
-        path: str | None = None,
+        path: str,
         normalize: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
@@ -194,9 +208,6 @@ class XiaoxuetangDataset(Dataset):
             cid_prefix: 非空时在字 ID 添加该前缀
             uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
         """
-
-        if path is None:
-            raise ValueError('Empty data path.')
 
         super().__init__('xiaoxuetang', metadata={
             'dialect_info': load_dialect_info(
@@ -289,7 +300,7 @@ class XiaoxuetangDataset(Dataset):
             inplace=True
         )
         # 删除声韵调均为空的记录
-        data = data[data[['聲母', '韻母', '調值', '調類']].notna().any(axis=1)]
+        data.dropna(how='all', subset=['聲母', '韻母', '調值'], inplace=True)
 
         if self.superscript_tone:
             # 把声调中的普通数字转成上标数字
