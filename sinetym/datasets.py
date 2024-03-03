@@ -411,6 +411,7 @@ class MCPDictDataset(Dataset):
             header=None,
             names=['漢字', '音標', '解釋'],
             dtype=str,
+            na_values={'漢字': '\u25a1'},   # 方框代表有音无字
             comment='#',
             encoding='utf-8'
         )
