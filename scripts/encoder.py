@@ -74,7 +74,7 @@ def load_datasets(config):
 
         data.append(dataset)
 
-    data = sinetym.dataset.concat(*data)
+    data = sinetym.datasets.concat(*data)
 
     logging.info(f'done, {data.shape[0]} data loaded.')
     return data
@@ -403,12 +403,12 @@ def benchmark(config, data):
     #   - 包含测试方言 ID 和测试字 ID
     random_state = np.random.RandomState(37511)
     train_dialect, test_dialect = sinetym.auxiliary.split_data(
-        data[config['columns']['dialect'][0]],
+        data[config['columns']['dialect']].apply(tuple, axis=1).map(hash),
         return_mask=True,
         random_state=random_state
     )
     train_input, test_input = sinetym.auxiliary.split_data(
-        data[config['columns']['input'][0]],
+        data[config['columns']['input']].apply(tuple, axis=1).map(hash),
         return_mask=True,
         random_state=random_state
     )
