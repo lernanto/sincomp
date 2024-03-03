@@ -906,32 +906,27 @@ class ZhongguoyuyanDataset(Dataset):
     def __init__(
         self,
         path: str,
+        uniform_name: bool = True,
+        did_prefix: str | None = 'Z',
+        cid_prefix: str | None = 'Z',
         normalize: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
-        empty: str | None = None,
-        uniform_name: bool = True,
-        did_prefix: str | None = 'Z',
-        cid_prefix: str | None = 'Z'
+        empty: str | None = None
     ):
         """
         Parameters:
             path: 数据集所在的基础路径
+            uniform_name: 为真时，把数据列名转为通用名称
+            did_prefix: 非空时在方言 ID 添加该前缀
+            cid_prefix: 非空时在字 ID 添加该前缀
             normalize: 为真时，进一步清洗读音数据，改写为规范的形式
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失数据的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
-            uniform_name: 为真时，把数据列名转为通用名称
-            did_prefix: 非空时在方言 ID 添加该前缀
-            cid_prefix: 非空时在字 ID 添加该前缀
         """
 
         super().__init__('zhongguoyuyan', metadata={
-            'dialect_info': self.load_dialect_info(
-                os.path.join(path, 'csv', 'location.csv'),
-                did_prefix,
-                uniform_name
-            ),
             'char_info': self.load_char_info(
                 os.path.join(path, 'csv', 'words.csv'),
                 cid_prefix,
@@ -939,14 +934,18 @@ class ZhongguoyuyanDataset(Dataset):
             )
         })
 
-        self._path = os.path.join(path, 'csv', 'dialect')
+        self._path = path
+        self._uniform_name = uniform_name
+        self._did_prefix = did_prefix
+        self._cid_prefix = cid_prefix
         self._normalize = normalize
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
-        self._uniform_name = uniform_name
-        self._did_prefix = did_prefix
-        self._cid_prefix = cid_prefix
+
+        info = self.load_dialect_info()
+        self._dialect_info = info
+        self.metadata['dialect_info'] = info
 
     @classmethod
     def clean_location(cls, location: pandas.DataFrame) -> pandas.DataFrame:
@@ -1041,7 +1040,7 @@ class ZhongguoyuyanDataset(Dataset):
         return group.replace('', numpy.NAN)
 
     @classmethod
-    def get_subgroup(cls, location: pandas.DataFrame) -> pandas.Series:
+    def get_subgroup(self, location: pandas.DataFrame) -> pandas.Series:
         """
         从方言点信息中提取所属子分区
 
@@ -1105,7 +1104,7 @@ class ZhongguoyuyanDataset(Dataset):
         return subgroup.replace('', numpy.NAN)
 
     @classmethod
-    def get_cluster(cls, location: pandas.DataFrame) -> pandas.Series:
+    def get_cluster(self, location: pandas.DataFrame) -> pandas.Series:
         """
         从方言点信息中提取所属方言片
 
@@ -1150,7 +1149,7 @@ class ZhongguoyuyanDataset(Dataset):
         return cluster
 
     @classmethod
-    def get_subcluster(cls, location: pandas.DataFrame) -> pandas.Series:
+    def get_subcluster(self, location: pandas.DataFrame) -> pandas.Series:
         """
         从方言点信息中提取所属方言小片
 
@@ -1190,31 +1189,24 @@ class ZhongguoyuyanDataset(Dataset):
 
         return subcluster
 
-    @classmethod
-    def load_dialect_info(
-        cls,
-        fname: str,
-        did_prefix: str | None = None,
-        uniform_name: bool = False
-    ) -> pandas.DataFrame:
+    def load_dialect_info(self) -> pandas.DataFrame:
         """
         读取方言点信息
 
         使用规则归一化原始数据中的市县名称，以及方言大区、子区名称等信息。
 
-        Parameters:
-            fname: 方言信息文件路径
-            uniform_name: 为真时，把数据列名转为通用名称
-            did_prefix: 非空时在方言 ID 添加该前缀
-
         Returns:
             info: 方言点信息数据表
         """
 
-        logging.info(f'loading dialect information from {fname}...')
-        info = cls.clean_location(
-            pandas.read_csv(fname, index_col=0)
+        info = pandas.read_csv(
+            os.path.join(self._path, 'csv', 'location.csv'),
+            index_col=0
         )
+        info['path'] = os.path.join(self._path, 'csv', 'dialect') \
+            + os.sep + info.index + 'mb01dz.csv'
+
+        info = self.clean_location(info)
 
         # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
         info['spot'] = info['city'].where(
@@ -1224,10 +1216,10 @@ class ZhongguoyuyanDataset(Dataset):
         info['spot'].where(info['spot'] != '', info['province'], inplace=True)
 
         # 清洗方言区、片、小片名称
-        info['group'] = cls.get_group(info)
-        info['subgroup'] = cls.get_subgroup(info)
-        info['cluster'] = cls.get_cluster(info)
-        info['subcluster'] = cls.get_subcluster(info)
+        info['group'] = self.get_group(info)
+        info['subgroup'] = self.get_subgroup(info)
+        info['cluster'] = self.get_cluster(info)
+        info['subcluster'] = self.get_subcluster(info)
 
         # 个别官话方言点标注的大区和子区不一致，去除
         info.loc[
@@ -1239,10 +1231,10 @@ class ZhongguoyuyanDataset(Dataset):
         info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.NAN
         info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.NAN
 
-        if did_prefix is not None:
-            info.set_index(did_prefix + info.index, inplace=True)
+        if self._did_prefix is not None:
+            info.set_index(self._did_prefix + info.index, inplace=True)
 
-        if uniform_name:
+        if self._uniform_name:
             info.index.rename('did', inplace=True)
 
         logging.info(f'done, {info.shape[0]} dialects loaded.')
@@ -1327,15 +1319,13 @@ class ZhongguoyuyanDataset(Dataset):
     @functools.lru_cache
     def load_data(
         self,
-        *ids: tuple[str],
-        variant: str | None = None
+        *ids: tuple[str]
     ) -> pandas.DataFrame:
         """
         加载方言字音数据
 
         Parameters:
             ids: 要加载的方言列表，当为空时，加载路径中所有方言数据
-            variant: 要加载的方言变体，为空时加载所有变体，仅当 ids 为空时生效
 
         Returns:
             data: 方言字音表
@@ -1346,36 +1336,17 @@ class ZhongguoyuyanDataset(Dataset):
             - 内容编号：2个字符，dz 代表单字音
         """
 
-        logging.info(f'loading data from {self._path} ...')
-
-        if len(ids) == 0:
-            ids = sorted([e.name[:9] for e in os.scandir(self._path) \
-                if e.is_file() and e.name.endswith('dz.csv') \
-                and (variant is None or e.name[5:9] == variant)])
-
-            if len(ids) == 0:
-                logging.error(f'no data file in {self._path}!')
-                return None
-
+        paths = self._dialect_info['path'] if len(ids) == 0 \
+            else self._dialect_info.loc[pandas.Index(ids), 'path']
         data = []
-        for id in ids:
-            fname = os.path.join(self._path, id + 'dz.csv')
-            logging.info(f'load {fname}')
-
+        for id, p in paths.items():
             try:
-                d = self.load(fname)
+                d = self.load(p)
             except Exception as e:
-                logging.error(f'cannot load file {fname}: {e}')
+                logging.error(f'cannot load file {p}: {e}')
                 continue
 
-            # 添加方言 ID 及变体 ID
-            # 语保提供老年男性、青年男性等不同发音人的数据，后几个字符为其编号
-            d.insert(
-                0,
-                'did',
-                id[:5] if self._did_prefix is None else self._did_prefix + id[:5]
-            )
-            d.insert(1, 'variant', id[5:9])
+            d.insert(0, 'did', id)
             data.append(d)
 
         logging.info(f'done, {len(data)} data files loaded.')
@@ -1443,15 +1414,13 @@ class ZhongguoyuyanDataset(Dataset):
 
     def filter(
         self,
-        id: str | list[str] | None = None,
-        variant: str | None = None
+        id: str | list[str] | None = None
     ) -> Dataset:
         """
         筛选部分数据
 
         Paramters:
             id: 保留的方言记录 ID
-            variant: 保留的变体代号，仅当未指定 id 时生效
 
         Returns:
             data: 符合条件的数据
@@ -1459,12 +1428,15 @@ class ZhongguoyuyanDataset(Dataset):
 
         if id is None:
             id = ()
-        elif isinstance(id, str):
-            id = (id,)
+        else:
+            id = sorted(({id} if isinstance(id, str) else set(id)) \
+                & set(self._dialect_info.index))
+            if len(id) == 0:
+                return Dataset(self.name)
 
         return Dataset(
             self.name,
-            data=self.load_data(*id, variant=variant),
+            data=self.load_data(*id),
             metadata=self.metadata
         )
 
