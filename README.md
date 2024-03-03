@@ -2,16 +2,17 @@
 
 这是一个自动化处理汉语方言读音数据的工具集，目的是方便方言读音数据的清洗、对比以及辅助祖语重构。
 
-当前支持处理小学堂和语保2个方言读音数据集，以及提供一系列针对以上数据集度量、建模、作图的工具。
+当前支持处理汉字音典、小学堂、语保等方言读音数据集，以及提供一系列针对以上数据集度量、建模、作图的工具。
 
 ## 使用方式
 
-本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，而是通过指定路径加载预先准备好的数据。小学堂的数据可以从下文所述单独的仓库获取，语保的数据需要使用者自行获取，并使用本库提供的工具整理成要求的格式。
+本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，而是通过指定路径加载预先准备好的数据。汉字音典和小学堂的数据可以从下文所述的仓库获取，语保的数据需要使用者自行获取，并使用本库提供的工具整理成要求的格式。
 
 ### 获取数据
 
-在 Linux 终端运行如下命令获取小学堂数据：
+在 Linux 终端运行如下命令获取汉字音典及小学堂数据：
 ```shell
+git clone https://github.com/osfans/MCPDict $HOME/MCPDict
 git clone https://github.com/lernanto/xiaoxuetang $HOME/xiaoxuetang
 ```
 
@@ -23,6 +24,7 @@ git clone https://github.com/lernanto/xiaoxuetang $HOME/xiaoxuetang
 | 环境变量 | 说明 |
 |:-|:-|
 | PYTHONPATH | 包含本仓库的根路径 |
+| MCPDICT_HOME | 指向汉字音典数据集的根路径 |
 | XIAOXUETANG_HOME | 指向小学堂数据集的根路径 |
 | ZHONGGUOYUYAN_HOME | 指向语保数据集的根路径 |
 
@@ -31,6 +33,7 @@ git clone https://github.com/lernanto/xiaoxuetang $HOME/xiaoxuetang
 如下命令为在 Linux 终端设置上述环境变量的示例：
 ```shell
 export PYTHONPATH=$PYTHONPATH:$HOME/sinetym
+export MCPDICT_HOME=$HOME/mcpdict
 export XIAOXUETANG_HOME=$HOME/xiaoxuetang
 export ZHONGGUOYUYAN_HOME=$HOME/zhongguoyuyan
 ```
@@ -40,6 +43,7 @@ export ZHONGGUOYUYAN_HOME=$HOME/zhongguoyuyan
 类似地，在 Windows PowerShell 运行：
 ```powershell
 $env:PYTHONPATH = "$env:PYTHONPATH;$HOME\sinetym"
+$env:MCPDICT_HOME ="$HOME\mcpdict"
 $env:XIAOXUETANG_HOME = "$HOME\xiaoxuetang"
 $env:ZHONGGUOYUYAN_HOME = "$HOME\zhongguoyuyan"
 ```
@@ -69,11 +73,12 @@ print(sinetym.datasets.xiaoxuetang.metadata['dialect_info'][:10])
 | plot | 提供制作方言统计图、方言地图等的工具函数 |
 
 其中部分功能的应用在如下几篇文章中有简要的介绍：
-- [基于方言之间的预测相似度进行方言聚类](https://zhuanlan.zhihu.com/p/464735745)。
-- [什么是官话？——兼及方言分类的概率模型](https://zhuanlan.zhihu.com/p/629007299)。
-- [基于自编码器的方言祖语音系嵌入](https://zhuanlan.zhihu.com/p/349689590)。
+- [基于方言之间的预测相似度进行方言聚类](https://zhuanlan.zhihu.com/p/464735745)
+- [什么是官话？——兼及方言分类的概率模型](https://zhuanlan.zhihu.com/p/629007299)
+- [基于自编码器的方言祖语音系嵌入](https://zhuanlan.zhihu.com/p/349689590)
+- [使用双线性编码建模多方言音系](https://zhuanlan.zhihu.com/p/659731592)
 
-更详细的使用方法详见各模块代码注释。
+更详细的使用方法见各模块代码注释。
 
 ## 数据集
 
@@ -81,15 +86,31 @@ print(sinetym.datasets.xiaoxuetang.metadata['dialect_info'][:10])
 
 | 代号 | 说明 | 简称 | 链接 |
 |:-|:-|:-|:-|
+| mcpdict | 汉字音典方言汉字读音 | 汉字音典 | [汉字音典](https://mcpdict.sourceforge.io/) |
 | xiaoxuetang | 小学堂汉字古今音资料库现代音 | 小学堂 | [小学堂汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccr) |
 | zhongguoyuyan | 中国语言资源保护工程汉语方言单字音 | 语保 | [中国语言资源保护工程采录展示平台](https://zhongguoyuyan.cn/) |
 
-其中小学堂提供所有方言读音数据下载，对于这部分数据声明：
-> ……供獨立下載之聲韻資料檔案，視為事實性紀錄之整理，編輯者為其指認採「公眾領域標章（PDM，Public Domain Mark)」進行發布，在法律許可的範圍內，該等事實性勘驗記錄不復受到著作權利的保障，使用者得將其視為無著作權利限制之資訊，使用上毋須另洽編輯者申請著作權及著作相關權利之授權。
+如下为以上数据集的版权声明：
 
-据此，我整理了一份和本库相配套的小学堂方言读音数据，存放在[这个仓库](https://github.com/lernanto/xiaoxuetang)。克隆该仓库至本地目录，本工具集的大部分功能函数即能直接处理其中 CSV 格式的数据。
+### 汉字音典
 
-语保的数据根据其法律声明，版权归发布内容的用户所有，同时中国语言资源保护工程采录展示平台享有在全球范围内的免费、不可撤销的无限期的并且可转让的非独家使用权。为此，本库仅提供一套额外的工具，用于把从上述语保网站可以访问到的数据转为本工具集可以处理的格式。
+汉字音典为开源的汉字读音查询工具，并随代码发布了互联网方言爱好者收集整理的多种历史和方言读音数据。数据随代码以 MIT 许可在 [GitHub](https://github.com/osfans/MCPDict) 发布，详情见其[版权声明](https://github.com/osfans/MCPDict?tab=License-1-ov-file)。
+
+### 小学堂
+
+小学堂在网站上提供所有方言读音数据下载，对于这部分数据声明：
+> ……提供獨立下載之聲韻資料檔案，視為事實性紀錄之整理，編輯者為其指認採「公眾領域標章（PDM，Public Domain Mark)」進行發布，在法律許可的範圍內，該等事實性勘驗記錄不復受到著作權利的保障，使用者得將其視為無著作權利限制之資訊，使用上毋須另洽編輯者申請著作權及著作相關權利之授權。
+
+详情见[汉字古今音资料库说明](https://xiaoxue.iis.sinica.edu.tw/ccrdata/)的“授权方式”节。
+
+### 语保
+
+语保的数据根据其版权声明
+> ……视用户为其在中国语言资源保护工程采录展示平台网站上载或发布的内容的版权所有人。用户在中国语言资源保护工程采录展示平台上载或发布内容即视为其同意授予中国语言资源保护工程采录展示平台所有上述内容的在全球范围内的免费、不可撤销的无限期的并且可转让的非独家使用权许可……
+
+详情见其[版权声明](https://zhongguoyuyan.cn/declaration)。
+
+为此，本库仅提供一套额外的工具，用于把从上述语保网站可以访问到的数据转为本工具集可以处理的格式。
 
 ## 依赖
 
