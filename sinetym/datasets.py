@@ -5,7 +5,7 @@
 
 当前支持读取：
     - 汉字音典的现代方言数据，见：https://mcpdict.sourceforge.io/
-    - 小学堂汉字古今音资料库的现代方言数据，见：https://xiaoxue.iis.sinica.edu.tw/ccr
+    - 小学堂汉字古今音资料库的现代方言数据，见：https://xiaoxue.iis.sinica.edu.tw/ccrdata/
     - 中国语言资源保护工程采录展示平台的方言数据，见：https://zhongguoyuyan.cn/
 """
 
@@ -18,7 +18,6 @@ import pandas
 import numpy
 import json
 import re
-import functools
 import opencc
 from sklearn.neighbors import KNeighborsClassifier
 
@@ -54,32 +53,25 @@ def predict_group(
 class Dataset:
     """数据集基类"""
 
-    def __init__(
-        self,
-        name: str,
-        data: pandas.DataFrame | None = None,
-        metadata: dict = dict()
-    ):
+    def __init__(self, data: pandas.DataFrame | None = None):
         """
         Parameters:
-            name: 数据集名称
             data: 方言字音数据表
-            metadata: 数据集元信息
         """
 
-        self.name = name
         self._data = data
-        self.metadata = metadata
 
     @property
     def data(self) -> pandas.DataFrame | None:
         return self._data
 
     def __iter__(self):
-        return iter(()) if self.data is None else iter(self.data)
+        data = self.data
+        return iter(()) if data is None else iter(data)
 
     def __getitem__(self, key):
-        return None if self.data is None else self.data.__getitem__(key)
+        data = self.data
+        return None if data is None else data.__getitem__(key)
 
     def __getattr__(self, name):
         if name.startswith('_'):
@@ -89,36 +81,241 @@ class Dataset:
                 obj=self
             ))
 
-        return None if self.data is None else self.data.__getattr__(name)
+        data = self.data
+        return None if data is None else data.__getattr__(name)
 
-    def __repr__(self):
-        return f'{type(self).__name__}({repr(self.name)})'
 
-    def __str__(self):
-        return self.name
-
-def concat(*datasets: list[Dataset | pandas.DataFrame]) -> Dataset:
+class FileDataset(Dataset):
     """
-    把多个数据集按顺序拼接为一个
+    基于文件的数据集
 
-    Parameters:
-        datasets: 待拼接的数据集
-
-    Returns:
-        output: 拼接后的数据集
+    数据以 CSV 形式存放在一系列文件中，每个文件是一个方言点。
     """
 
-    return Dataset(
-        'dataset',
-        data=pandas.concat(
-            [d.data if isinstance(d, Dataset) else d for d in datasets],
+    def __init__(self, file_map: pandas.Series | None = None):
+        """
+        Parameters:
+            file_map: 方言 ID 到数据文件路径的映射表
+        """
+
+        self._file_map = file_map
+
+    @classmethod
+    def load_file(cls, path: str) -> pandas.DataFrame:
+        """
+        从文件加载单个方言点的数据
+
+        Parameters:
+            path: 方言数据文件路径
+
+        Returns:
+            data: 方言读音数据表
+        """
+
+        return pandas.read_csv(path, dtype=str, encoding='utf-8')
+
+    def load(self, did: str) -> pandas.DataFrame:
+        """
+        加载指定方言点的数据
+
+        使用独立函数的原因是方便重载加入缓存。
+
+        Parameters:
+            did: 要加载的方言 ID
+
+        Returns:
+            data: 方言读音数据表
+        """
+
+        return self.load_file(self._file_map[did])
+
+    @property
+    def data(self) -> pandas.DataFrame:
+        """
+        返回所有方言读音数据
+
+        Returns:
+            output: 合并所有文件数据的长表
+        """
+
+        output = pandas.concat(
+            [self.load(did) for did in self._file_map.index],
             axis=0,
             ignore_index=True
         )
-    )
+
+        logging.debug(
+            f'{self._file_map.shape[0]} dialects '
+            f'{output.shape[0]} records loaded.'
+        )
+        return output
+
+    def filter(self, idx) -> Dataset:
+        """
+        从数据集中筛选满足条件的方言
+
+        只支持针对方言筛选。
+
+        Parameters:
+            idx: 任何 pandas.Series 接受的索引或筛选条件
+
+        Returns:
+            output: 筛选后的数据集，只包含满足条件的方言
+        """
+
+        return FileDataset(self._file_map.loc[idx])
+
+    def sample(self, *args, **kwargs) -> Dataset:
+        """
+        从数据集随机抽样部分方言
+
+        Parameters:
+            args, kwargs: 透传给 pandas.Serires.sample 用于抽样方言
+
+        Returns:
+            output: 包含抽样方言的数据集
+        """
+
+        return FileDataset(self._file_map.sample(*args, **kwargs))
+
+    def shuffle(
+        self,
+        random_state: numpy.random.RandomState | int | None = None
+    ) -> Dataset:
+        """
+        随机打乱数据集中方言的顺序
+
+        Parameters:
+            random_state: 用于控制打乱结果
+
+        Returns:
+            output: 内容相同的数据集，但方言的顺序随机打乱了
+        """
+
+        return FileDataset(self._file_map.sample(
+            frac=1.0,
+            random_state=random_state
+        ))
+
+    def append(self, other: Dataset) -> Dataset:
+        """
+        把另一个数据集追加到本数据集后面
+
+        Parameters:
+            other: 另一个数据集，必须也是 FileDataset
+
+        Returns:
+            output: 合并了两个数据集文件的新数据集
+        """
+
+        return FileDataset(pandas.concat([self._file_map, other._file_map]))
+
+    def __len__(self) -> int:
+        """
+        返回数据集包含的方言数
+        """
+
+        return self._file_map.shape[0]
+
+    def __add__(self, other: Dataset) -> Dataset:
+        return self.append(other)
 
 
-class MCPDictDataset(Dataset):
+class FileCacheDataset(FileDataset):
+    """
+    使用本地文件作为缓存的数据集
+
+    首次加载一个方言数据时，会加载原始数据并处理成 FileDataset 能处理的格式，保存在本地缓存文件。
+    以后加载会加载缓存文件，以加快加载速度。
+
+    TODO: 对 FileCacheDataset 执行数据集操作如 sample、append 的结果会退化成 FileDataset，
+    因此访问结果数据时会直接读取缓存文件，而不管该文件是否存在。为避免这种情况需要增加复杂的处理逻辑，
+    为保持代码简洁，不特殊处理，而是由使用者保证在执行上述操作前生成所有缓存文件。
+    """
+
+    def __init__(self, cache_dir: str, dids: list[str]):
+        """
+        Parameters:
+            cache_dir: 缓存文件所在目录路径
+            dids: 数据集包含的所有方言 ID 列表
+        """
+
+        super().__init__(
+            cache_dir + os.sep + pandas.Series(dids, index=dids)
+        )
+        self._cache_dir = cache_dir
+
+    def load(self, did: str) -> pandas.DataFrame:
+        """
+        从缓存或原始数据加载一个方言的数据
+
+        Parameter:
+            did: 要加载的方言 ID
+
+        Returns:
+            data: 加载的方言数据表
+
+        如果已存在缓存文件，直接从缓存文件读取数据返回，否则从原始数据加载并写入缓存文件。
+        由于原始数据不一定按单个方言存储，因此可能创建多个缓存文件。
+        """
+
+        # 如果已存在缓存文件，直接读取
+        if os.path.isfile(self._file_map[did]):
+            logging.info(f'using cache file {self._file_map[did]}.')
+            return super().load_file(self._file_map[did])
+
+        # 不存在缓存文件，从原始数据读取
+        # 因为原始数据可能一次不止加载一个方言，因此返回的是方言 ID 和数据表的列表
+        data_list = self.load_data(did)
+        # 写入文件缓存
+        for i, d in data_list:
+            if not os.path.isfile(self._file_map[i]):
+                logging.info(f'create cache file {self._file_map[i]}.')
+                os.makedirs(self._cache_dir, exist_ok=True)
+                d.to_csv(
+                    self._file_map[i],
+                    index=False,
+                    encoding='utf-8',
+                    lineterminator='\n'
+                )
+
+            if i == did:
+                data = d
+
+        return data
+
+    def clear_cache(self):
+        """
+        删除所有缓存文件
+        """
+
+        for path in self._file_map:
+            try:
+                logging.info(f'remove cache file {path}.')
+                os.remove(path)
+            except FileNotFoundError:
+                ...
+            except OSError as e:
+                logging.warning(e)
+
+        # 删除缓存目录
+        try:
+            logging.info(f'remove cache directory {self._cache_dir}.')
+            os.rmdir(self._cache_dir)
+        except OSError as e:
+            logging.warning(e)
+
+    def refresh(self):
+        """
+        强制更新全部缓存文件
+        """
+
+        self.clear_cache()
+        for did in self._file_map.index:
+            self.load(did)
+
+
+class MCPDictDataset(FileCacheDataset):
     """
     汉字音典方言数据集
 
@@ -127,42 +324,40 @@ class MCPDictDataset(Dataset):
 
     def __init__(
         self,
+        cache_dir: str,
         path: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
         did_prefix: str | None = 'M',
         cid_prefix: str | None = 'M',
-        normalize: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = '∅'
     ):
         """
         Parameters:
+            cache_dir: 缓存文件所在目录路径
             path: 数据集所在的基础路径
             uniform_name: 为真时，把数据列名转为通用名称
             uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
             did_prefix: 非空时在方言 ID 添加该前缀
             cid_prefix: 非空时在字 ID 添加该前缀
-            normalize: 为真时，进一步清洗读音数据，改写为规范的形式
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
         """
-
-        super().__init__('mcpdict')
 
         self._path = os.path.join(path, 'tools', 'tables', 'output')
         self._uniform_name = uniform_name
         self._uniform_info = uniform_info
         self._did_prefix = did_prefix
         self._cid_prefix = cid_prefix
-        self._normalize = normalize
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
 
         info = self.load_dialect_info()
+        super().__init__(cache_dir, info.index)
 
         # 从方言详情提取声调调值和调类的映射表
         self._tone_map = {}
@@ -175,8 +370,8 @@ class MCPDictDataset(Dataset):
                 cat[k] = v[3]
             self._tone_map[i] = tone, cat
 
-        self._dialect_info = info
-        self.metadata['dialect_info'] = info
+        self.dialect_info = info
+        self.metadata = {'dialect_info': info}
 
     def load_dialect_info(self) -> pandas.DataFrame:
         """
@@ -215,7 +410,7 @@ class MCPDictDataset(Dataset):
         ]
 
         if info.shape[0] == 0:
-            logging.warning(f'no valid data in {self._path} .')
+            logging.warning(f'no valid data in {self._path}.')
             return
 
         # 使用音典排序作为方言 ID
@@ -265,11 +460,12 @@ class MCPDictDataset(Dataset):
         return info
 
     @classmethod
-    def load(cls, path: str) -> pandas.DataFrame:
+    def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
         """
-        加载指定方言读音数据
+        从原始文件加载指定方言读音数据
 
         Parameters:
+            id: 要加载的方言的原始 ID（未加前缀）
             path: 要加载的数据文件路径
 
         Returns:
@@ -294,47 +490,35 @@ class MCPDictDataset(Dataset):
 
         return data.replace('', numpy.NAN)
 
-    @functools.lru_cache
-    def load_data(self, *ids: tuple[str]) -> pandas.DataFrame:
-        logging.info(f'loading data from {self._path} ...')
+    def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
+        """
+        加载方言读音数据并清理
 
-        paths = self._dialect_info['path'] if len(ids) == 0 \
-            else self._dialect_info.loc[pandas.Index(ids), 'path']
-        data = []
-        for id, p in paths.items():
-            logging.info(f'load {p}')
+        Parameters:
+            did: 要加载的方言 ID
 
-            try:
-                d = self.load(p)
-            except Exception as e:
-                logging.error(f'cannot load file {p}: {e}')
-                continue
+        Returns:
+            did: 同参数 `did`
+            data: 方言读音数据表
+        """
 
-            d.insert(0, 'did', id)
+        logging.info(f'load data from {self.dialect_info.at[did, "path"]}.')
+        data = self.load_raw(
+            did[len(self._did_prefix):],
+            self.dialect_info.at[did, 'path']
+        )
+        data['did'] = did
 
-            # 把原始读音切分成声母、韵母、声调
-            seg = d.pop('音標').str.extract(r'([^0-9]*)([0-9][0-9a-z]*)?')
-            d[['initial', 'final']] = preprocess.parse(
-                preprocess.clean_ipa(seg.iloc[:, 0], force=True)
-            ).iloc[:, :2]
+        # 把原始读音切分成声母、韵母、声调
+        seg = data.pop('音標').str.extract(r'([^0-9]*)([0-9][0-9a-z]*)?')
+        data[['initial', 'final']] = preprocess.parse(
+            preprocess.clean_ipa(seg.iloc[:, 0], force=True)
+        ).iloc[:, :2]
 
-            # 汉字音典的原始读音标注的是调号，根据方言详情映射成调值和调类
-            tone, cat = self._tone_map[id]
-            d['tone'] = seg.iloc[:, 1].map(tone)
-            d['tone_category'] = seg.iloc[:, 1].map(cat)
-
-            data.append(d)
-
-        logging.info(f'done, {len(data)} data files loaded.')
-
-        if len(data) == 0:
-            return None
-
-        data = pandas.concat(data, axis=0, ignore_index=True)
-
-        if self._normalize:
-            # 把读音改写成规范的形式
-            data['initial'] = preprocess.normalize_initial(data['initial'])
+        # 汉字音典的原始读音标注的是调号，根据方言详情映射成调值和调类
+        tone, cat = self._tone_map[did]
+        data['tone'] = seg.iloc[:, 1].map(tone)
+        data['tone_category'] = seg.iloc[:, 1].map(cat)
 
         # 删除声韵调均为空的记录
         data.dropna(
@@ -364,95 +548,57 @@ class MCPDictDataset(Dataset):
             # 替换列名为统一的名称
             data.rename(columns={'漢字': 'character', '解釋': 'note'}, inplace=True)
 
-        return data
-
-    @property
-    def data(self):
-        return self.load_data()
-
-    def filter(self, id=None):
-        """
-        筛选部分数据
-
-        Paramters:
-            id (str or tuple): 保留的方言 ID
-
-        Returns:
-            data (`sinetym.dataset.Dataset`): 符合条件的数据
-
-        忽略不在数据集中的 ID，如果同一个 ID 在 `id` 中出现了多次，只返回一份数据。
-        """
-
-        if id is None:
-            id = ()
-        else:
-            id = sorted(({id} if isinstance(id, str) else set(id)) \
-                & set(self._dialect_info.index))
-            if len(id) == 0:
-                return Dataset(self.name)
-
-        return Dataset(
-            self.name,
-            data=self.load_data(*id),
-            metadata=self.metadata
-        )
+        return ((did, data),)
 
 
-class XiaoxuetangDataset(Dataset):
+class XiaoxuetangDataset(FileCacheDataset):
     """
     小学堂汉字古今音资料库的现代方言数据集
 
-    支持延迟加载。
-    见：https://xiaoxue.iis.sinica.edu.tw/ccr。
+    见：https://xiaoxue.iis.sinica.edu.tw/ccrdata/。
     """
 
     def __init__(
         self,
+        cache_dir: str,
         path: str,
-        normalize: bool = True,
-        superscript_tone: bool = False,
-        na: str | None = None,
-        empty: str | None = None,
         uniform_name: bool = True,
+        uniform_info: bool = True,
         did_prefix: str | None = 'X',
         cid_prefix: str | None = 'X',
-        uniform_info: bool = True
+        superscript_tone: bool = False,
+        na: str | None = None,
+        empty: str | None = None
     ):
         """
         Parameters:
+            cache_dir: 缓存文件所在目录路径
             path: 数据集所在的基础路径
-            normalize: 为真时，进一步清洗读音数据，改写为规范的形式
+            uniform_name: 为真时，把数据列名转为通用名称
+            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
+            did_prefix: 非空时在方言 ID 添加该前缀
+            cid_prefix: 非空时在字 ID 添加该前缀
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
-            uniform_name: 为真时，把数据列名转为通用名称
-            did_prefix: 非空时在方言 ID 添加该前缀
-            cid_prefix: 非空时在字 ID 添加该前缀
-            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
         """
 
-        super().__init__('xiaoxuetang', metadata={
-            'dialect_info': self.load_dialect_info(
-                os.path.join(path, 'data', 'csv', 'dialect.csv'),
-                did_prefix,
-                uniform_name,
-                uniform_info
-            ),
-            'char_info': self.load_char_info(
-                os.path.join(path, 'data', 'csv', 'char.csv'),
-                cid_prefix,
-                uniform_name
-            )
-        })
-
-        self._path = os.path.join(path, 'data', 'csv', 'dialects')
-        self._normalize = normalize
+        self._path = os.path.join(path, 'data', 'csv')
+        self._uniform_name = uniform_name
+        self._uniform_info = uniform_info
+        self._did_prefix = did_prefix
+        self._cid_prefix = cid_prefix
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
-        self._uniform_name = uniform_name
-        self._did_prefix = did_prefix
-        self._cid_prefix = cid_prefix
+
+        info = self.load_dialect_info()
+        super().__init__(cache_dir, info.index)
+        self.dialect_info = info
+        self.metadata = {
+            'dialect_info': info,
+            'char_info': self.load_char_info()
+        }
 
     @classmethod
     def clean_subgroup(cls, subgroup: pandas.Series) -> pandas.Series:
@@ -494,14 +640,7 @@ class XiaoxuetangDataset(Dataset):
             )
         ), index=subgroup.index).replace('', numpy.NAN)
 
-    @classmethod
-    def load_dialect_info(
-        cls,
-        fname: str,
-        did_prefix: str | None = None,
-        uniform_name: bool = False,
-        uniform_info: bool = False
-    ) -> pandas.DataFrame:
+    def load_dialect_info(self) -> pandas.DataFrame:
         """
         加载方言点信息
 
@@ -515,11 +654,18 @@ class XiaoxuetangDataset(Dataset):
             info: 方言点信息数据表，只包含文件中编号非空的方言点
         """
 
-        logging.info(f'loading dialect information from {fname}...')
-        info = pandas.read_csv(fname, dtype={'編號': str})
-        info = info[info['編號'].notna()].set_index('編號')
+        path = os.path.join(self._path, 'dialect.csv')
+        info = pandas.read_csv(path, dtype={'編號': str}).dropna(subset=['編號'])
+        info['path'] = os.path.join(self._path, 'dialects') + os.sep \
+            + info['編號'] + '.csv'
+        info = info[info['path'].map(os.path.isfile, na_action='ignore')] \
+            .set_index('編號')
 
-        info['區'] = cls.clean_subgroup(info['區'])
+        if info.shape[0] == 0:
+            logging.warning(f'no valid data in {self._path}.')
+            return
+
+        info['區'] = self.clean_subgroup(info['區'])
         # 部分方言点包含来源文献，删除
         info['方言點'] = info['方言點'].str.replace(
             r'\(安徽省志\)|\(珠江三角洲\)|\(客贛方言調查報告\)|\(廣西漢語方言\)'
@@ -528,10 +674,10 @@ class XiaoxuetangDataset(Dataset):
             regex=True
         )
 
-        if did_prefix is not None:
-            info.set_index(did_prefix + info.index, inplace=True)
+        if self._did_prefix is not None:
+            info.set_index(self._did_prefix + info.index, inplace=True)
 
-        if uniform_info:
+        if self._uniform_info:
             # 把方言信息转换成简体中文
             info.update(info.select_dtypes(object).map(
                 opencc.OpenCC('t2s').convert,
@@ -541,7 +687,7 @@ class XiaoxuetangDataset(Dataset):
             # 少数方言名称转成更通行的名称
             info.replace({'方言': {'客语': '客家话', '其他土话': '土话'}}, inplace=True)
 
-        if uniform_name:
+        if self._uniform_name:
             info.index.rename('did', inplace=True)
             info.rename(columns={
                 '方言': 'group',
@@ -554,48 +700,36 @@ class XiaoxuetangDataset(Dataset):
                 '經度': 'longitude'
             }, inplace=True)
 
-        logging.info(f'done, {info.shape[0]} dialects loaded.')
         return info
 
-    @classmethod
-    def load_char_info(
-        cls,
-        fname: str,
-        did_prefix: str | None = None,
-        uniform_name: bool = False
-    ) -> pandas.DataFrame:
+    def load_char_info(self) -> pandas.DataFrame:
         """
         加载字信息
-
-        Parameters:
-            fname: 字信息文件路径
-            did_prefix: 非空时在字 ID 添加该前缀
-            uniform_name: 为真时，把数据列名转为通用名称
 
         Returns:
             info: 字信息数据表
         """
 
-        logging.debug(f'load character information from {fname}') 
-        info = pandas.read_csv(fname, dtype=str)
+        path = os.path.join(self._path, 'char.csv')
+        info = pandas.read_csv(path, dtype=str)
         info = info[info['字號'].notna()].set_index('字號')
 
-        if did_prefix is not None:
-            info.set_index(did_prefix + info.index, inplace=True)
+        if self._did_prefix is not None:
+            info.set_index(self._did_prefix + info.index, inplace=True)
 
-        if uniform_name:
+        if self._uniform_name:
             info.index.rename('cid', inplace=True)
             info.rename(columns={'字': 'character'}, inplace=True)
 
-        logging.debug(f'{info.shape[0]} dialects loaded.')
         return info
 
     @classmethod
-    def load(cls, path: str) -> pandas.DataFrame:
+    def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
         """
         加载指定方言读音数据
 
         Parameters:
+            id: 要加载的方言的原始 ID（未加前缀）
             path: 要加载的数据文件路径
 
         Returns:
@@ -609,7 +743,6 @@ class XiaoxuetangDataset(Dataset):
         )
 
         # 清洗数据集特有的错误
-        id = os.path.basename(path).partition('.')[0]
         if id == '118':
             data['韻母'] = data['韻母'].str.translate({
                 0x003f: 0x028f, # QUESTION MARK -> LATIN LETTER SMALL CAPITAL Y
@@ -628,8 +761,7 @@ class XiaoxuetangDataset(Dataset):
 
         return data.replace('', numpy.NAN)
 
-    @functools.lru_cache
-    def load_data(self, *ids: tuple[str]) -> pandas.DataFrame:
+    def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
         """
         加载方言字音数据
 
@@ -640,44 +772,12 @@ class XiaoxuetangDataset(Dataset):
             data: 方言字音表
         """
 
-        logging.info(f'loading data from {self._path} ...')
-
-        if len(ids) == 0:
-            ids = []
-            for e in os.scandir(self._path):
-                id, ext = os.path.splitext(e.name)
-                if e.is_file() and ext == '.csv':
-                    ids.append(id)
-            ids = sorted(ids)
-
-            if len(ids) == 0:
-                logging.error(f'no data file in {self._path}!')
-                return None
-
-        data = []
-        for id in ids:
-            fname = os.path.join(self._path, id + '.csv')
-            logging.info(f'load {fname}')
-
-            try:
-                d = self.load(fname)
-            except Exception as e:
-                logging.error(f'cannot load file {fname}: {e}')
-                continue
-
-            d.insert(
-                0,
-                'did',
-                id if self._did_prefix is None else self._did_prefix + id
-            )
-            data.append(d)
-
-        logging.info(f'done, {len(data)} data files loaded.')
-
-        if len(data) == 0:
-            return None
-
-        data = pandas.concat(data, axis=0, ignore_index=True)
+        logging.info(f'loading data from {self.dialect_info.at[did, "path"]}.')
+        data = self.load_raw(
+            did[len(self._did_prefix):],
+            self.dialect_info.at[did, 'path']
+        )
+        data['did'] = did
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
         data['聲母'] = preprocess.clean_initial(data['聲母'].str.split('.').str[0])
@@ -685,10 +785,6 @@ class XiaoxuetangDataset(Dataset):
         data['調值'] = preprocess.clean_tone(data['調值'].str.split('.').str[0])
         data['調類'] = data['調類'].str.split('.').str[0] \
             .str.replace(r'[^上中下變陰陽平去入輕聲]', '', regex=True)
-
-        if self._normalize:
-            # 把读音改写为规范的形式
-            data['聲母'] = preprocess.normalize_initial(data['聲母'])
 
         data.replace(
             {'聲母': '', '韻母': '', '調值': '', '調類': ''},
@@ -730,93 +826,54 @@ class XiaoxuetangDataset(Dataset):
                 # 字 ID 添加前缀
                 data['cid'] = self._cid_prefix + data['cid']
 
-        return data
-
-    @property
-    def data(self):
-        return self.load_data()
-
-    def filter(self, id: str | list[str] | None = None) -> Dataset:
-        """
-        筛选部分数据
-
-        Paramters:
-            id: 保留的方言 ID
-
-        Returns:
-            data: 符合条件的数据
-        """
-
-        if id is None:
-            id = ()
-        elif isinstance(id, str):
-            id = (id,)
-
-        return Dataset(
-            self.name,
-            data=self.load_data(*id),
-            metadata=self.metadata
-        )
-
-    def clear_cache(self):
-        """
-        清除已经加载的数据
-        """
-
-        self.load.cache_clear()
+        return ((did, data),)
 
 
-class ZhongguoyuyanDataset(Dataset):
+class ZhongguoyuyanDataset(FileCacheDataset):
     """
     中国语言资源保护工程采录展示平台的方言数据集
 
-    支持延迟加载。
     见：https://zhongguoyuyan.cn/。
     """
 
     def __init__(
         self,
+        cache_dir: str,
         path: str,
         uniform_name: bool = True,
         did_prefix: str | None = 'Z',
         cid_prefix: str | None = 'Z',
-        normalize: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None
     ):
         """
         Parameters:
+            cache_dir: 缓存文件所在目录路径
             path: 数据集所在的基础路径
             uniform_name: 为真时，把数据列名转为通用名称
             did_prefix: 非空时在方言 ID 添加该前缀
             cid_prefix: 非空时在字 ID 添加该前缀
-            normalize: 为真时，进一步清洗读音数据，改写为规范的形式
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失数据的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
         """
 
-        super().__init__('zhongguoyuyan', metadata={
-            'char_info': self.load_char_info(
-                os.path.join(path, 'csv', 'words.csv'),
-                cid_prefix,
-                uniform_name
-            )
-        })
-
-        self._path = path
+        self._path = os.path.join(path, 'csv')
         self._uniform_name = uniform_name
         self._did_prefix = did_prefix
         self._cid_prefix = cid_prefix
-        self._normalize = normalize
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
 
         info = self.load_dialect_info()
-        self._dialect_info = info
-        self.metadata['dialect_info'] = info
+        super().__init__(cache_dir, info.index)
+        self.dialect_info = info
+        self.metadata = {
+            'dialect_info': info,
+            'char_info': self.load_char_info()
+        }
 
     @classmethod
     def clean_location(cls, location: pandas.DataFrame) -> pandas.DataFrame:
@@ -1071,11 +1128,11 @@ class ZhongguoyuyanDataset(Dataset):
         """
 
         info = pandas.read_csv(
-            os.path.join(self._path, 'csv', 'location.csv'),
+            os.path.join(self._path, 'location.csv'),
             index_col=0
         )
-        info['path'] = os.path.join(self._path, 'csv', 'dialect') \
-            + os.sep + info.index + 'mb01dz.csv'
+        info['path'] = os.path.join(self._path, 'dialect') + os.sep + \
+            info.index + 'mb01dz.csv'
 
         info = self.clean_location(info)
 
@@ -1108,49 +1165,43 @@ class ZhongguoyuyanDataset(Dataset):
         if self._uniform_name:
             info.index.rename('did', inplace=True)
 
-        logging.info(f'done, {info.shape[0]} dialects loaded.')
         return info
 
-    @classmethod
-    def load_char_info(
-        cls,
-        fname: str,
-        cid_prefix: str | None = None,
-        uniform_name: bool = False
-    ) -> pandas.DataFrame:
+    def load_char_info(self) -> pandas.DataFrame:
         """
         读取字信息
-
-        Parameters:
-            fname: 字信息文件路径
-            cid_prefix: 非空时在字 ID 添加该前缀
-            uniform_name: 为真时，把数据列名转为通用名称
 
         Returns:
             info: 字信息数据表
         """
 
-        logging.info(f'loading character information from {fname}...')
-        info = pandas.read_csv(fname, dtype=str).set_index('cid')
+        path = os.path.join(self._path, 'words.csv')
+        info = pandas.read_csv(path, dtype=str).set_index('cid')
         
-        if cid_prefix is not None:
-            info.set_index(cid_prefix + info.index, inplace=True)
+        if self._cid_prefix is not None:
+            info.set_index(self._cid_prefix + info.index, inplace=True)
 
-        if uniform_name:
+        if self._uniform_name:
             info.rename(columns={'item': 'character'}, inplace=True)
 
         return info
 
     @classmethod
-    def load(cls, path: str) -> pandas.DataFrame:
+    def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
         """
         加载指定方言读音数据
 
         Parameters:
+            id: 要加载的方言的原始 ID（未加前缀）
             path: 要加载的数据文件路径
 
         Returns:
             data: 加载的读音数据表
+
+        语保数据文件的编号由3部分组成：<方言 ID><发音人编号><内容编号>，其中：
+            - 方言 ID：5个字符
+            - 发音人编号：4个字符，代表老年男性、青年男性等
+            - 内容编号：2个字符，dz 代表单字音
         """
 
         data = pandas.read_csv(
@@ -1160,7 +1211,7 @@ class ZhongguoyuyanDataset(Dataset):
         )
 
         # 清洗数据集特有的错误
-        if os.path.basename(path)[:5] == '02135':
+        if id == '02135':
             data['finals'] = data['finals'].str.translate({
                 0xf175: 0x0303, # -> COMBINING TILDE
                 0xf179: 0x0303, # -> COMBINING TILDE
@@ -1187,11 +1238,7 @@ class ZhongguoyuyanDataset(Dataset):
 
         return data.replace('', numpy.NAN)
 
-    @functools.lru_cache
-    def load_data(
-        self,
-        *ids: tuple[str]
-    ) -> pandas.DataFrame:
+    def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
         """
         加载方言字音数据
 
@@ -1200,41 +1247,18 @@ class ZhongguoyuyanDataset(Dataset):
 
         Returns:
             data: 方言字音表
-
-        语保数据文件的编号由3部分组成：<方言 ID><发音人编号><内容编号>，其中：
-            - 方言 ID：5个字符
-            - 发音人编号：4个字符，代表老年男性、青年男性等
-            - 内容编号：2个字符，dz 代表单字音
         """
 
-        paths = self._dialect_info['path'] if len(ids) == 0 \
-            else self._dialect_info.loc[pandas.Index(ids), 'path']
-        data = []
-        for id, p in paths.items():
-            try:
-                d = self.load(p)
-            except Exception as e:
-                logging.error(f'cannot load file {p}: {e}')
-                continue
-
-            d.insert(0, 'did', id)
-            data.append(d)
-
-        logging.info(f'done, {len(data)} data files loaded.')
-
-        if len(data) == 0:
-            return None
-
-        data = pandas.concat(data, axis=0, ignore_index=True)
+        data = self.load_raw(
+            did[len(self._did_prefix):],
+            self.dialect_info.loc[did, 'path']
+        )
+        data['did'] = did
 
         # 清洗读音数据
         data['initial'] = preprocess.clean_initial(data['initial'])
         data['finals'] = preprocess.clean_final(data['finals'])
         data['tone'] = preprocess.clean_tone(data['tone'])
-
-        if self._normalize:
-            # 把读音改写为规范的形式
-            data['initial'] = preprocess.normalize_initial(data['initial'])
 
         data.replace(
             {'initial': '', 'finals': '', 'tone': ''},
@@ -1277,66 +1301,61 @@ class ZhongguoyuyanDataset(Dataset):
                 # 字 ID 添加前缀
                 data['cid'] = self._cid_prefix + data['cid']
 
-        return data
+        return ((did, data),)
 
-    @property
-    def data(self):
-        return self.load_data()
 
-    def filter(
-        self,
-        id: str | list[str] | None = None
-    ) -> Dataset:
-        """
-        筛选部分数据
-
-        Paramters:
-            id: 保留的方言记录 ID
-
-        Returns:
-            data: 符合条件的数据
-        """
-
-        if id is None:
-            id = ()
-        else:
-            id = sorted(({id} if isinstance(id, str) else set(id)) \
-                & set(self._dialect_info.index))
-            if len(id) == 0:
-                return Dataset(self.name)
-
-        return Dataset(
-            self.name,
-            data=self.load_data(*id),
-            metadata=self.metadata
-        )
-
-    def clear_cache(self):
-        """
-        清除已经加载的数据
-        """
-
-        self.load.cache_clear()
-
+cache_dir = os.environ.get(
+    'SINETYM_CACHE',
+    os.path.join(
+        os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
+        'sinetym',
+        'datasets'
+    )
+)
 
 try:
     path = os.environ['MCPDICT_HOME']
 except KeyError:
-    logging.error(
-        'Environment variable MCPDICT_HOME not set! Set this variable to '
-        'MCPDict\'s home directory to make use of the dataset.'
+    logging.warning(
+        'Set environment variable MCPDICT_HOME to MCPDict\'s home '
+        'dirctory then reload this module to make use of the dataset.'
     )
 else:
-    mcpdict = MCPDictDataset(path)
+    mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'), path)
 
-path = os.environ.get('XIAOXUETANG_HOME')
-if path is None:
-    logging.error('Set variable environment XIAOXUETANG_HOME then reload this module.')
+try:
+    path = os.environ['XIAOXUETANG_HOME']
+except KeyError:
+    logging.warning(
+        'Set environment variable XIAOXUETANG_HOME to xiaoxuetang\'s home '
+        'dirctory then reload this module to make use of the dataset.'
+    )
 else:
-    xiaoxuetang = XiaoxuetangDataset(path)
+    xiaoxuetang = XiaoxuetangDataset(
+        os.path.join(cache_dir, 'xiaoxuetang'),
+        path
+    )
 
-path = os.environ.get('ZHONGGUOYUYAN_HOME')
-if path is None:
-    logging.error('Set variable environment ZHONGGUOYUYAN_HOME then reload this module.')
+try:
+    path = os.environ['ZHONGGUOYUYAN_HOME']
+except KeyError:
+    logging.warning(
+        'Set environment variable ZHONGGUOYUYAN_HOME to zhongguoyuyan\'s home '
+        'dirctory then reload this module to make use of the dataset.'
+    )
 else:
-    zhongguoyuyan = ZhongguoyuyanDataset(path)
+    zhongguoyuyan = ZhongguoyuyanDataset(
+        os.path.join(cache_dir, 'zhongguoyuyan'),
+        path
+    )
+
+
+if __name__ == '__main__':
+    # 刷新所有数据集的缓存文件
+    print('refresh cache files for all datasets. this may take a while.')
+    for name in 'mcpdict', 'xiaoxuetang', 'zhongguoyuyan':
+        dataset = globals().get(name)
+        if dataset is not None:
+            print(f'refreshing {name}...')
+            dataset.refresh()
+            print(f'done writing {dataset.dialect_info.shape[0]} dialects.')
