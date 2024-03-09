@@ -17,6 +17,7 @@ import logging
 import pandas
 import numpy
 import json
+import re
 import functools
 import opencc
 from sklearn.neighbors import KNeighborsClassifier
@@ -169,7 +170,8 @@ class MCPDictDataset(Dataset):
             tone = {}
             cat = {}
             for k, v in m.items():
-                tone[k] = v[0]
+                # 少数连读声调有特殊符号，暂时去除
+                tone[k] = re.sub(f'[^{"".join(preprocess._TONES)}]', '', v[0])
                 cat[k] = v[3]
             self._tone_map[i] = tone, cat
 
