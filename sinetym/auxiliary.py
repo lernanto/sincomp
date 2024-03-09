@@ -53,22 +53,28 @@ def make_dict(data, minfreq=None, sort=None):
 
     return dic
 
-def split_data(values, *data, test_size=0.1, return_mask=False, random_state=None):
+def split_data(
+    values : numpy.ndarray | pandas.Series,
+    *data,
+    train_size: float = 0.9,
+    return_mask: bool = False,
+    random_state: numpy.random.RandomState | None = None
+):
     """
     根据数值及比例切分数据.
 
     Parameters:
-        values (array-like): 待切分数据
-        data (array-like): 额外的待切分数据
-        test_size (float): 切分后测试集占样本的比例
-        return_mask (bool): 为真时返回切分的结果掩码
-        random_state (int or `numpy.random.RandomState`): 用于复现划分结果
+        values: 待切分数据
+        data: 额外的待切分数据
+        train_size: 切分后训练集占样本的比例
+        return_mask: 为真时返回切分的结果掩码
+        random_state: 用于复现划分结果
 
     Returns:
         train_values, test_values, ...: 切分后的数据
 
     从 values 的取值中随机选择一批用作测试，使切分后的训练集不包含该值，测试集只包含该值，
-    且测试集占比大致等于 test_size。为增加测试集的多样性，尽可能选择出现次数少的值用作测试集。
+    且训练集占比大致等于 train_size。为增加测试集的多样性，尽可能选择出现次数少的值用作测试集。
     """
 
     if random_state is None:
@@ -83,12 +89,18 @@ def split_data(values, *data, test_size=0.1, return_mask=False, random_state=Non
         return_counts=True
     )
     ratio = counts / len(values)
-    # 根据比例及一定随机性排定值进入测试集的优先级
-    prior = ratio + random_state.normal(scale=numpy.std(ratio), size=ratio.shape[0])
-    # 根据优先级排序，根据在总样本中的占比截取需要的数量
+
+    # 根据数量的平方随机排序，根据在总样本中的占比截取需要的数量
+    prob = numpy.square(counts)
+    prob = prob / numpy.sum(prob)
+    idx = numpy.random.choice(
+        ratio.shape[0],
+        ratio.shape[0],
+        replace=False,
+        p=prob
+    )
     mask = numpy.empty(ratio.shape, dtype=numpy.bool8)
-    idx = numpy.argsort(prior)
-    mask[idx] = ratio[idx].cumsum() < test_size
+    mask[idx] = ratio[idx].cumsum() < train_size
     # 保证训练集、测试集均不为空
     mask[idx[0]] = True
     mask[idx[-1]] = False
@@ -97,13 +109,13 @@ def split_data(values, *data, test_size=0.1, return_mask=False, random_state=Non
 
     if return_mask:
         # 返回训练集、测试集的掩码
-        return ~mask, mask
+        return mask, ~mask
 
     else:
         # 返回切分结果
-        results = [values[~mask], values[mask]]
+        results = [values[mask], values[~mask]]
         for d in data:
-            results.extend(d[~mask], d[mask])
+            results.extend((d[mask], d[~mask]))
 
         return results
 
