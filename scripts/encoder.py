@@ -46,37 +46,31 @@ def load_dictionaries(prefix='.'):
 
     return dicts
 
-def load_datasets(config):
+def load_datasets(config: dict) -> sinetym.datasets.Dataset:
     """
     加载数据集.
 
     Parameters:
-        config (dict): 数据集配置
+        config: 数据集配置
 
     Returns:
-        data (`pandas.DataFrame`): 所有数据集汇总成的数据表
+        data: 所有数据集拼接成的数据集
     """
 
     logging.info(f'loading datasets...')
 
-    data = []
     for d in config:
         if isinstance(d, str):
             dataset = getattr(sinetym.datasets, d)
-
         else:
-            d = d.copy()
-            dataset = getattr(sinetym.datasets, d.pop('name')).filter(**d)
+            dataset = getattr(sinetym.datasets, d['name']).filter(d['did'])
 
-        # 如果数据集包含方言变体，把变体编号加入为方言 ID 的一部分
-        if 'variant' in dataset.columns:
-            dataset = dataset.assign(did=dataset['did'] + dataset['variant'])
+        try:
+            data += dataset
+        except UnboundLocalError:
+            data = dataset
 
-        data.append(dataset)
-
-    data = sinetym.datasets.concat(*data)
-
-    logging.info(f'done, {data.shape[0]} data loaded.')
+    logging.info(f'done, {len(data)} dialects loaded.')
     return data
 
 def build_model(config, **kwargs):
@@ -257,7 +251,7 @@ def make_data(
         input_encoder.transform(train_input),
         output_encoder.transform(train_output)
     ))
-    train_data = train_data.shuffle(train_data.cardinality())
+    train_data = train_data.shuffle(100000, reshuffle_each_iteration=True)
     test_data = tf.data.Dataset.from_tensor_slices((
         dialect_encoder.transform(test_dialect),
         input_encoder.transform(test_input),
@@ -355,7 +349,7 @@ def mkdict(config):
     prefix = config.get('dictionary_dir', '.')
     logging.info(f'make dictionaries to {prefix}...')
 
-    data = load_datasets(config['datasets'])
+    data = load_datasets(config)
 
     os.makedirs(prefix, exist_ok=True)
 
@@ -705,20 +699,26 @@ if __name__ == '__main__':
             = [[dicts[c] for c in config['columns'][name]] \
                 for name in ('dialect', 'input', 'output')]
 
-    if args.command in ('train', 'evaluate'):
-        data = load_datasets(config['datasets'])
-        data = tuple([OrdinalEncoder(
-            categories=[dicts[c].index for c in config['columns'][name]],
-            dtype=np.int32,
-            handle_unknown='use_encoded_value',
-            unknown_value=-1,
-            encoded_missing_value=-1
-        ).fit(data[:1][config['columns'][name]]) \
-            .transform(data[config['columns'][name]]) \
-            for name in ('dialect', 'input', 'output')])
+    if args.command in ('train', 'evaluate', 'benchmark'):
+        data = load_datasets(config['datasets']).shuffle(random_state=98101)
 
-        data = tf.data.Dataset.from_tensor_slices(data) \
-            .shuffle(data[0].shape[0], seed=10273)
+        # 删除不含有效方言、字、读音信息的记录
+        for name in 'dialect', 'input', 'output':
+            data = data.dropna(how='all', subset=config['columns'][name])
+
+        if args.command in ('train', 'evaluate'):
+            data = tuple([OrdinalEncoder(
+                categories=[dicts[c].index for c in config['columns'][name]],
+                dtype=np.int32,
+                handle_unknown='use_encoded_value',
+                unknown_value=-1,
+                encoded_missing_value=-1
+            ).fit(data[:1][config['columns'][name]]) \
+                .transform(data[config['columns'][name]]) \
+                for name in ('dialect', 'input', 'output')])
+
+            data = tf.data.Dataset.from_tensor_slices(data) \
+                .shuffle(100000, seed=10273, reshuffle_each_iteration=True)
 
     if args.command == 'mkdict':
         mkdict(config)
@@ -742,7 +742,7 @@ if __name__ == '__main__':
         )
 
     elif args.command == 'benchmark':
-        benchmark(config, load_datasets(config['datasets']))
+        benchmark(config, data)
 
     elif args.command == 'export':
         export(config, args.model, dicts, args.output)
