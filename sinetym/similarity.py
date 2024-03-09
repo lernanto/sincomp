@@ -18,7 +18,8 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 import joblib
 
-from . import dataset
+from . import datasets
+from . import preprocess
 
 
 def cross_features(data, column=3):
@@ -134,8 +135,8 @@ def chi2_block(
     return (chisq - dof) / numpy.sqrt(2 * dof)
 
 def chi2(
-    src: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str],
-    dest: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
+    src: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str],
+    dest: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
     feature_num: int = 3,
     blocksize: tuple[int, int] = (100, 100),
     parallel: int = 1
@@ -170,7 +171,7 @@ def chi2(
     if dest is None:
         dest = src
 
-    if isinstance(src, dataset.Dataset | pandas.DataFrame):
+    if isinstance(src, datasets.Dataset | pandas.DataFrame):
         index = src.columns.levels[0]
         src_num = index.shape[0]
         feature_num = src.columns.levels[1].shape[0]
@@ -179,7 +180,7 @@ def chi2(
         index = None
         src_num = src.shape[1] // feature_num
 
-    if isinstance(dest, dataset.Dataset | pandas.DataFrame):
+    if isinstance(dest, datasets.Dataset | pandas.DataFrame):
         columns = dest.columns.levels[0]
         dest_num = columns.shape[0]
         dest = dest.values
@@ -342,8 +343,8 @@ def _entropy(
     return entropy
 
 def entropy(
-    src: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str],
-    dest: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
+    src: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str],
+    dest: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
     feature_num: int = 3,
     blocksize: tuple[int, int] = (100, 100),
     parallel: int = 1
@@ -367,7 +368,7 @@ def entropy(
     if dest is None:
         dest = src
 
-    if isinstance(src, dataset.Dataset | pandas.DataFrame):
+    if isinstance(src, datasets.Dataset | pandas.DataFrame):
         index = src.columns.levels[0]
         src_num = index.shape[0]
         feature_num = src.columns.levels[1].shape[0]
@@ -376,7 +377,7 @@ def entropy(
         index = None
         src_num = src.shape[1] // feature_num
 
-    if isinstance(dest, dataset.Dataset | pandas.DataFrame):
+    if isinstance(dest, datasets.Dataset | pandas.DataFrame):
         columns = dest.columns.levels[0]
         dest_num = columns.shape[0]
         dest = dest.values
@@ -515,37 +516,57 @@ if __name__ == '__main__':
     import os
     import argparse
 
-    from . import datasets
-
-    parser = argparse.ArgumentParser('计算方言之间的预测相似度')
+    parser = argparse.ArgumentParser('根据指定方言数据集计算方言之间的预测相似度')
     parser.add_argument(
         '-m',
         '--method',
         choices=('chi2', 'entropy'),
         help='计算方言间相似度的方法，如果不指定，计算所有方法的结果'
     )
-    parser.add_argument('-o', '--output', help='输出文件名')
+    parser.add_argument(
+        '-o',
+        '--output',
+        help='输出路径，如果只有一个数据集及一个方法，为输出文件名，否则为输出目录'
+    )
     parser.add_argument(
         'dataset',
-        nargs='?',
-        choices=('xiaoxuetang', 'zhongguoyuyan'),
-        help='输入数据集，如果不指定，输出所有数据集的结果'
+        nargs='*',
+        default=('xiaoxuetag',),
+        help='方言数据集名称或数据文件或目录路径，如果不指定，为所有支持的数据集计算方言相似度'
     )
     args = parser.parse_args()
-
-    if args.dataset is None:
-        dtss = 'xiaoxuetang', 'zhongguoyuyan'
-    else:
-        dtss = (args.dataset,)
 
     if args.method is None:
         methods = 'chi2', 'entropy'
     else:
         methods = (args.method,)
 
-    for dts in dtss:
+    for dts in args.dataset:
+        try:
+            data = getattr(datasets, dts)
+        except AttributeError:
+            # 如果在数据集不在支持的列表中，视为数据文件或目录路径，文件为 CSV 格式
+            if os.path.isdir(dts):
+                data = pandas.concat(
+                    [pandas.read_csv(os.path.join(c, f), dtype=str) \
+                        for c, _, fs in os.walk(dts) for f in fs],
+                    axis=0,
+                    ignore_index=True
+                )
+            else:
+                data = pandas.read_csv(dts, dtype=str)
+            dts = os.path.splitext(os.path.basename(dts))[0]
+
+        data = preprocess.transform(
+            data.fillna({'initial': '', 'final': '', 'tone': ''}),
+            index='cid',
+            values=['initial', 'final', 'tone'],
+            aggfunc=' '.join
+        )
+
         for method in methods:
-            if len(dtss) > 1 or len(methods) > 1:
+            # 如果输出文件只有一个，使用指定的路径作为文件名，否则作为输出目录
+            if len(args.dataset) > 1 or len(methods) > 1:
                 output = os.path.join(
                     os.getcwd() if args.output is None else args.output,
                     f'{dts}_{method}.csv'
@@ -556,11 +577,6 @@ if __name__ == '__main__':
 
             print(f'compute {method} between {dts} dialects -> {output}')
 
-            data = getattr(datasets, dts)
-            if data is datasets.zhongguoyuyan:
-                data = data.filter(variant='mb01')
-
-            sim = globals()[method](data.transform(index='cid'), parallel=4)
-
             os.makedirs(os.path.dirname(output), exist_ok=True)
+            sim = globals()[method](data, parallel=4)
             sim.to_csv(output, lineterminator='\n')
