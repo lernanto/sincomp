@@ -1082,7 +1082,7 @@ class ZhongguoyuyanDataset(Dataset):
             info['city'] == info['county'],
             info['city'].fillna('') + info['county'].fillna('')
         )
-        info['spot'].where(info['spot'] != '', info['province'], inplace=True)
+        info['spot'] = info['spot'].where(info['spot'] != '', info['province'])
 
         # 清洗方言区、片、小片名称
         info['group'] = self.get_group(info)
