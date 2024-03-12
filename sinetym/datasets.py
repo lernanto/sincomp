@@ -16,6 +16,11 @@ import os
 import logging
 import pandas
 import numpy
+import retry
+import io
+import urllib.request
+import urllib.error
+import zipfile
 import json
 import re
 import opencc
@@ -325,7 +330,6 @@ class MCPDictDataset(FileCacheDataset):
     def __init__(
         self,
         cache_dir: str,
-        path: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
         did_prefix: str | None = 'M',
@@ -337,7 +341,6 @@ class MCPDictDataset(FileCacheDataset):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
-            path: 数据集所在的基础路径
             uniform_name: 为真时，把数据列名转为通用名称
             uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
             did_prefix: 非空时在方言 ID 添加该前缀
@@ -347,7 +350,7 @@ class MCPDictDataset(FileCacheDataset):
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
         """
 
-        self._path = os.path.join(path, 'tools', 'tables', 'output')
+        self._path = os.path.join(cache_dir, 'tools', 'tables', 'output')
         self._uniform_name = uniform_name
         self._uniform_info = uniform_info
         self._did_prefix = did_prefix
@@ -355,6 +358,14 @@ class MCPDictDataset(FileCacheDataset):
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
+
+        if not os.path.isdir(self._path):
+            # 数据文件不存在，先从汉字音典项目页面下载数据
+            logging.info(
+                'run for the first time, download data from Web, '
+                'this may take a while.'
+            )
+            self.download(cache_dir)
 
         info = self.load_dialect_info()
         super().__init__(cache_dir, info.index)
@@ -372,6 +383,39 @@ class MCPDictDataset(FileCacheDataset):
 
         self.dialect_info = info
         self.metadata = {'dialect_info': info}
+
+    @staticmethod
+    @retry.retry(exceptions=urllib.error.URLError, tries=3, delay=1)
+    def download(
+        output: str,
+        url: str = 'https://github.com/osfans/MCPDict/archive/refs/heads/master.zip'
+    ) -> None:
+        """
+        从 MCPDict 项目主页下载数据
+
+        Parameters:
+            output: 保存下载解压文件的本地目录
+            url: 项目下载地址
+        """
+
+        logging.info(f'downloading {url}...')
+
+        with urllib.request.urlopen(url) as res:
+            with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
+                os.makedirs(os.path.join(output, 'tools', 'tables', 'output'))
+                logging.info(f'extracting files to {output}...')
+
+                for info in zf.infolist():
+                    # 路径第一段是带版本号的项目名，需去除
+                    path = info.filename.partition('/')[2]
+                    # 把字音数据目录的所有文件解压到目标路径
+                    if not info.is_dir() and path.startswith('tools/tables/output/'):
+                        logging.info(f'extracting {info.filename}...')
+                        path = os.path.join(*[output] + path.split('/'))
+                        with open(path, 'wb') as of:
+                            of.write(zf.read(info))
+
+        logging.info('done.')
 
     def load_dialect_info(self) -> pandas.DataFrame:
         """
@@ -561,7 +605,6 @@ class XiaoxuetangDataset(FileCacheDataset):
     def __init__(
         self,
         cache_dir: str,
-        path: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
         did_prefix: str | None = 'X',
@@ -573,7 +616,6 @@ class XiaoxuetangDataset(FileCacheDataset):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
-            path: 数据集所在的基础路径
             uniform_name: 为真时，把数据列名转为通用名称
             uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
             did_prefix: 非空时在方言 ID 添加该前缀
@@ -583,7 +625,7 @@ class XiaoxuetangDataset(FileCacheDataset):
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
         """
 
-        self._path = os.path.join(path, 'data', 'csv')
+        self._path = cache_dir
         self._uniform_name = uniform_name
         self._uniform_info = uniform_info
         self._did_prefix = did_prefix
@@ -654,16 +696,34 @@ class XiaoxuetangDataset(FileCacheDataset):
             info: 方言点信息数据表，只包含文件中编号非空的方言点
         """
 
-        path = os.path.join(self._path, 'dialect.csv')
-        info = pandas.read_csv(path, dtype={'編號': str}).dropna(subset=['編號'])
-        info['path'] = os.path.join(self._path, 'dialects') + os.sep \
-            + info['編號'] + '.csv'
-        info = info[info['path'].map(os.path.isfile, na_action='ignore')] \
-            .set_index('編號')
+        info = pandas.read_csv(
+            os.path.join(
+                os.path.dirname(__file__),
+                'xiaoxuetang_dialect_info.csv'
+            ),
+            dtype={'編號': str}
+        ).dropna(subset=['編號'])
 
-        if info.shape[0] == 0:
-            logging.warning(f'no valid data in {self._path}.')
-            return
+        # 各方言数据下载地址
+        info['url'] = 'https://xiaoxue.iis.sinica.edu.tw/ccrdata/file/' \
+            + info['方言'].map({
+            '官話': 'ccr04_guanhua_data_xlsx.zip',
+            '晉語': 'ccr05_jinyu_data_xlsx.zip',
+            '吳語': 'ccr06_wuyu_data_xlsx.zip',
+            '徽語': 'ccr07_huiyu_data_xlsx.zip',
+            '贛語': 'ccr08_ganyu_data_xlsx.zip',
+            '湘語': 'ccr09_xiangyu_data_xlsx.zip',
+            '閩語': 'ccr10_minyu_data_xlsx.zip',
+            '粵語': 'ccr11_yueyu_data_xlsx.zip',
+            '平話': 'ccr12_pinghua_data_xlsx.zip',
+            '客語': 'ccr13_keyu_data_xlsx.zip',
+            '其他土話': 'ccr14_otherdialects_data_xlsx.zip'
+        })
+        # 下载后解压的文件路径
+        info['path'] = self._path + os.sep + info['編號'] + ' ' \
+            + info['方言'].where(info['方言'] != '官話', info['區']) + \
+            '_' + info['方言點'] + '.xlsx'
+        info.set_index('編號', inplace=True)
 
         info['區'] = self.clean_subgroup(info['區'])
         # 部分方言点包含来源文献，删除
@@ -679,7 +739,7 @@ class XiaoxuetangDataset(FileCacheDataset):
 
         if self._uniform_info:
             # 把方言信息转换成简体中文
-            info.update(info.select_dtypes(object).map(
+            info.update(info[['方言', '區', '片／小區', '小片', '方言點']].map(
                 opencc.OpenCC('t2s').convert,
                 na_action='ignore'
             ))
@@ -710,8 +770,13 @@ class XiaoxuetangDataset(FileCacheDataset):
             info: 字信息数据表
         """
 
-        path = os.path.join(self._path, 'char.csv')
-        info = pandas.read_csv(path, dtype=str)
+        info = pandas.read_csv(
+            os.path.join(
+                os.path.dirname(__file__),
+                'xiaoxuetang_char_info.csv'
+            ),
+            dtype=str
+        )
         info = info[info['字號'].notna()].set_index('字號')
 
         if self._did_prefix is not None:
@@ -723,10 +788,48 @@ class XiaoxuetangDataset(FileCacheDataset):
 
         return info
 
+    @staticmethod
+    @retry.retry(exceptions=urllib.error.URLError, tries=3, delay=1)
+    def download(url: str, output: str) -> None:
+        """
+        从小学堂网站下载方言读音数据
+
+        Parameters:
+            url: 下载地址
+            output: 保存下载解压文件的本地目录
+        """
+
+        logging.info(f'downloading {url}...')
+
+        # 设置 User-Agent，否则请求会被拒绝
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        with urllib.request.urlopen(req) as res:
+            with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
+                logging.info(f'extracting files to {output}...')
+                os.makedirs(output, exist_ok=True)
+
+                for info in zf.infolist():
+                    # 压缩包路径编码为 Big5，但 zipfile 默认用 CP437 解码，需重新用 Big5 解码
+                    try:
+                        fname = info.filename.encode('cp437').decode('big5')
+                    except UnicodeError:
+                        fname = info.filename
+                    # 改正文件名中的别字
+                    fname = fname.replace('閔', '閩')
+
+                    logging.info(f'extracting {fname}...')
+                    with open(os.path.join(output, fname), 'wb') as of:
+                        of.write(zf.read(info))
+
+        logging.info('done.')
+
     @classmethod
     def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
         """
-        加载指定方言读音数据
+        从 xlsx 文件加载方言读音数据
 
         Parameters:
             id: 要加载的方言的原始 ID（未加前缀）
@@ -736,10 +839,24 @@ class XiaoxuetangDataset(FileCacheDataset):
             data: 加载的读音数据表
         """
 
-        data = pandas.read_csv(
-            path,
-            encoding='utf-8',
-            dtype=str
+        data = pandas.read_excel(path, dtype=str)
+
+        # 少数文件列的命名和其他文件不一致，统一成最常用的
+        data.rename(columns={
+            'Order': '字號',
+            'Char': '字',
+            'ShengMu': '聲母',
+            'YunMu': '韻母',
+            'DiaoZhi': '調值',
+            'DiaoLei': '調類',
+            'Comment': '備註'
+        }, inplace=True)
+
+        # 多音字每个读音为一行，但有些多音字声韵调部分相同的，只有其中一行标了数据，
+        # 其他行为空。对于这些空缺，使用同字第一个非空的的读音填充
+        data.fillna(
+            data.groupby('字號')[['聲母', '韻母', '調值', '調類']].transform('first'),
+            inplace=True
         )
 
         # 清洗数据集特有的错误
@@ -766,17 +883,22 @@ class XiaoxuetangDataset(FileCacheDataset):
         加载方言字音数据
 
         Parameters:
-            ids: 要加载的方言 ID 列表，当为空时，加载路径中所有方言数据
+            did: 要加载的方言 ID
 
         Returns:
-            data: 方言字音表
+            did: 同参数 `did`
+            data: 方言读音数据表
+
+        如果要加载的数据文件不存在，先从网站下载。
         """
 
-        logging.info(f'loading data from {self.dialect_info.at[did, "path"]}.')
-        data = self.load_raw(
-            did[len(self._did_prefix):],
-            self.dialect_info.at[did, 'path']
-        )
+        path = self.dialect_info.at[did, "path"]
+        if not os.path.isfile(path):
+            # 方言数据文件不存在，从网站下载
+            self.download(self.dialect_info.at[did, 'url'], self._cache_dir)
+
+        logging.info(f'loading data from {path}...')
+        data = self.load_raw(did[len(self._did_prefix):], path)
         data['did'] = did
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
@@ -1314,27 +1436,11 @@ cache_dir = os.environ.get(
 )
 
 try:
-    path = os.environ['MCPDICT_HOME']
-except KeyError:
-    logging.warning(
-        'Set environment variable MCPDICT_HOME to MCPDict\'s home '
-        'dirctory then reload this module to make use of the dataset.'
-    )
-else:
-    mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'), path)
+    mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'))
+except Exception as e:
+    logging.error(e)
 
-try:
-    path = os.environ['XIAOXUETANG_HOME']
-except KeyError:
-    logging.warning(
-        'Set environment variable XIAOXUETANG_HOME to xiaoxuetang\'s home '
-        'dirctory then reload this module to make use of the dataset.'
-    )
-else:
-    xiaoxuetang = XiaoxuetangDataset(
-        os.path.join(cache_dir, 'xiaoxuetang'),
-        path
-    )
+xiaoxuetang = XiaoxuetangDataset(os.path.join(cache_dir, 'xiaoxuetang'))
 
 try:
     path = os.environ['ZHONGGUOYUYAN_HOME']
