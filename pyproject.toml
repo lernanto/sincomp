@@ -1,0 +1,51 @@
+[build-system]
+requires = [
+    "setuptools>=60.0",
+    "setuptools-scm>=8.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+dynamic = ["version"]
+name = "sincomp"
+authors = [
+    {name = "黄艺华", email = "lernanto@foxmail.com"},
+]
+description = "A toolset for computation and comparison of Chinese dialects"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "pandas>=1.5",
+    "numpy",
+    "scipy",
+    "scikit-learn>=1.2",
+    "retry",
+    "OpenCC",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/lernanto/sincomp"
+Issues = "https://github.com/lernanto/sincomp/issues"
+
+[project.optional-dependencies]
+parser = [
+    "sklearn-crfsuite",
+]
+models = [
+    "tensorflow>=2.8",
+]
+plot = [
+    "matplotlib",
+    "seaborn",
+    "geopandas",
+    "cartopy",
+    "plotly",
+    "folium"
+]
+
+[tool.setuptools_scm]
