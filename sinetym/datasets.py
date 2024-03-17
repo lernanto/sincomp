@@ -595,7 +595,7 @@ class MCPDictDataset(FileCacheDataset):
         return ((did, data),)
 
 
-class XiaoxuetangDataset(FileCacheDataset):
+class CCRDataset(FileCacheDataset):
     """
     小学堂汉字古今音资料库的现代方言数据集
 
@@ -607,8 +607,8 @@ class XiaoxuetangDataset(FileCacheDataset):
         cache_dir: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
-        did_prefix: str | None = 'X',
-        cid_prefix: str | None = 'X',
+        did_prefix: str | None = 'C',
+        cid_prefix: str | None = 'C',
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None
@@ -697,10 +697,7 @@ class XiaoxuetangDataset(FileCacheDataset):
         """
 
         info = pandas.read_csv(
-            os.path.join(
-                os.path.dirname(__file__),
-                'xiaoxuetang_dialect_info.csv'
-            ),
+            os.path.join(os.path.dirname(__file__), 'ccr_dialect_info.csv'),
             dtype={'編號': str}
         ).dropna(subset=['編號'])
 
@@ -771,10 +768,7 @@ class XiaoxuetangDataset(FileCacheDataset):
         """
 
         info = pandas.read_csv(
-            os.path.join(
-                os.path.dirname(__file__),
-                'xiaoxuetang_char_info.csv'
-            ),
+            os.path.join(os.path.dirname(__file__), 'ccr_char_info.csv'),
             dtype=str
         )
         info = info[info['字號'].notna()].set_index('字號')
@@ -1434,13 +1428,12 @@ cache_dir = os.environ.get(
         'datasets'
     )
 )
+ccr = CCRDataset(os.path.join(cache_dir, 'ccr'))
 
 try:
     mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'))
 except Exception as e:
     logging.error(e)
-
-xiaoxuetang = XiaoxuetangDataset(os.path.join(cache_dir, 'xiaoxuetang'))
 
 try:
     path = os.environ['ZHONGGUOYUYAN_HOME']
@@ -1459,7 +1452,7 @@ else:
 if __name__ == '__main__':
     # 刷新所有数据集的缓存文件
     print('refresh cache files for all datasets. this may take a while.')
-    for name in 'mcpdict', 'xiaoxuetang', 'zhongguoyuyan':
+    for name in 'mcpdict', 'ccr', 'zhongguoyuyan':
         dataset = globals().get(name)
         if dataset is not None:
             print(f'refreshing {name}...')
