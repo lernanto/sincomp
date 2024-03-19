@@ -14,9 +14,6 @@ import scipy.sparse
 import sklearn.preprocessing
 import sklearn.impute
 import sklearn.feature_extraction.text
-import matplotlib
-import shapely
-import cartopy
 
 
 def make_dict(data, minfreq=None, sort=None):
@@ -295,67 +292,3 @@ def extent(latitudes, longitudes, scale=0, margin=0.01):
     # 四边添加留白
     ext += (ext[:, 1:2] - ext[:, 0:1]) * numpy.asarray([-margin, margin])
     return ext.flatten()
-
-def clip(func, vmin=0, vmax=1):
-    """
-    辅助函数，对目标函数的返回值进行截断.
-    """
-
-    return lambda x, y: numpy.clip(func(x, y), vmin, vmax)
-
-def make_clip_path(polygons, extent=None):
-    """
-    根据绘制范围及指定的多边形生成图形的裁剪路径.
-
-    Parameters:
-        polygons (`shapely.geometry.multipolygon.MultiPolygon`):
-            裁剪的范围，只保留该范围内的图形
-        extent: 绘制的范围 (左, 右, 下, 上)
-
-    Returns:
-        path (`matplotlib.path.Path`): 生成的裁剪路径，如果传入的多边形为空返回 None
-    """
-
-    if polygons is None:
-        return None
-
-    polygons = tuple(polygons) if hasattr(polygons, '__iter__') else (polygons,)
-    if len(polygons) == 0:
-        return None
-
-    if extent is not None:
-        # 先对绘图区域和裁剪区域取交集
-        xmin, xmax, ymin, ymax = extent
-        poly = shapely.geometry.Polygon((
-            (xmin, ymin),
-            (xmin, ymax),
-            (xmax, ymax),
-            (xmax, ymin),
-            (xmin, ymin)
-        ))
-        polygons = [poly.intersection(c) for c in polygons]
-
-    return matplotlib.path.Path.make_compound_path(
-        *cartopy.mpl.patch.geos_to_path(polygons)
-    )
-
-def clip_paths(paths, polygons, extent=None):
-    """
-    根据绘制范围及指定的多边形裁剪 matplotlib 绘制的图形.
-
-    Parameters:
-        paths (`matplotlib.PathCollection` or list of `matplotlib.PathCollection`):
-            待裁剪的图形
-        polygons (`shapely.geometry.multipolygon.MultiPolygon`):
-            裁剪的范围，只保留该范围内的图形
-        extent: 绘制的范围 (左, 右, 下, 上)
-    """
-
-    path = make_clip_path(polygons, extent=extent)
-    if path is not None:
-        # 裁剪图形
-        if hasattr(paths, '__iter__'):
-            for c in paths:
-                c.set_clip_path(path, transform=c.axes.transData)
-        else:
-            paths.set_clip_path(path, transform=paths.axes.transData)
