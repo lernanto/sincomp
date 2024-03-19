@@ -9,11 +9,16 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import logging
 import collections
 import re
 import numpy
 import pandas
-from sklearn_crfsuite import CRF
+try:
+    from sklearn_crfsuite import CRF
+except ImportError:
+    logging.warning('''sklearn_crfsuite not found, CRF based parser is disabled. Run following command to install sklearn_crfsuite:
+        pip install sklearn-crfsuite''')
 
 
 # 把读音中不规范的字符映射成规范 IPA 字符的映射表
