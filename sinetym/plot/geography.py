@@ -12,12 +12,79 @@ import numpy
 import scipy.interpolate
 from sklearn.preprocessing import OneHotEncoder
 import geopandas
+import matplotlib
 import matplotlib.pyplot
+import shapely
+import cartopy
 import cartopy.crs
 import folium
 
 from .. import auxiliary
 
+
+def clip(func, vmin=0, vmax=1):
+    """
+    辅助函数，对目标函数的返回值进行截断.
+    """
+
+    return lambda x, y: numpy.clip(func(x, y), vmin, vmax)
+
+def make_clip_path(polygons, extent=None):
+    """
+    根据绘制范围及指定的多边形生成图形的裁剪路径.
+
+    Parameters:
+        polygons (`shapely.geometry.multipolygon.MultiPolygon`):
+            裁剪的范围，只保留该范围内的图形
+        extent: 绘制的范围 (左, 右, 下, 上)
+
+    Returns:
+        path (`matplotlib.path.Path`): 生成的裁剪路径，如果传入的多边形为空返回 None
+    """
+
+    if polygons is None:
+        return None
+
+    polygons = tuple(polygons) if hasattr(polygons, '__iter__') else (polygons,)
+    if len(polygons) == 0:
+        return None
+
+    if extent is not None:
+        # 先对绘图区域和裁剪区域取交集
+        xmin, xmax, ymin, ymax = extent
+        poly = shapely.geometry.Polygon((
+            (xmin, ymin),
+            (xmin, ymax),
+            (xmax, ymax),
+            (xmax, ymin),
+            (xmin, ymin)
+        ))
+        polygons = [poly.intersection(c) for c in polygons]
+
+    return matplotlib.path.Path.make_compound_path(
+        *cartopy.mpl.patch.geos_to_path(polygons)
+    )
+
+def clip_paths(paths, polygons, extent=None):
+    """
+    根据绘制范围及指定的多边形裁剪 matplotlib 绘制的图形.
+
+    Parameters:
+        paths (`matplotlib.PathCollection` or list of `matplotlib.PathCollection`):
+            待裁剪的图形
+        polygons (`shapely.geometry.multipolygon.MultiPolygon`):
+            裁剪的范围，只保留该范围内的图形
+        extent: 绘制的范围 (左, 右, 下, 上)
+    """
+
+    path = make_clip_path(polygons, extent=extent)
+    if path is not None:
+        # 裁剪图形
+        if hasattr(paths, '__iter__'):
+            for c in paths:
+                c.set_clip_path(path, transform=c.axes.transData)
+        else:
+            paths.set_clip_path(path, transform=paths.axes.transData)
 
 def scatter(
     latitudes,
@@ -64,7 +131,7 @@ def scatter(
         longitudes,
         latitudes,
         c=values,
-        clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
+        clip_path=(make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
     )
 
@@ -162,7 +229,7 @@ def area(
         lat,
         label,
         transform=proj,
-        clip_path=(auxiliary.make_clip_path(clip, extent=extent), ax.transData),
+        clip_path=(make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
     )
 
@@ -225,7 +292,7 @@ def _isogloss(
 
     if clip is not None:
         # 根据传入的图形裁剪等值线图
-        auxiliary.clip_paths(cs.collections, clip, extent=extent)
+        clip_paths(cs.collections, clip, extent=extent)
 
     return ax, cs
 
@@ -282,7 +349,7 @@ def isogloss(
 
     # 使用径向基函数基于样本点对选定范围进行插值
     rbf = scipy.interpolate.Rbf(longitudes, latitudes, values, function='linear')
-    ax, cs = _isogloss(lat0, lat1, lon0, lon1, auxiliary.clip(rbf), **kwargs)
+    ax, cs = _isogloss(lat0, lat1, lon0, lon1, clip(rbf), **kwargs)
     return ax, extent, cs
 
 def isoglosses(
