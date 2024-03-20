@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+#!/usr/bin/env -S python3 -O
 # -*- coding: utf-8 -*-
 
 """
@@ -10,8 +10,10 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import logging
 import argparse
-import os
-import sinetym
+
+import sincomp.datasets
+import sincomp.preprocess
+import sincomp.compare
 
 
 if __name__ == '__main__':
@@ -26,32 +28,28 @@ if __name__ == '__main__':
         default='l2',
         help='计算规则符合度的正则化方法'
     )
-    parser.add_argument(
-        '-s',
-        '--suffix',
-        default='mb01dz.csv',
-        help='只使用匹配该后缀的文件作为输入'
-    )
     parser.add_argument('-o', '--output', help='输出文件名')
-    parser.add_argument('input', default='.', help='输入的方言字音文件所在目录')
+    parser.add_argument('dataset', default='zhongguoyuyan', help='指定输入方言数据集')
     args = parser.parse_args()
 
     norm = None if args.norm == 'no' else args.norm
-    output = f'compliance_{args.norm}.csv' if args.output is None else args.output
-    logging.info(f'compute rule compliance of {args.norm} norm, ' \
-        f'input = {os.path.join(args.input, "*")}{args.suffix}, output = {output}')
-
-    rule = sinetym.compare.load_rule(args.rule)
-    logging.info(f'{rule.shape[0]} rules loaded.')
-
-    data = sinetym.datasets.load_data(args.input, suffix=args.suffix)
-    data = sinetym.datasets.transform_data(
-        data.loc[
-            ~data['memo'].str.contains('文'),
-            ['lid', 'cid', 'initial', 'final', 'tone']
-        ],
-        index='cid'
+    output = f'{args.dataset}_compliance_{args.norm}.csv' \
+        if args.output is None else args.output
+    logging.info(
+        f'compute rule compliance of {args.norm} norm for {args.dataset}, '
+        f'output = {output}'
     )
 
-    comp = sinetym.compare.compliance(data, rule, norm=norm)
+    rule = sincomp.compare.load_rule(args.rule)
+    logging.info(f'{rule.shape[0]} rules loaded.')
+
+    data = getattr(sincomp.datasets, args.dataset).data
+    data = sincomp.preprocess.transform(
+        data[~data['note'].str.contains('文', na=False)],
+        index='cid',
+        values=['initial', 'final', 'tone'],
+        aggfunc='first'
+    )
+
+    comp = sincomp.compare.compliance(data, rule, norm=norm)
     comp.to_csv(output, lineterminator='\n')

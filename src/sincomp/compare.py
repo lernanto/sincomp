@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+# -*- coding: utf-8 -*-
 
 """用于方言比较的工具函数."""
 
@@ -24,12 +24,9 @@ def load_rule(fname, characters=None):
         rules (`pandas.DataFrame`): 语音规则表，每行对应一对同音字集
     """
 
-    def parse_cids(cids):
-        return list(int(i) for i in cids.split())
-
     rules = pandas.read_csv(
         fname,
-        converters={'cid1': parse_cids, 'cid2': parse_cids},
+        converters={'cid1': str.split, 'cid2': str.split},
         comment='#'
     )
 

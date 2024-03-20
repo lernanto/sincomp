@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+#!/usr/bin/env -S python3 -O
 # -*- coding: utf-8 -*-
 
 '''
@@ -11,11 +11,8 @@
 __author__ = '黄艺华 <lernanto.wong@gmail.com>'
 
 
-import sys
 import logging
 import argparse
-import json
-import re
 import numpy as np
 import pandas as pd
 import scipy.stats as st
@@ -27,7 +24,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 import joblib
 
-import sinetym
+import sincomp.datasets
+import sincomp.preprocess
 
 
 def impute(data):
@@ -185,7 +183,6 @@ def get_stats(data, labels):
 
 def main():
     parser = argparse.ArgumentParser(globals().get('__doc__', ''))
-    parser.add_argument('--input', help='原始方言读音文件所在目录，CSV 格式')
     parser.add_argument('--imputed-output', help='填充缺失值的数据的输出文件')
     parser.add_argument('--recon-output', help='根据自动编码器重构的读音的输出文件')
     parser.add_argument('--encoder-output', help='输入读音编码器模型输出文件')
@@ -195,19 +192,43 @@ def main():
     parser.add_argument('--initial-stats-output', help='声母聚类统计数据输出文件')
     parser.add_argument('--final-stats-output', help='韵母聚类统计数据输出文件')
     parser.add_argument('--tone-stats-output', help='声调聚类统计数据输出文件')
-    parser.add_argument('dialects', nargs='*', help='要加载的方言读音，为空加载全部方言')
+    parser.add_argument('dataset', help='使用的方言数据集')
+    parser.add_argument('group', nargs='*', help='筛选数据集中指定方言大类，为空使用所有方言')
     args = parser.parse_args()
 
-    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.INFO)
 
-    # 加载方言字音数据
-    data = sinetym.datasets.transform_data(
-        sinetym.datasets.load_data(args.input, *args.dialects) \
-            .rename(columns={'tone_category': 'tone'}),
+    imputed_output = f'{args.dataset}_imputed.h5' \
+        if args.imputed_output is None else args.imputed_output
+    recon_output = f'{args.dataset}_recon.h5' \
+        if args.recon_output is None else args.recon_output
+    encoder_output = f'{args.dataset}_encoder.h5' \
+        if args.encoder_output is None else args.encoder_output
+    initial_tree_output = f'{args.dataset}_initial_tree.h5' \
+        if args.initial_tree_output is None else args.initial_tree_output
+    final_tree_output = f'{args.dataset}_final_tree.h5' \
+        if args.final_tree_output is None else args.final_tree_output
+    tone_tree_output = f'{args.dataset}_tone_tree.h5' \
+        if args.tone_tree_output is None else args.tone_tree_output
+    initial_stats_output = f'{args.dataset}_initial_stats.h5' \
+        if args.initial_stats_output is None else args.initial_stats_output
+    final_stats_output = f'{args.dataset}_final_stats.h5' \
+        if args.imputed_output is None else args.imputed_output
+    tone_stats_output = f'{args.dataset}_tone_stats.h5' \
+        if args.tone_stats_output is None else args.tone_stats_output
+
+    # 加载方言字音数据集
+    dataset = getattr(sincomp.datasets, args.dataset)
+    if len(args.group) > 0:
+        info = dataset.metadata['dialect_info']
+        dataset = dataset.filter(info.loc[info['group'].isin(args.group)].index)
+
+    data = sincomp.preprocess.transform(
+        dataset,
         index='cid',
         values=['initial', 'final', 'tone'],
         aggfunc='first'
-    ).replace('', pd.NA)
+    )
 
     # 丢弃缺失读音太多的记录
     data.dropna(axis=1, thresh=data.shape[0] * 0.2, inplace=True)
@@ -215,25 +236,25 @@ def main():
 
     # 分类器不能处理缺失值，先根据已有数据填充缺失读音
     imputed = impute(data)
-    imputed.to_hdf(args.imputed_output, key='imputed')
+    imputed.to_hdf(imputed_output, key='imputed')
 
     # 使用自动编码器重构祖语声韵调类
     recon, encoder, initial_tree, final_tree, tone_tree = reconstruct(imputed)
 
     # 输出结果
-    recon.to_hdf(args.recon_output, key='recon')
-    joblib.dump(encoder, args.encoder_output)
-    joblib.dump(initial_tree, args.initial_tree_output)
-    joblib.dump(final_tree, args.final_tree_output)
-    joblib.dump(tone_tree, args.tone_tree_output)
+    recon.to_hdf(recon_output, key='recon')
+    joblib.dump(encoder, encoder_output)
+    joblib.dump(initial_tree, initial_tree_output)
+    joblib.dump(final_tree, final_tree_output)
+    joblib.dump(tone_tree, tone_tree_output)
 
     initial_stats, final_stats, tone_stats = get_stats(
         data,
         recon.loc[:, 'cluster']
     )
-    initial_stats.to_hdf(args.initial_stats_output, key='initial_stats')
-    final_stats.to_hdf(args.final_stats_output, key='final_stats')
-    tone_stats.to_hdf(args.tone_stats_output, key='tone_stats')
+    initial_stats.to_hdf(initial_stats_output, key='initial_stats')
+    final_stats.to_hdf(final_stats_output, key='final_stats')
+    tone_stats.to_hdf(tone_stats_output, key='tone_stats')
 
 
 if __name__ == '__main__':

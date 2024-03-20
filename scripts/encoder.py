@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+#!/usr/bin/env -S python3 -O
 # -*- coding: utf-8 -*-
 
 """
@@ -20,9 +20,9 @@ from sklearn.preprocessing import OrdinalEncoder
 import tensorflow as tf
 from tensorboard.plugins import projector
 
-import sinetym.datasets
-import sinetym.models
-import sinetym.auxiliary
+import sincomp.datasets
+import sincomp.models
+import sincomp.auxiliary
 
 
 def load_dictionaries(prefix='.'):
@@ -46,7 +46,7 @@ def load_dictionaries(prefix='.'):
 
     return dicts
 
-def load_datasets(config: dict) -> sinetym.datasets.Dataset:
+def load_datasets(config: dict) -> sincomp.datasets.Dataset:
     """
     加载数据集.
 
@@ -61,9 +61,9 @@ def load_datasets(config: dict) -> sinetym.datasets.Dataset:
 
     for d in config:
         if isinstance(d, str):
-            dataset = getattr(sinetym.datasets, d)
+            dataset = getattr(sincomp.datasets, d)
         else:
-            dataset = getattr(sinetym.datasets, d['name']).filter(d['did'])
+            dataset = getattr(sincomp.datasets, d['name']).filter(d['did'])
 
         try:
             data += dataset
@@ -82,13 +82,13 @@ def build_model(config, **kwargs):
         kwargs (dict): 透传给模型构造函数的其他参数
 
     Returns:
-        model (sinetym.models.EncoderBase): 创建的编码器模型
+        model (sincomp.models.EncoderBase): 创建的编码器模型
         optimizer (`tensorflow.optimizers.Optimizer`): 创建的优化器
     """
 
     # 创建模型
     model_config = config.pop('model').copy()
-    model_class = getattr(sinetym.models, model_config.pop('class'))
+    model_class = getattr(sincomp.models, model_config.pop('class'))
     model = model_class(**model_config, **kwargs)
 
     # 创建优化器
@@ -113,7 +113,7 @@ def build_new_model(model, dialect_nums=None, input_nums=None):
     基于已训练的模型创建新模型.
 
     Parameters:
-        model (sinetym.models.EncoderBase): 已训练的基线模型
+        model (sincomp.models.EncoderBase): 已训练的基线模型
         dialect_nums (array-like of int): 新方言数量，为空时沿用旧方言
         input_nums (array-like of int): 新字数量，为空时沿用旧字数
 
@@ -221,11 +221,11 @@ def make_data(
 
     # 如果输入词典为空，根据训练数据创建
     if dialect_dicts is None:
-        dialect_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+        dialect_dicts = [sincomp.auxiliary.make_dict(c, minfreq=minfreq) \
             for _, c in train_dialect.items()]
 
     if input_dicts is None:
-        input_dicts = [sinetym.auxiliary.make_dict(c, minfreq=minfreq) \
+        input_dicts = [sincomp.auxiliary.make_dict(c, minfreq=minfreq) \
             for _, c in train_input.items()]
 
     if any(d.shape[0] <= 0 for d in itertools.chain(
@@ -354,7 +354,7 @@ def mkdict(config):
     os.makedirs(prefix, exist_ok=True)
 
     for name in sum(config['columns'].values(), []):
-        dic = sinetym.auxiliary.make_dict(
+        dic = sincomp.auxiliary.make_dict(
             data[name],
             minfreq=config.get('min_freq'),
             sort='value'
@@ -385,7 +385,7 @@ def benchmark(config, data):
     """
 
     # 输出数据必须全部编码
-    output_dicts = [sinetym.auxiliary.make_dict(
+    output_dicts = [sincomp.auxiliary.make_dict(
         data[c],
         minfreq=config.get('min_freq')
     ) for c in config['columns']['output']]
@@ -396,12 +396,12 @@ def benchmark(config, data):
     #   - 包含训练方言 ID 和测试字 ID
     #   - 包含测试方言 ID 和测试字 ID
     random_state = np.random.RandomState(37511)
-    train_dialect, test_dialect = sinetym.auxiliary.split_data(
+    train_dialect, test_dialect = sincomp.auxiliary.split_data(
         data[config['columns']['dialect']].apply(tuple, axis=1).map(hash),
         return_mask=True,
         random_state=random_state
     )
-    train_input, test_input = sinetym.auxiliary.split_data(
+    train_input, test_input = sincomp.auxiliary.split_data(
         data[config['columns']['input']].apply(tuple, axis=1).map(hash),
         return_mask=True,
         random_state=random_state
