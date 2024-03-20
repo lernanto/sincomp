@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+#!/usr/bin/env -S python3 -O
 # -*- coding: utf-8 -*-
 
 """
@@ -10,13 +10,15 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import logging
 import argparse
-import os
 import pandas as pd
 import numpy as np
-import sinetym
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 from cartopy.io.shapereader import Reader
+
+import sincomp.datasets
+import sincomp.compare
+import sincomp.plot
 
 
 def isogloss(
@@ -64,7 +66,7 @@ def isogloss(
     if alpha is None:
         alpha = 0.7 if fill else 1
 
-    _, extent, _ = sinetym.plot.geography.isogloss(
+    _, extent, _ = sincomp.plot.geography.isogloss(
         data.loc[:, lat],
         data.loc[:, lon],
         values=data.loc[:, val],
@@ -82,7 +84,7 @@ def isogloss(
     )
 
     # 绘制样本点散点图
-    sinetym.plot.geography.scatter(
+    sincomp.plot.geography.scatter(
         data.loc[:, lat],
         data.loc[:, lon],
         values=None if cmap is None else data.loc[:, val],
@@ -137,42 +139,45 @@ if __name__ == '__main__':
         type=float_array,
         help='绘制范围的经纬度，为半角逗号分隔的4个实数'
     )
-    parser.add_argument('-o', '--output-prefix', default='', help='输出路径前缀')
+    parser.add_argument('-o', '--output-prefix', help='输出路径前缀')
     parser.add_argument('-f', '--format', default='png', help='保存的图片格式')
-    parser.add_argument('prefix', help='样本点信息等文件的路径前缀')
     parser.add_argument('data', help='规则符合度数据文件')
     parser.add_argument('rule', nargs='?', help='语音规则文件')
+    parser.add_argument(
+        'dataset',
+        nargs='?',
+        default='zhongguoyuyan',
+        help='计算规则符合度使用的数据集'
+    )
     args = parser.parse_args()
 
+    output_prefix = args.dataset + '_' if args.output_prefix is None \
+        else args.output_prefix
     logging.info(
-        f'create isogloss, input prefix = {args.prefix}, '
-        f'data = {args.data}, rule = {args.rule}, '
-        f'output prefix = {args.output_prefix}.'
+        f'create isogloss, data = {args.data}, dataset = {args.dataset}, '
+        f'rule = {args.rule}, output prefix = {output_prefix}.'
     )
 
     bg = None if args.background is None else plt.imread(args.background)
     geo = None if args.geography is None \
         else tuple(Reader(args.geography).geometries())
-    location = sinetym.datasets.zhongguoyuyan.load_location(
-        os.path.join(args.prefix, 'location.csv'),
-        predict=False
-    )
+    dialect = getattr(sincomp.datasets, args.dataset).metadata['dialect_info']
 
     logging.info(f'loading data from {args.data} ...')
     data = pd.read_csv(args.data, index_col=0)
     logging.info(f'done. loaded {data.shape[0]} dialects x {data.shape[1]} rules.')
 
     if args.rule is not None:
-        char = pd.read_csv(os.path.join(args.prefix, 'words.csv'), index_col='cid')
-        rule = sinetym.compare.load_rule(args.rule, characters=char['item'])
+        char = getattr(sincomp.datasets, args.dataset).metadata['char_info']
+        rule = sincomp.compare.load_rule(args.rule, characters=char['character'])
         data.columns = rule.loc[data.columns.astype(int), 'name']
 
     columns = data.columns
-    data[['latitude', 'longitude']] = location[['latitude', 'longitude']]
+    data[['latitude', 'longitude']] = dialect[['latitude', 'longitude']]
 
     for c in columns:
-        fname = f'{args.output_prefix}{c}.{args.format}'
-        logging.info(f'creating f{fname} ...')
+        fname = f'{output_prefix}{c}.{args.format}'
+        logging.info(f'creating {fname} ...')
 
         fig = plt.figure(figsize=args.size)
         isogloss(

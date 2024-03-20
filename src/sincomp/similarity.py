@@ -531,8 +531,8 @@ if __name__ == '__main__':
     parser.add_argument(
         'dataset',
         nargs='*',
-        default=('xiaoxuetag',),
-        help='方言数据集名称或数据文件或目录路径，如果不指定，为所有支持的数据集计算方言相似度'
+        default=('ccr',),
+        help='方言数据集名称或数据文件或目录路径'
     )
     args = parser.parse_args()
 
@@ -547,21 +547,21 @@ if __name__ == '__main__':
         except AttributeError:
             # 如果在数据集不在支持的列表中，视为数据文件或目录路径，文件为 CSV 格式
             if os.path.isdir(dts):
-                data = pandas.concat(
-                    [pandas.read_csv(os.path.join(c, f), dtype=str) \
-                        for c, _, fs in os.walk(dts) for f in fs],
-                    axis=0,
-                    ignore_index=True
-                )
+                # 目录，递归检索目录下的所有文件，视每个文件为一个方言数据，文件名为方言 ID
+                data = datasets.FileDataset(pandas.Series(
+                    *zip(*[(os.path.join(c, f), os.path.splitext(f)[0]) \
+                        for c, _, fs in os.walk(dts) for f in fs])
+                ))
+                dts = os.path.basename(dts)
             else:
                 data = pandas.read_csv(dts, dtype=str)
-            dts = os.path.splitext(os.path.basename(dts))[0]
+                dts = os.path.splitext(os.path.basename(dts))[0]
 
         data = preprocess.transform(
             data.fillna({'initial': '', 'final': '', 'tone': ''}),
             index='cid',
             values=['initial', 'final', 'tone'],
-            aggfunc=' '.join
+            aggfunc='first'
         )
 
         for method in methods:

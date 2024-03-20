@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -O
+#!/usr/bin/env -S python3 -O
 # -*- coding: utf-8 -*-
 
 """
@@ -16,7 +16,9 @@ import pandas as pd
 import tensorflow as tf
 from tensorboard.plugins import projector
 
-import sinetym
+import sincomp.datasets
+import sincomp.auxiliary
+import sincomp.models
 
 
 if __name__ == '__main__':
@@ -37,18 +39,19 @@ if __name__ == '__main__':
         default=0.01,
         help='学习率'
     )
-    parser.add_argument('input', help='方言字音数据目录')
-    parser.add_argument('dialects', nargs='+', help='要建模的方言编号列表')
+    parser.add_argument('dataset', help='使用的方言数据集')
+    parser.add_argument('group', nargs='+', help='要建模的方言大类')
     args = parser.parse_args()
 
     # 加载方言数据
-    data = sinetym.datasets.load_data(os.path.join(args.input), *args.dialects)
-    char = data[['cid', 'character']].drop_duplicates('cid') \
-        .set_index('cid').sort_index()
+    dataset = getattr(sincomp.datasets, args.dataset)
+    char = dataset.metadata['char_info'][['character']]
+    info = dataset.metadata['dialect_info']
+    dataset = dataset.filter(info[info['group'].isin(args.group)].index)
 
     # 展开成字为行、方言点为列的字音矩阵
-    data = sinetym.datasets.transform_data(
-        data,
+    data = sincomp.preprocess.transform(
+        dataset,
         index='cid',
         values=['initial', 'final', 'tone'],
         aggfunc='first'
@@ -61,7 +64,7 @@ if __name__ == '__main__':
     )))
 
     # 方言声韵调编码，缺失值为 -1
-    codes, categories = sinetym.auxiliary.encode(data)
+    codes, categories = sincomp.auxiliary.encode(data)
     bases = np.insert(
         np.cumsum([c.shape[0] for c in categories])[:-1],
         0,
@@ -73,7 +76,7 @@ if __name__ == '__main__':
         columns=data.columns
     )
 
-    generator = sinetym.models.ContrastiveGenerator(
+    generator = sincomp.models.ContrastiveGenerator(
         codes.loc[:, 'initial'].values,
         codes.loc[:, 'final'].values,
         codes.loc[:, 'tone'].values
@@ -92,7 +95,7 @@ if __name__ == '__main__':
         drop_remainder=True
     )
 
-    encoder = sinetym.models.AutoEncoder(
+    encoder = sincomp.models.AutoEncoder(
         sum(c.shape[0] for c in categories),
         args.embedding_size
     )
