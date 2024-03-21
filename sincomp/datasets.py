@@ -1421,10 +1421,10 @@ class ZhongguoyuyanDataset(FileCacheDataset):
 
 
 cache_dir = os.environ.get(
-    'SINETYM_CACHE',
+    'SINCOMP_CACHE',
     os.path.join(
         os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
-        'sinetym',
+        'sincomp',
         'datasets'
     )
 )
