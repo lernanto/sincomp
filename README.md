@@ -4,10 +4,10 @@ SinComp 是一个自动化处理汉语方言读音数据的工具集，包含了
 
 ## 安装
 
-安装本库的前置条件是已安装 pip 和 Git。在此基础上，在 Linux 终端/Windows 命令提示符下运行：
+在 Linux 终端/Windows 命令提示符下运行：
 
 ```shell
-pip install git+https://github.com/lernanto/sincomp.git
+pip install sincomp
 ```
 
 ## 使用简介
@@ -117,10 +117,6 @@ sim = sincomp.similarity.chi2(data)
 
 如下为以上数据集的版权声明：
 
-### 汉字音典
-
-汉字音典为开源的汉字读音查询工具，并随代码发布了互联网方言爱好者收集整理的多种历史和方言读音数据。数据随代码以 MIT 许可在 [GitHub](https://github.com/osfans/MCPDict) 发布，详情见其[版权声明](https://github.com/osfans/MCPDict?tab=License-1-ov-file)。
-
 ### 小学堂
 
 小学堂在网站上提供所有方言读音数据下载，对于这部分数据声明：
@@ -128,6 +124,10 @@ sim = sincomp.similarity.chi2(data)
 > ……提供獨立下載之聲韻資料檔案，視為事實性紀錄之整理，編輯者為其指認採「公眾領域標章（PDM，Public Domain Mark)」進行發布，在法律許可的範圍內，該等事實性勘驗記錄不復受到著作權利的保障，使用者得將其視為無著作權利限制之資訊，使用上毋須另洽編輯者申請著作權及著作相關權利之授權。
 
 详情见[汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/)的“授权方式”节。
+
+### 汉字音典
+
+汉字音典为开源的汉字读音查询工具，并随代码发布了互联网方言爱好者收集整理的多种历史和方言读音数据。数据随代码以 MIT 许可在 [GitHub](https://github.com/osfans/MCPDict) 发布，详情见其[版权声明](https://github.com/osfans/MCPDict?tab=License-1-ov-file)。
 
 ### 语保
 
@@ -194,12 +194,14 @@ print(wide[:10])
 import pandas as pd
 import sincomp.datasets
 
-# 建立方言 ID 到数据文件路径的映射表
-file_map = pd.Series(
-    ['path/to/id1.csv', 'path/to/id2.csv'],
-    index=['id1', 'id2']
-)
-mydataset = sincomp.datasets.FileDataset(file_map)
+# 从指定目录加载数据集，该目录树下每个文件视为一个方言点，主文件名为方言 ID
+mydataset = sincomp.datasets.FileDataset(path='path/to/dataset/directory')
 # 自定义数据集的用法与自带数据集相同
 print(mydataset[:10])
 ```
+
+# 开发计划
+
+- [ ] 使用 CRF 切分汉语方言音节及切分声韵调
+- [ ] 为现有的算法和模型提供兼容 scikit-learn 的接口
+- [ ] 更新语保数据获取脚本
