@@ -548,10 +548,7 @@ if __name__ == '__main__':
             # 如果在数据集不在支持的列表中，视为数据文件或目录路径，文件为 CSV 格式
             if os.path.isdir(dts):
                 # 目录，递归检索目录下的所有文件，视每个文件为一个方言数据，文件名为方言 ID
-                data = datasets.FileDataset(pandas.Series(
-                    *zip(*[(os.path.join(c, f), os.path.splitext(f)[0]) \
-                        for c, _, fs in os.walk(dts) for f in fs])
-                ))
+                data = datasets.FileDataset(path=dts)
                 dts = os.path.basename(dts)
             else:
                 data = pandas.read_csv(dts, dtype=str)

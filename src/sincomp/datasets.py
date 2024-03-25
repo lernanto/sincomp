@@ -97,11 +97,23 @@ class FileDataset(Dataset):
     数据以 CSV 形式存放在一系列文件中，每个文件是一个方言点。
     """
 
-    def __init__(self, file_map: pandas.Series | None = None):
+    def __init__(
+        self,
+        file_map: pandas.Series | None = None,
+        path: str | None = None
+    ):
         """
         Parameters:
             file_map: 方言 ID 到数据文件路径的映射表
+            path: 数据集所在的目录路径
         """
+
+        if file_map is None and path is not None:
+            # 未指定数据文件映射表但指定了数据目录，把目录下每个文件看成一个方言点，主文件名为方言 ID
+            file_map = pandas.Series(*zip(
+                *[(os.path.join(c, f), os.path.splitext(f)[0]) \
+                    for c, _, fs in os.walk(path) for f in fs]
+            ))
 
         self._file_map = file_map
 
@@ -168,7 +180,7 @@ class FileDataset(Dataset):
             output: 筛选后的数据集，只包含满足条件的方言
         """
 
-        return FileDataset(self._file_map.loc[idx])
+        return FileDataset(file_map=self._file_map.loc[idx])
 
     def sample(self, *args, **kwargs) -> Dataset:
         """
@@ -181,7 +193,7 @@ class FileDataset(Dataset):
             output: 包含抽样方言的数据集
         """
 
-        return FileDataset(self._file_map.sample(*args, **kwargs))
+        return FileDataset(file_map=self._file_map.sample(*args, **kwargs))
 
     def shuffle(
         self,
@@ -197,7 +209,7 @@ class FileDataset(Dataset):
             output: 内容相同的数据集，但方言的顺序随机打乱了
         """
 
-        return FileDataset(self._file_map.sample(
+        return FileDataset(file_map=self._file_map.sample(
             frac=1.0,
             random_state=random_state
         ))
@@ -213,7 +225,9 @@ class FileDataset(Dataset):
             output: 合并了两个数据集文件的新数据集
         """
 
-        return FileDataset(pandas.concat([self._file_map, other._file_map]))
+        return FileDataset(
+            file_map=pandas.concat([self._file_map, other._file_map])
+        )
 
     def __len__(self) -> int:
         """
