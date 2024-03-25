@@ -15,7 +15,7 @@ description = "A toolset for computation and comparison of Chinese dialects"
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
-    "pandas>=1.5",
+    "pandas[excel]>=1.5",
     "numpy",
     "scipy",
     "scikit-learn>=1.2",
