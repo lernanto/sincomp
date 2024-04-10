@@ -670,20 +670,21 @@ def tone2super(origin: pandas.Series) -> pandas.Series:
 def transform(
     data: pandas.DataFrame,
     index: str = 'did',
+    columns: str = 'cid',
     values: list[str] | None = None,
-    aggfunc: str | collections.abc.Callable = 'first'
+    aggfunc: str | collections.abc.Callable = 'first',
+    **kwargs
 ) -> pandas.DataFrame:
     """
     把方言读音数据长表转换为宽表
 
-    当 index 为 did 时，以地点为行，字为列，声韵调为子列。
-    当 index 为 cid 时，以字为行，地点为列，声韵调为子列。
-
     Parameters:
         data: 待转换的读音数据长表
-        index: 指明以原始表的哪一列为行，did 一个地点为一行，cid 一个字为一行
+        index: 指明以原始表的哪一列为行
+        columns: 指明以原始表的哪一列为一级列
         values: 用于变换的列，变换后成为二级列，为空保留所有列
-        aggfunc: 相同的 did 和 cid 有多个记录的，使用 aggfunc 函数合并
+        aggfunc: 相同的行列有多个记录的，使用 aggfunc 函数合并
+        kwargs: 透传给 pandas.DataFrame.pivot_table
 
     Returns:
         output: 转换格式得到的数据宽表
@@ -692,10 +693,10 @@ def transform(
     output = data.pivot_table(
         values,
         index=index,
-        columns='cid' if index == 'did' else 'did',
+        columns=columns,
         aggfunc=aggfunc,
-        fill_value='',
-        sort=False
+        sort=False,
+        **kwargs
     )
 
     # 如果列名为多层级，把指定的列名上移到最高层级
