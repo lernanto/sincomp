@@ -7,9 +7,9 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import pandas
 import numpy
-from sklearn.preprocessing import normalize
-
-from . import auxiliary
+import sklearn.compose
+import sklearn.feature_extraction.text
+import sklearn.preprocessing
 
 
 def load_rule(fname, characters=None):
@@ -67,7 +67,22 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
         element_data = data.loc[:, pandas.IndexSlice[:, element]]
 
         # 先对方言读音 one-hot 编码
-        code, lim = auxiliary.vectorize(element_data, dtype=dtype)
+        transformer = sklearn.compose.make_column_transformer(
+            *[(sklearn.feature_extraction.text.CountVectorizer(
+                lowercase=False,
+                tokenizer=str.split,
+                stop_words=None,
+                dtype=dtype
+            ), i) for i in range(element_data.shape[1])]
+        )
+        code = transformer.fit_transform(element_data)
+
+        lim = numpy.empty(len(transformer.transformers_) + 1, dtype=int)
+        lim[0] = 0
+        numpy.cumsum(
+            [len(t[1].vocabulary_) for t in transformer.transformers_],
+            out=lim[1:]
+        )
 
         # 计算字集的读音向量
         code1 = numpy.empty((rule.shape[0], code.shape[1]), dtype=dtype)
@@ -82,8 +97,8 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
             x1 = code1[:, lim[i]:lim[i + 1]]
             x2 = code2[:, lim[i]:lim[i + 1]]
             if norm is not None:
-                x1 = normalize(x1, norm=norm)
-                x2 = normalize(x2, norm=norm)
+                x1 = sklearn.preprocessing.normalize(x1, norm=norm)
+                x2 = sklearn.preprocessing.normalize(x2, norm=norm)
 
             numpy.sum(x1 * x2, axis=1, out=sim[i])
 
