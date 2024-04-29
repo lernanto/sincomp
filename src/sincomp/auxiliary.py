@@ -90,7 +90,7 @@ def split_data(
     # 根据数量的平方随机排序，根据在总样本中的占比截取需要的数量
     prob = numpy.square(counts)
     prob = prob / numpy.sum(prob)
-    idx = numpy.random.choice(
+    idx = random_state.choice(
         ratio.shape[0],
         ratio.shape[0],
         replace=False,
