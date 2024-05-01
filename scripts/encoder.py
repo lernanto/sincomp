@@ -397,12 +397,12 @@ def benchmark(config, data):
     #   - 包含测试方言 ID 和测试字 ID
     random_state = np.random.RandomState(37511)
     train_dialect, test_dialect = sincomp.auxiliary.split_data(
-        data[config['columns']['dialect']].apply(tuple, axis=1).map(hash),
+        data[config['columns']['dialect']].fillna('').apply(' '.join, axis=1),
         return_mask=True,
         random_state=random_state
     )
     train_input, test_input = sincomp.auxiliary.split_data(
-        data[config['columns']['input']].apply(tuple, axis=1).map(hash),
+        data[config['columns']['input']].fillna('').apply(' '.join, axis=1),
         return_mask=True,
         random_state=random_state
     )
