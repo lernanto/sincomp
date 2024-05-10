@@ -12,6 +12,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import sys
 import os
 import logging
 import pandas
@@ -1437,7 +1438,13 @@ class ZhongguoyuyanDataset(FileCacheDataset):
 cache_dir = os.environ.get(
     'SINCOMP_CACHE',
     os.path.join(
-        os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
+        os.environ.get(
+            'LOCALAPPDATA',
+            os.path.expanduser('~')) if sys.platform.startswith('win') \
+            else os.environ.get(
+                'XDG_DATA_HOME',
+                os.path.join(os.path.expanduser('~'), '.local', 'share')
+            ),
         'sincomp',
         'datasets'
     )
