@@ -96,7 +96,7 @@ def split_data(
         replace=False,
         p=prob
     )
-    mask = numpy.empty(ratio.shape, dtype=numpy.bool8)
+    mask = numpy.empty(ratio.shape, dtype=bool)
     mask[idx] = ratio[idx].cumsum() < train_size
     # 保证训练集、测试集均不为空
     mask[idx[0]] = True
