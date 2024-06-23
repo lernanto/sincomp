@@ -349,7 +349,7 @@ def mkdict(config):
     prefix = config.get('dictionary_dir', '.')
     logging.info(f'make dictionaries to {prefix}...')
 
-    data = load_datasets(config)
+    data = load_datasets(config['datasets'])
 
     os.makedirs(prefix, exist_ok=True)
 
