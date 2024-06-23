@@ -665,14 +665,19 @@ class EncoderBase(tf.Module):
             weights = tf.convert_to_tensor(weights, dtype=tf.float32)
 
         loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
-        acc_stat = tf.keras.metrics.MeanTensor(dtype=tf.float32)
+        acc_stats = [tf.keras.metrics.Mean(dtype=tf.float32) \
+            for _ in self.output_embs]
 
         for dialect, inputs, targets in data:
             loss, acc = self.update(optimizer, dialect, inputs, targets, weights)
             loss_stat.update_state(loss)
-            acc_stat.update_state(acc)
+            for i, s in enumerate(acc_stats):
+                s.update_state(acc[i])
 
-        return loss_stat.result(), acc_stat.result()
+        return (
+            loss_stat.result(),
+            tf.convert_to_tensor([s.result() for s in acc_stats])
+        )
 
     def evaluate(self, data, weights=None):
         """
