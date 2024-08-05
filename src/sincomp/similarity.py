@@ -555,11 +555,12 @@ if __name__ == '__main__':
                 dts = os.path.splitext(os.path.basename(dts))[0]
 
         data = preprocess.transform(
-            data.fillna({'initial': '', 'final': '', 'tone': ''}),
+            data,
             index='cid',
+            columns='did',
             values=['initial', 'final', 'tone'],
             aggfunc='first'
-        )
+        ).fillna('')
 
         for method in methods:
             # 如果输出文件只有一个，使用指定的路径作为文件名，否则作为输出目录

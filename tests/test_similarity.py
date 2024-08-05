@@ -26,9 +26,10 @@ class TestSimilarity(unittest.TestCase):
                 path=os.path.join(data_dir, 'custom_dataset1')
             ),
             index='cid',
+            columns='did',
             values=['initial', 'final', 'tone'],
             aggfunc='first'
-        )
+        ).fillna('')
 
     def test_chi2(self):
         import sincomp.similarity
