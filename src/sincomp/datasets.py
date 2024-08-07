@@ -547,7 +547,7 @@ class MCPDictDataset(FileCacheDataset):
             0x0090: 0x0285, # -> LATIN SMALL LETTER SQUAT REVERSED ESH
         })
 
-        return data.replace('', numpy.NAN)
+        return data.replace('', numpy.nan)
 
     def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
         """
@@ -695,7 +695,7 @@ class CCRDataset(FileCacheDataset):
                     )
                 )
             )
-        ), index=subgroup.index).replace('', numpy.NAN)
+        ), index=subgroup.index).replace('', numpy.nan)
 
     def load_dialect_info(self) -> pandas.DataFrame:
         """
@@ -885,7 +885,7 @@ class CCRDataset(FileCacheDataset):
             0x0030: 0x2205, # DIGIT ZERO -> EMPTY SET
         })
 
-        return data.replace('', numpy.NAN)
+        return data.replace('', numpy.nan)
 
     def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
         """
@@ -919,7 +919,7 @@ class CCRDataset(FileCacheDataset):
 
         data.replace(
             {'聲母': '', '韻母': '', '調值': '', '調類': ''},
-            numpy.NAN,
+            numpy.nan,
             inplace=True
         )
         # 删除声韵调均为空的记录
@@ -1033,7 +1033,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
                 .str.replace('^(.{2,})(?:地|新|特|林|综合实验)区$', r'\1', regex=True) \
                 .str.replace('(.)县城$', r'\1', regex=True) \
                 .str.replace('^(.{2,6})[市州盟县区旗]$', r'\1', regex=True) \
-                .replace('', numpy.NAN)
+                .replace('', numpy.nan)
 
             mask = clean != raw
             if numpy.count_nonzero(mask):
@@ -1053,13 +1053,13 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         # 直辖市的地区统一置空
         mask = clean['province'].isin(['北京', '天津', '上海', '重庆'])
         clean.loc[mask & clean['county'].isna(), 'county'] = clean['city']
-        clean.loc[mask, 'city'] = numpy.NAN
+        clean.loc[mask, 'city'] = numpy.nan
 
         # 特别行政区市县置空
         clean.loc[
             clean['province'].isin(['香港', '澳门']),
             ['city', 'county']
-        ] = numpy.NAN
+        ] = numpy.nan
 
         return clean
 
@@ -1096,7 +1096,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         group = try_get_group(location['area'])
         group.where(group != '', try_get_group(location['slice']), inplace=True)
 
-        return group.replace('', numpy.NAN)
+        return group.replace('', numpy.nan)
 
     @classmethod
     def get_subgroup(self, location: pandas.DataFrame) -> pandas.Series:
@@ -1160,7 +1160,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             inplace=True
         )
 
-        return subgroup.replace('', numpy.NAN)
+        return subgroup.replace('', numpy.nan)
 
     @classmethod
     def get_cluster(self, location: pandas.DataFrame) -> pandas.Series:
@@ -1284,11 +1284,11 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         info.loc[
             (info['group'] == '官话') & ~info['subgroup'].str.endswith('官话', na=False),
             ['group', 'subgroup']
-        ] = numpy.NAN
+        ] = numpy.nan
 
         # 个别方言点的经纬度有误，去除
-        info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.NAN
-        info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.NAN
+        info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.nan
+        info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.nan
 
         if self._did_prefix is not None:
             info.set_index(self._did_prefix + info.index, inplace=True)
@@ -1367,7 +1367,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             0xf20d: 0x0264, # -> LATIN SMALL LETTER RAMS HORN
         })
 
-        return data.replace('', numpy.NAN)
+        return data.replace('', numpy.nan)
 
     def load_data(self, did: str) -> list[tuple[str, pandas.DataFrame]]:
         """
@@ -1393,7 +1393,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
 
         data.replace(
             {'initial': '', 'finals': '', 'tone': ''},
-            numpy.NAN,
+            numpy.nan,
             inplace=True
         )
         # 删除声韵调均为空的记录
