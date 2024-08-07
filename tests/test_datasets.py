@@ -35,7 +35,7 @@ class TestFileDataset(unittest.TestCase):
             self.assertTrue(col in data.columns)
 
     def test_filter(self):
-        data = self.dataset.filter(['01']).data
+        data = self.dataset.filter(['08533']).data
         self.assertTrue(isinstance(data, pandas.DataFrame))
         for col in 'did', 'cid', 'initial', 'final', 'tone':
             self.assertTrue(col in data.columns)
