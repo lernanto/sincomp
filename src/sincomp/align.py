@@ -16,6 +16,8 @@
 
 import typing
 import logging
+import os
+import itertools
 import pandas
 import numpy
 import scipy.sparse
@@ -26,7 +28,6 @@ import sklearn.feature_extraction.text
 import sklearn.metrics
 import sklearn.preprocessing
 import sklearn.pipeline
-import itertools
 
 from .preprocess import transform
 
@@ -332,21 +333,29 @@ if __name__ == '__main__':
         help='用于对齐多音字的字向量长度'
     )
     parser.add_argument(
-        '-o',
-        '--output',
-        default='dataset.csv',
-        help='对齐后的数据集输出文件'
+        '--prefix',
+        default='aligned',
+        help='对齐后的数据集输出路径前缀'
     )
     parser.add_argument(
-        '-c',
+        '--charmap-output',
+        default='charmap.csv',
+        help='新旧字 ID 映射表输出文件'
+    )
+    parser.add_argument(
         '--char-output',
         default='char.csv',
         help='对齐后的新字 ID 到各数据集的原字 ID 的映射文件'
     )
     parser.add_argument(
-        'dataset',
+        '--dialect-output',
+        default='dialect.csv',
+        help='合并各数据集的方言信息文件'
+    )
+    parser.add_argument(
+        'datasets',
         nargs='*',
-        default=('ccr', 'mcpdict'),
+        default=('CCR', 'MCPDict'),
         help='要对齐的数据集列表'
     )
     args = parser.parse_args()
@@ -355,19 +364,47 @@ if __name__ == '__main__':
 
     t2s = opencc.OpenCC('t2s')
 
+    original_datasets = []
+    dialects = []
     dss = []
-    for name in args.dataset:
-        try:
-            data = getattr(datasets, name)
-        except AttributeError:
-            # 当前只接受预定义的数据集
-            logging.warning(f'{name} is not a predefined dataset, ignored.')
+    for name in args.datasets:
+        data = datasets.get(name)
+        if data is None:
             continue
+
+        original_datasets.append(data)
+        try:
+            dlt = data.metadata['dialect_info']
+        except (AttributeError, KeyError):
+            # 数据集不包含方言点信息，根据数据生成基本的信息
+            logging.warning(f'{repr(data)} has no dialect information.')
+            dlt = pandas.DataFrame(index=pandas.Index(
+                data['did'].drop_duplicates().dropna().sort_values(),
+                name='did'
+            ))
+
+        dialects.append(
+            data.metadata['dialect_info'].reindex([
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            ], axis=1)
+        )
 
         if data is datasets.ccr:
             # 从数据集生成字表，下同
             # TODO: 为对齐多音字，当前把字形统一转换为简体字，应分别处理繁体和简体
-            chars = data[['cid', 'character']].sort_values(['cid', 'character']) \
+            chars = data[['cid', 'character']] \
+                .sort_values(['cid', 'character']) \
                 .drop_duplicates('cid') \
                 .dropna() \
                 .set_index('cid')['character'] \
@@ -379,45 +416,44 @@ if __name__ == '__main__':
                 chars.map(t2s.convert).values,
                 index=chars.values
             )
+            # MCPDict 数据集没有字 ID，以字形为 ID
             data = data.rename(columns={'character': 'cid'})
 
         elif data is datasets.zhongguoyuyan:
             chars = data.metadata['char_info']['character']
 
-        dss.append((name, data, chars))
+        else:
+            chars = data[['cid', 'character']] \
+                .sort_values(['cid', 'character']) \
+                .drop_duplicates('cid') \
+                .dropna() \
+                .set_index('cid')['character']
+
+        dss.append((data, chars))
 
     logging.info(
-        f'align datasets {", ".join([n for n, _, _ in dss])}, '
+        f'align datasets {", ".join([d.name for d in original_datasets])}'
         f'embedding size = {args.embedding_size} ...'
     )
 
-    # 对齐多音字，生成旧字 ID 到新字 ID 的映射表
-    char_lists = align(
-        *[(d, c) for _, d, c in dss],
-        emb_size=args.embedding_size
-    )
-
-    # 把所有数据集中的所有有效数据映射到新字 ID
-    dataset = pandas.concat(
-        [d.assign(cid=d['cid'].map(c['label']))[[
-            'did',
-            'cid',
-            'initial',
-            'final',
-            'tone',
-            'note'
-        ]] for (_, d, _), c in zip(dss, char_lists)],
+    dialects = pandas.concat(
+        dialects,
         axis=0,
-        ignore_index=True
-    )
-    dataset.dropna(subset='cid', inplace=True)
-    dataset['cid'] = dataset['cid'].astype(int)
+        keys=[d.name for d in original_datasets]
+    ) \
+        .reset_index(names=['dataset', 'original_did']) \
+        .rename_axis('did')
+
+    # 对齐多音字，生成旧字 ID 到新字 ID 的映射表
+    char_lists = align(*dss, emb_size=args.embedding_size)
 
     # 整合成一个总的新旧字 ID 映射表
-    names = [n for n, _, _ in dss]
+    names = [d.name for d in original_datasets]
+    charmap = pandas.concat(char_lists, axis=0, keys=names) \
+        .rename_axis(['dataset', 'cid'])
+
     chars = pandas.pivot_table(
-        pandas.concat(char_lists, axis=0, keys=names) \
-            .rename(columns={'label': 'cid'}) \
+        charmap.rename(columns={'label': 'cid'}) \
             .reset_index(names=['dataset', 'old_cid']),
         values='old_cid',
         index='cid',
@@ -430,12 +466,49 @@ if __name__ == '__main__':
         axis=1
     ).bfill(axis=1).iloc[:, 0])
 
-    logging.info(f'save {dataset.shape[0]} aligned data to {args.output} ...')
-    dataset.to_csv(
-        args.output,
-        index=False,
-        encoding='utf-8',
-        lineterminator='\n'
-    )
-    logging.info(f'save {chars.shape[0]} character infomation to {args.char_output} ...')
-    chars.to_csv(args.char_output, encoding='utf-8', lineterminator='\n')
+    path = os.path.abspath(args.charmap_output)
+    logging.info(f'save {charmap.shape[0]} character mapping to {path} ...')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    charmap.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+    path = os.path.abspath(args.char_output)
+    logging.info(f'save {chars.shape[0]} character information to {path} ...')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    chars.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+    path = os.path.abspath(args.dialect_output)
+    logging.info(f'save {dialects.shape[0]} dialect information to {path} ...')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dialects.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+    # 把所有数据集中的所有有效数据映射到新方言 ID 和字 ID
+    dialect_map = dialects[['dataset', 'original_did']].reset_index() \
+        .set_index(['dataset', 'original_did'])['did']
+
+    for dataset, c in zip(original_datasets, char_lists):
+        for did, data in dataset.items():
+            # MCPDict 数据集没有字 ID，特殊处理
+            if dataset is datasets.mcpdict:
+                data = data.rename(columns={'character': 'cid'})
+
+            did = dialect_map[(dataset.name, did)]
+            data = data.assign(did=did, cid=data['cid'].map(c['label'])) \
+                .reindex([
+                    'did',
+                    'cid',
+                    'initial',
+                    'final',
+                    'tone',
+                    'tone_category',
+                    'note'
+                ], axis=1) \
+                .dropna(subset=['did', 'cid'])
+
+            if data.shape[0] > 0:
+                data['cid'] = data['cid'].astype(int)
+
+                dirname = os.path.abspath(os.path.join(args.prefix, dataset.name))
+                path = os.path.join(dirname, str(did))
+                os.makedirs(dirname, exist_ok=True)
+                logging.info(f'save {data.shape[0]} aligned data to {path} ...')
+                data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
