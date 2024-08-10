@@ -147,6 +147,18 @@ class FileDataset(Dataset):
 
         return self.load_file(self._file_map[did])
 
+    def items(self):
+        """
+        依次访问每个方言点的数据
+        """
+
+        for did in self._file_map.index:
+            yield did, self.load(did)
+
+    def __iter__(self):
+        for _, data in self.items():
+            yield data
+
     @property
     def data(self) -> pandas.DataFrame:
         """
@@ -156,17 +168,22 @@ class FileDataset(Dataset):
             output: 合并所有文件数据的长表
         """
 
-        output = pandas.concat(
-            [self.load(did) for did in self._file_map.index],
-            axis=0,
-            ignore_index=True
-        )
+        output = pandas.concat(self, axis=0, ignore_index=True)
 
         logging.debug(
             f'{self._file_map.shape[0]} dialects '
             f'{output.shape[0]} records loaded.'
         )
         return output
+
+    def iterrows(self):
+        """
+        依次访问每各方言点的每条记录
+        """
+
+        for data in self:
+            for r in data.iterrows():
+                yield r
 
     def filter(self, idx) -> Dataset:
         """
