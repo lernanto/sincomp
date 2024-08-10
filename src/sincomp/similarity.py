@@ -172,16 +172,17 @@ def chi2(
         dest = src
 
     if isinstance(src, datasets.Dataset | pandas.DataFrame):
-        index = src.columns.levels[0]
+        # 从传入的 DataFrame 推导方言数和特征数，要求方言按顺序排列，且特征数量和顺序都相同
+        index = src.columns.get_level_values(0).drop_duplicates()
         src_num = index.shape[0]
-        feature_num = src.columns.levels[1].shape[0]
+        feature_num = src.shape[1] // src_num
         src = src.values
     else:
         index = None
         src_num = src.shape[1] // feature_num
 
     if isinstance(dest, datasets.Dataset | pandas.DataFrame):
-        columns = dest.columns.levels[0]
+        columns = dest.columns.get_level_values(0).drop_duplicates()
         dest_num = columns.shape[0]
         dest = dest.values
     else:
@@ -369,16 +370,16 @@ def entropy(
         dest = src
 
     if isinstance(src, datasets.Dataset | pandas.DataFrame):
-        index = src.columns.levels[0]
+        index = src.columns.get_level_values(0).drop_duplicates()
         src_num = index.shape[0]
-        feature_num = src.columns.levels[1].shape[0]
+        feature_num = src.shape[1] // src_num
         src = src.values
     else:
         index = None
         src_num = src.shape[1] // feature_num
 
     if isinstance(dest, datasets.Dataset | pandas.DataFrame):
-        columns = dest.columns.levels[0]
+        columns = dest.columns.get_level_values(0).drop_duplicates()
         dest_num = columns.shape[0]
         dest = dest.values
     else:
