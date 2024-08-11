@@ -382,8 +382,8 @@ class MCPDictDataset(FileCacheDataset):
         cache_dir: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
-        did_prefix: str | None = 'M',
-        cid_prefix: str | None = 'M',
+        did_prefix: str | None = None,
+        cid_prefix: str | None = None,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = '∅',
@@ -600,7 +600,7 @@ class MCPDictDataset(FileCacheDataset):
 
         logging.info(f'load data from {self.dialect_info.at[did, "path"]}.')
         data = self.load_raw(
-            did[len(self._did_prefix):],
+            did if self._did_prefix is None else did[len(self._did_prefix):],
             self.dialect_info.at[did, 'path']
         )
         data['did'] = did
@@ -659,8 +659,8 @@ class CCRDataset(FileCacheDataset):
         cache_dir: str,
         uniform_name: bool = True,
         uniform_info: bool = True,
-        did_prefix: str | None = 'C',
-        cid_prefix: str | None = 'C',
+        did_prefix: str | None = None,
+        cid_prefix: str | None = None,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None,
@@ -940,13 +940,16 @@ class CCRDataset(FileCacheDataset):
         如果要加载的数据文件不存在，先从网站下载。
         """
 
-        path = self.dialect_info.at[did, "path"]
+        path = self.dialect_info.at[did, 'path']
         if not os.path.isfile(path):
             # 方言数据文件不存在，从网站下载
             self.download(self.dialect_info.at[did, 'url'], self._cache_dir)
 
         logging.info(f'loading data from {path}...')
-        data = self.load_raw(did[len(self._did_prefix):], path)
+        data = self.load_raw(
+            did if self._did_prefix is None else did[len(self._did_prefix):],
+            path
+        )
         data['did'] = did
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
@@ -1011,8 +1014,8 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         cache_dir: str,
         path: str,
         uniform_name: bool = True,
-        did_prefix: str | None = 'Z',
-        cid_prefix: str | None = 'Z',
+        did_prefix: str | None = None,
+        cid_prefix: str | None = None,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None,
@@ -1422,7 +1425,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         """
 
         data = self.load_raw(
-            did[len(self._did_prefix):],
+            did if self._did_prefix is None else did[len(self._did_prefix):],
             self.dialect_info.loc[did, 'path']
         )
         data['did'] = did
