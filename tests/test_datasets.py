@@ -28,29 +28,53 @@ class TestFileDataset(unittest.TestCase):
     def test_file_dataset(self):
         self.assertEqual(len(self.dataset), 2)
 
+    def test_items(self):
+        count = 0
+        for did, data in self.dataset.items():
+            self.assertIsInstance(data, pandas.DataFrame)
+            for col in 'did', 'cid', 'initial', 'final', 'tone':
+                self.assertIn(col, data.columns)
+
+            self.assertTrue((data['did'] == did).all())
+
+            count += 1
+
+        self.assertEqual(count, 2)
+
     def test_data(self):
         data = self.dataset.data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         for col in 'did', 'cid', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
+
+    def test_iterrows(self):
+        count = 0
+        for i, r in self.dataset.iterrows():
+            self.assertIsInstance(r, pandas.Series)
+            for col in 'did', 'cid', 'initial', 'final', 'tone':
+                self.assertIn(col, r)
+
+            count += 1
+
+        self.assertEqual(count, self.dataset.data.shape[0])
 
     def test_filter(self):
         data = self.dataset.filter(['08533']).data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         for col in 'did', 'cid', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
 
     def test_sample(self):
         data = self.dataset.sample(n=1).data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         for col in 'did', 'cid', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
 
     def test_shuffle(self):
         data = self.dataset.shuffle().data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         for col in 'did', 'cid', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
 
     def test_append(self):
         import sincomp.datasets
@@ -60,7 +84,7 @@ class TestFileDataset(unittest.TestCase):
         )
         output = self.dataset.append(other)
 
-        self.assertTrue(isinstance(output, sincomp.datasets.FileDataset))
+        self.assertIsInstance(output, sincomp.datasets.FileDataset)
         self.assertEqual(len(output), len(self.dataset) + len(other))
         self.assertEqual(
             output.data.shape[0],
@@ -73,26 +97,26 @@ class TestCCRDataset(unittest.TestCase):
         import sincomp.datasets
 
         info = sincomp.datasets.ccr.metadata['dialect_info']
-        self.assertTrue(isinstance(info, pandas.DataFrame))
+        self.assertIsInstance(info, pandas.DataFrame)
         self.assertGreater(info.shape[0], 0)
         for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertTrue(col in info.columns)
+            self.assertIn(col, info.columns)
 
     def test_char_info(self):
         import sincomp.datasets
 
         info = sincomp.datasets.ccr.metadata['char_info']
-        self.assertTrue(isinstance(info, pandas.DataFrame))
+        self.assertIsInstance(info, pandas.DataFrame)
         self.assertGreater(info.shape[0], 0)
 
     def test_load_data(self):
         import sincomp.datasets
 
-        _, data = sincomp.datasets.ccr.load_data('C027')[0]
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        _, data = sincomp.datasets.ccr.load_data('027')[0]
+        self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 20)
         for col in 'did', 'cid', 'character', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
 
 
 class TestMCPDictDataset(unittest.TestCase):
@@ -100,19 +124,19 @@ class TestMCPDictDataset(unittest.TestCase):
         import sincomp.datasets
 
         info = sincomp.datasets.mcpdict.metadata['dialect_info']
-        self.assertTrue(isinstance(info, pandas.DataFrame))
+        self.assertIsInstance(info, pandas.DataFrame)
         self.assertEqual(info.shape[0], 2)
         for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertTrue(col in info.columns)
+            self.assertIn(col, info.columns)
 
     def test_data(self):
         import sincomp.datasets
 
         data = sincomp.datasets.mcpdict.data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 40)
         for col in 'did', 'character', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
 
 
 class TestZhongguoyuyanDataset(unittest.TestCase):
@@ -120,23 +144,44 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
         import sincomp.datasets
 
         info = sincomp.datasets.zhongguoyuyan.metadata['dialect_info']
-        self.assertTrue(isinstance(info, pandas.DataFrame))
+        self.assertIsInstance(info, pandas.DataFrame)
         self.assertEqual(info.shape[0], 2)
         for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertTrue(col in info.columns)
+            self.assertIn(col, info.columns)
 
     def test_char_info(self):
         import sincomp.datasets
 
         info = sincomp.datasets.zhongguoyuyan.metadata['char_info']
-        self.assertTrue(isinstance(info, pandas.DataFrame))
+        self.assertIsInstance(info, pandas.DataFrame)
         self.assertGreater(info.shape[0], 0)
 
     def test_data(self):
         import sincomp.datasets
 
         data = sincomp.datasets.zhongguoyuyan.data
-        self.assertTrue(isinstance(data, pandas.DataFrame))
+        self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 40)
         for col in 'did', 'character', 'initial', 'final', 'tone':
-            self.assertTrue(col in data.columns)
+            self.assertIn(col, data.columns)
+
+
+class TestDatasets(unittest.TestCase):
+    def test_get(self):
+        import sincomp.datasets
+
+        for name in (
+            'ccr',
+            'CCR',
+            'mcpdict',
+            'MCPDict',
+            'zhongguoyuyan',
+            os.path.join(data_dir, 'custom_dataset1'),
+            os.path.join(data_dir, 'custom_dataset1', '23C57.csv')
+        ):
+            self.assertIsInstance(
+                sincomp.datasets.get(name),
+                sincomp.datasets.Dataset
+            )
+
+        self.assertIs(sincomp.datasets.get('foo'), None)
