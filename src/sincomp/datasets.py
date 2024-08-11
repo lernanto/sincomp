@@ -59,13 +59,19 @@ def predict_group(
 class Dataset:
     """数据集基类"""
 
-    def __init__(self, data: pandas.DataFrame | None = None):
+    def __init__(
+        self,
+        data: pandas.DataFrame | None = None,
+        name: str | None = None
+    ):
         """
         Parameters:
             data: 方言字音数据表
+            name: 数据集名字
         """
 
         self._data = data
+        self.name = name
 
     @property
     def data(self) -> pandas.DataFrame | None:
@@ -90,6 +96,12 @@ class Dataset:
         data = self.data
         return None if data is None else data.__getattr__(name)
 
+    def __repr__(self):
+        return f'<{type(self).__name__} {repr(self.name)}>'
+
+    def __str__(self):
+        return str(self.name)
+
 
 class FileDataset(Dataset):
     """
@@ -101,7 +113,8 @@ class FileDataset(Dataset):
     def __init__(
         self,
         file_map: pandas.Series | None = None,
-        path: str | None = None
+        path: str | None = None,
+        name: str | None = None
     ):
         """
         Parameters:
@@ -116,6 +129,10 @@ class FileDataset(Dataset):
                     for c, _, fs in os.walk(path) for f in fs]
             ))
 
+        if name is None and path is not None:
+            name = os.path.basename(os.path.abspath(path))
+
+        super().__init__(name=name)
         self._file_map = file_map
 
     @classmethod
@@ -270,7 +287,7 @@ class FileCacheDataset(FileDataset):
     为保持代码简洁，不特殊处理，而是由使用者保证在执行上述操作前生成所有缓存文件。
     """
 
-    def __init__(self, cache_dir: str, dids: list[str]):
+    def __init__(self, cache_dir: str, dids: list[str], name: str | None = None):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
@@ -278,7 +295,8 @@ class FileCacheDataset(FileDataset):
         """
 
         super().__init__(
-            cache_dir + os.sep + pandas.Series(dids, index=dids)
+            cache_dir + os.sep + pandas.Series(dids, index=dids),
+            name=name
         )
         self._cache_dir = cache_dir
 
@@ -368,7 +386,8 @@ class MCPDictDataset(FileCacheDataset):
         cid_prefix: str | None = 'M',
         superscript_tone: bool = False,
         na: str | None = None,
-        empty: str | None = '∅'
+        empty: str | None = '∅',
+        name: str = 'MCPDict'
     ):
         """
         Parameters:
@@ -380,6 +399,7 @@ class MCPDictDataset(FileCacheDataset):
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
+            name: 数据集名称
         """
 
         self._path = os.path.join(cache_dir, 'tools', 'tables', 'output')
@@ -400,7 +420,7 @@ class MCPDictDataset(FileCacheDataset):
             self.download(cache_dir)
 
         info = self.load_dialect_info()
-        super().__init__(cache_dir, info.index)
+        super().__init__(cache_dir, info.index, name=name)
 
         # 从方言详情提取声调调值和调类的映射表
         self._tone_map = {}
@@ -643,7 +663,8 @@ class CCRDataset(FileCacheDataset):
         cid_prefix: str | None = 'C',
         superscript_tone: bool = False,
         na: str | None = None,
-        empty: str | None = None
+        empty: str | None = None,
+        name: str = 'CCR'
     ):
         """
         Parameters:
@@ -655,6 +676,7 @@ class CCRDataset(FileCacheDataset):
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
+            name: 数据集名称
         """
 
         self._path = cache_dir
@@ -667,7 +689,7 @@ class CCRDataset(FileCacheDataset):
         self._empty = empty
 
         info = self.load_dialect_info()
-        super().__init__(cache_dir, info.index)
+        super().__init__(cache_dir, info.index, name=name)
         self.dialect_info = info
         self.metadata = {
             'dialect_info': info,
@@ -993,7 +1015,8 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         cid_prefix: str | None = 'Z',
         superscript_tone: bool = False,
         na: str | None = None,
-        empty: str | None = None
+        empty: str | None = None,
+        name: str = 'zhongguoyuyan'
     ):
         """
         Parameters:
@@ -1005,6 +1028,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失数据的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
+            name: 数据集名称
         """
 
         self._path = os.path.join(path, 'csv')
@@ -1016,7 +1040,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         self._empty = empty
 
         info = self.load_dialect_info()
-        super().__init__(cache_dir, info.index)
+        super().__init__(cache_dir, info.index, name=name)
         self.dialect_info = info
         self.metadata = {
             'dialect_info': info,
@@ -1485,6 +1509,48 @@ else:
         os.path.join(cache_dir, 'zhongguoyuyan'),
         path
     )
+
+_datasets = {
+    'ccr': ccr,
+    'CCR': ccr,
+    'mcpdict': mcpdict,
+    'MCPDict': mcpdict,
+    'zhongguoyuyan': zhongguoyuyan
+}
+
+def get(name: str) -> Dataset | None:
+    """
+    获取或加载数据集
+
+    Parameters:
+        name: 预定义数据集的名字，或本地数据集的路径
+
+    Returns:
+        dataset: 预定义或创建的数据集对象
+
+    优先把 `name` 当作预定义数据集的名字查询，如果不成功，当作本地路径创建数据集。
+    """
+
+    try:
+        return _datasets[name]
+
+    except KeyError:
+        # 不是预定义数据集，尝试把入参作为路径从本地加载
+        logging.info(f'{name} is not a predefined dataset, try loading data from files.')
+
+        if os.path.isdir(name):
+            # name 是目录，使用目录下的数据创建数据集
+            return FileDataset(path=name)
+
+        elif os.path.isfile(name):
+            # name 是文件，直接加载数据后包装成数据集
+            return Dataset(
+                pandas.read_csv(name, dtype=str, encoding='utf-8'),
+                name=os.path.splitext(os.path.basename(name))[0]
+            )
+
+        else:
+            logging.warning(f'{name} not found!')
 
 
 if __name__ == '__main__':
