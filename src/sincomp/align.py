@@ -34,7 +34,7 @@ from .preprocess import transform
 
 def prepare(
     dataset: pandas.DataFrame,
-    chars: pandas.Series | None = None
+    chars: pandas.Series | numpy.ndarray[str] | None = None
 ) -> tuple[pandas.DataFrame, pandas.Series]:
     """
     把数据集长表预处理成宽表
@@ -42,7 +42,7 @@ def prepare(
     Parameters:
         dataset: 数据集长表，必须包含字段 cid, initial, final, tone，
             如果 `chars` 为空，还必须包含 character 字段用于生成字表
-        chars: cid 到字形的映射表，索引为 cid
+        chars: cid 到字形的映射表，以 cid 为索引，在不包含索引的情况下，默认索引为从 0 开始编号
 
     Returns:
         matrix: 数据集变换并编码后的特征矩阵列表，每行代表一个字
@@ -68,6 +68,7 @@ def prepare(
 
     else:
         # dataset 和 chars 的字取交集
+        chars = pandas.Series(chars)
         index = transformed.index.intersection(
             chars.dropna().index.drop_duplicates()
         ).sort_values()
@@ -274,7 +275,10 @@ def cluster(
     )
 
 def align(
-    *datasets: list[tuple[pandas.DataFrame, numpy.ndarray[str] | None]],
+    *datasets: list[tuple[
+        pandas.DataFrame,
+        pandas.Series | numpy.ndarray[str] | None
+    ]],
     emb_size: int = 10
 ) -> list[pandas.DataFrame]:
     """
@@ -284,7 +288,8 @@ def align(
         datasets: 数据集的列表，每个数据集为如下的二元组：
             - dataset: 方言读音数据集长表，必须包含字段 cid, initial, final, tone，
                 如果 `chars` 为空，还必须包含 character 字段用于生成字表
-            - chars: cid 到字形的映射表，索引为 cid，在多音字的情况下，会包含重复的字
+            - chars: cid 到字形的映射表，以 cid 为索引，在不包含索引的情况下，默认索引为从 0 开始编号。
+                在多音字的情况下，会包含重复的字
         emb_size: 矩阵分解使用的字音向量长度
 
     Returns:
