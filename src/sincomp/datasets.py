@@ -711,30 +711,30 @@ class CCRDataset(FileCacheDataset):
         """
 
         return pandas.Series(numpy.where(
-            subgroup.str.contains('北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南', na=False),
+            subgroup.str.contains('北京|東北|冀鲁|胶遼|中原|蘭銀|江淮|西南', na=False),
             subgroup.str.replace(
-                '.*(北京|东北|冀鲁|胶辽|中原|兰银|江淮|西南).*',
-                r'\1官话',
+                '.*(北京|東北|冀鲁|胶遼|中原|蘭銀|江淮|西南).*',
+                r'\1官話',
                 regex=True
             ),
             numpy.where(
-                subgroup.str.contains('闽东|闽南|闽北|闽中|莆仙|邵将|琼文', na=False),
+                subgroup.str.contains('閩東|閩南|閩北|閩中|莆仙|邵將|瓊文', na=False),
                 subgroup.str.replace(
-                    '.*(闽东|闽南|闽北|闽中|莆仙|邵将|琼文).*',
-                    r'\1区',
+                    '.*(閩東|閩南|閩北|閩中|莆仙|邵將|瓊文).*',
+                    r'\1區',
                     regex=True
                 ),
                 numpy.where(
-                    subgroup.str.contains('桂南|桂北', na=False),
-                    subgroup.str.replace('.*(桂南|桂北).*', r'\1平话', regex=True),
+                    subgroup.str.contains('^桂南|桂北', na=False),
+                    subgroup.str.replace('^(桂南|桂北).*', r'\1平話', regex=True),
                     numpy.where(
-                        subgroup.str.contains('湘南|粤北', na=False),
-                        subgroup.str.replace('.*(湘南|粤北).*', r'\1土话', regex=True),
+                        subgroup.str.contains('湘南|粵北', na=False),
+                        subgroup.str.replace('.*(湘南|粵北).*', r'\1土話', regex=True),
                         ''
                     )
                 )
             )
-        ), index=subgroup.index).replace('', numpy.nan)
+        ), index=subgroup.index).replace('', pandas.NA)
 
     def load_dialect_info(self) -> pandas.DataFrame:
         """
