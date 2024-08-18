@@ -516,10 +516,12 @@ class MCPDictDataset(FileCacheDataset):
 
         # 解析方言分类
         cat = info.pop('地圖集二分區').str.partition(',').iloc[:, 0].str.split('-')
-        info['group'] = cat.str[0]
+        # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
+        info['group'] = cat.str[0].replace('鄕話', '鄉話')
         info['cluster'] = cat.str[1]
         info['subcluster'] = cat.str[2]
-        mask = info['group'].str.endswith('官話')
+
+        mask = info['group'].str.endswith('官話') | info['group'].str.endswith('官话')
         info.loc[mask, 'subgroup'] = info.loc[mask, 'group']
         info.loc[mask, 'group'] = '官話'
 
@@ -541,6 +543,14 @@ class MCPDictDataset(FileCacheDataset):
                 'cluster',
                 'subcluster'
             ]].map(opencc.OpenCC('t2s').convert, na_action='ignore'))
+
+            # 原始分区部分平话和土话，根据子分区信息尽量分开
+            mask = info['group'] == '平话和土话'
+            info.loc[mask, 'group'] = numpy.where(
+                info.loc[mask, 'cluster'].isin(['桂南片', '桂北片']),
+                '平话',
+                '土话'
+            )
 
         if self._uniform_name:
             info.index.rename('did', inplace=True)
@@ -776,7 +786,15 @@ class CCRDataset(FileCacheDataset):
             '_' + info['方言點'] + '.xlsx'
         info.set_index('編號', inplace=True)
 
+        # 部分平话被归为粤语，尽量根据名称还原
+        info['方言'].where(
+            (info['方言'] != '粵語') | ~info['方言點'].str.contains('平話', na=False),
+            '平話',
+            inplace=True
+        )
+
         info['區'] = self.clean_subgroup(info['區'])
+
         # 部分方言点包含来源文献，删除
         info['方言點'] = info['方言點'].str.replace(
             r'\(安徽省志\)|\(珠江三角洲\)|\(客贛方言調查報告\)|\(廣西漢語方言\)'
@@ -1139,6 +1157,12 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         # 有些方言区，主要是官话的大区被标在不同的字段，尽力尝试获取
         group = try_get_group(location['area'])
         group.where(group != '', try_get_group(location['slice']), inplace=True)
+
+        # 对平话和土话的标注不一致，尽量和下面的子分区对齐
+        group[
+            (group == '土话') \
+            & location['slice'].str.contains('桂南|桂北', na=False, regex=True)
+        ] = '平话'
 
         return group.replace('', numpy.nan)
 
