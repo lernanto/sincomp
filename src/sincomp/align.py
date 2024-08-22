@@ -81,7 +81,8 @@ def prepare(
                 lowercase=False,
                 tokenizer=str.split,
                 token_pattern=None,
-                stop_words=None
+                stop_words=None,
+                binary=True
             ),
             sklearn.preprocessing.Normalizer('l2')
         ), i) for i in range(transformed.shape[1])]
@@ -282,7 +283,7 @@ def align(
     emb_size: int = 10
 ) -> list[pandas.DataFrame]:
     """
-    根据读音对其多个方言数据集中的多音字
+    根据读音对齐多个方言数据集中的多音字
 
     Parameters:
         datasets: 数据集的列表，每个数据集为如下的二元组：
