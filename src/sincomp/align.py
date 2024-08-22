@@ -14,20 +14,22 @@
 """
 
 
-import typing
-import logging
-import os
 import itertools
-import pandas
+import logging
 import numpy
+import os
+import pandas
 import scipy.sparse
 import scipy.sparse.linalg
 import sklearn.cluster
 import sklearn.compose
+import sklearn.decomposition
 import sklearn.feature_extraction.text
+import sklearn.linear_model
 import sklearn.metrics
 import sklearn.preprocessing
 import sklearn.pipeline
+import typing
 
 from .preprocess import transform
 
@@ -322,6 +324,143 @@ def align(
         chars['label'] = encoder.transform(chars['label'])
 
     return char_lists
+
+def annotate(
+    embeddings: numpy.ndarray[float],
+    chars: numpy.ndarray[str],
+    data: numpy.ndarray[str],
+    data_chars: numpy.ndarray[str]
+) -> numpy.ndarray[int]:
+    """
+    为未区分的多音字标注相应的读音标记
+
+    Parameters:
+        embeddings: chars 对应的字向量，行数和 chars 相同
+        chars: 基础数据集的字形列表，多音字会出现多次
+        data: 待标注多音字的一个方言的字音数据，每行为一个待标注的字音，缺失值用空字符串表示
+        data_chars: data 中每行对应的字形，缺失值用空字符串表示
+
+    Returns:
+        labels: 标注 data 每行对应 chars 的位置，如 data_chars 中的字在 chars 中不存在，
+            则相应标注为 -1
+
+    取 data 中字对齐 chars 中的对应单音字，使用线性回归拟合 embeddings 中对应的字向量，
+    由此得到一个把 data 中的字音映射到字向量的线性模型。使用该模型把 data 中的多音字也映射为字向量，
+    然后计算和 embeddings 中哪个字最接近，即标注为该字。
+    """
+
+    embeddings = numpy.asarray(embeddings)
+    chars = pandas.Series(chars).reset_index(drop=True)
+    data = numpy.asarray(data)
+    data_chars = numpy.asarray(data_chars)
+
+    # 待标注数据编码为稀疏矩阵
+    matrix = sklearn.compose.make_column_transformer(
+        *[(sklearn.pipeline.make_pipeline(
+            sklearn.feature_extraction.text.CountVectorizer(
+                lowercase=False,
+                tokenizer=str.split,
+                token_pattern=None,
+                stop_words=None,
+                binary=True
+            ),
+            sklearn.preprocessing.Normalizer('l2')
+        ), i) for i in range(data.shape[1])]
+    ).fit_transform(data)
+
+    # 标注基础数据集中的单音字及其位置
+    idx = chars[chars.groupby(chars).transform('count') == 1]
+    idx = pandas.Series(idx.index, index=idx).reindex(data_chars)
+
+    # 单音字只有一个 ID，直接标注
+    labels = numpy.full(data.shape[0], -1, dtype=int)
+    mask = idx.notna()
+    labels[mask] = chars.index[idx[mask].astype(int)]
+
+    if numpy.any(~mask):
+        # 把待标注数据集中的多音字编码成字向量
+        emb = sklearn.linear_model.LinearRegression() \
+            .fit(matrix[mask], embeddings[idx[mask].astype(int)]) \
+            .predict(matrix[~mask])
+
+        # 为多音字计算最相似的字向量
+        for i, j in enumerate(numpy.nonzero(~mask)[0]):
+            idx2 = numpy.nonzero(chars == data_chars[j])[0]
+            if len(data_chars[j]) > 0 and idx2.shape[0] > 0:
+                dist = sklearn.metrics.pairwise.cosine_distances(
+                    emb[i][None, :],
+                    embeddings[idx2]
+                )
+                labels[j] = chars.index[idx2[numpy.argmin(dist[0])]]
+
+    return labels
+
+def align_no_cid(
+    base: scipy.sparse.csr_matrix | pandas.DataFrame,
+    chars: numpy.ndarray[str] | pandas.Series,
+    *datasets: list,
+    na_threshold: float = 0.5,
+    emb_size: int = 10
+) -> list[list[tuple[numpy.ndarray, numpy.ndarray[str]]]]:
+    """
+    把没有字 ID 的数据集中的多音字对齐到基础数据集的字 ID
+
+    Parameters:
+        base: 基础数据集，每行代表一个字，多音字占多行
+        chars: base 中对应字的字形，多音字会出现多次。如类型为 pandas.Series，则索引为字 ID
+        datasets: 待对齐的无字 ID 数据集列表，每个元素为一个数据集，
+            必须包含 did, initial, final, tone 字段
+        na_threshold: base 中有读音的比例超过该值的字才会用于训练向量编码器。
+            仅当 base 类型为 pandas.DataFrame 时有效，且无论是否参与训练编码器，最后所有字都会编码成字向量
+        emb_size: 指定编码字向量的大小
+
+    Returns:
+        result: 标注结果列表，长度和 dataset 相同，每个元素又是一个列表，长度为对应数据集的方言数。
+            每个元素为标注的字 ID 列表和字形列表的二元组，长度均为该方言的记录数。
+            字 ID 列表的内容为该数据集的每条记录对应 chars 中字的位置，如 chars 为 pandas.Series，
+            则为字 ID，如在 chars 中不存在该字形，则为 -1 或 None。字形列表为对应位置的字形
+
+    先把基础数据集降维编码成字向量，在对每个数据集中每个方言应用 annotate 标注多音字。
+    """
+
+    # 把基础数据集编码成字向量
+    mask = base.isna().mean(axis=1) < na_threshold
+    matrix = sklearn.compose.make_column_transformer(*[(
+        sklearn.pipeline.make_pipeline(
+            sklearn.feature_extraction.text.CountVectorizer(
+                lowercase=False,
+                tokenizer=str.split,
+                token_pattern=None,
+                stop_words=None,
+                binary=True
+            ),
+            sklearn.preprocessing.Normalizer('l2')
+        ), i) for i in range(base.shape[1])]).fit_transform(base.fillna(''))
+    logging.debug(f'fit base dialect embeddings with {matrix[mask].shape} data.')
+    emb = sklearn.decomposition.TruncatedSVD(emb_size).fit(matrix[mask]) \
+        .transform(matrix)
+
+    # 针对每个数据集中的每个方言标注多音字
+    result = []
+    for dataset in datasets:
+        labels = []
+        for data in dataset:
+            data_chars = data['character'].fillna('')
+            l = annotate(
+                emb,
+                chars,
+                data[['initial', 'final', 'tone']].fillna(''),
+                data_chars
+            )
+            # 输入字表含有字 ID，把位置转成字 ID
+            if isinstance(chars, pandas.Series):
+                l = numpy.where(l >= 0, chars.index[l].values, None)
+            labels.append((l, data_chars.values))
+
+        result.append(labels)
+
+    return result
+
 
 if __name__ == '__main__':
     import argparse
