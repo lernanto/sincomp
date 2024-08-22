@@ -466,7 +466,7 @@ if __name__ == '__main__':
     import argparse
     import opencc
 
-    from . import datasets
+    from . import datasets, preprocess
 
 
     parser = argparse.ArgumentParser('对齐指定的数据集生成新的汇总数据集')
@@ -509,15 +509,16 @@ if __name__ == '__main__':
 
     t2s = opencc.OpenCC('t2s')
 
-    original_datasets = []
+    names = []
     dialects = []
-    dss = []
+    withcid = []
+    nocid = []
     for name in args.datasets:
         data = datasets.get(name)
         if data is None:
             continue
 
-        original_datasets.append(data)
+        names.append(data.name)
         try:
             dlt = data.metadata['dialect_info']
         except (AttributeError, KeyError):
@@ -528,72 +529,55 @@ if __name__ == '__main__':
                 name='did'
             ))
 
-        dialects.append(
-            data.metadata['dialect_info'].reindex([
-                'province',
-                'city',
-                'county',
-                'town',
-                'village',
-                'group',
-                'subgroup',
-                'cluster',
-                'subcluster',
-                'spot',
-                'latitude',
-                'longitude'
-            ], axis=1)
-        )
+        dialects.append(dlt)
 
-        if data is datasets.ccr:
-            # 从数据集生成字表，下同
-            # TODO: 为对齐多音字，当前把字形统一转换为简体字，应分别处理繁体和简体
-            chars = data[['cid', 'character']] \
-                .sort_values(['cid', 'character']) \
-                .drop_duplicates('cid') \
-                .dropna() \
-                .set_index('cid')['character'] \
-                .map(t2s.convert)
+        # 区分含有字 ID 的数据集和不含字 ID 的数据集
+        try:
+            has_cid = 'cid' in next(iter(data)).columns
+        except AttributeError:
+            has_cid = 'cid' in data.columns
 
-        elif data is datasets.mcpdict:
-            chars = data['character'].drop_duplicates().dropna()
-            chars = pandas.Series(
-                chars.map(t2s.convert).values,
-                index=chars.values
-            )
-            # MCPDict 数据集没有字 ID，以字形为 ID
-            data = data.rename(columns={'character': 'cid'})
+        if has_cid:
+            if data is datasets.ccr:
+                # 从数据集生成字表，下同
+                # TODO: 为对齐多音字，当前把字形统一转换为简体字，应分别处理繁体和简体
+                chars = data[['cid', 'character']] \
+                    .sort_values(['cid', 'character']) \
+                    .drop_duplicates('cid') \
+                    .dropna() \
+                    .set_index('cid')['character'] \
+                    .map(t2s.convert)
 
-        elif data is datasets.zhongguoyuyan:
-            chars = data.metadata['char_info']['character']
+            elif data is datasets.zhongguoyuyan:
+                chars = data.metadata['char_info']['character']
+
+            else:
+                chars = data[['cid', 'character']] \
+                    .sort_values(['cid', 'character']) \
+                    .drop_duplicates('cid') \
+                    .dropna() \
+                    .set_index('cid')['character']
+
+            withcid.append((data, chars))
 
         else:
-            chars = data[['cid', 'character']] \
-                .sort_values(['cid', 'character']) \
-                .drop_duplicates('cid') \
-                .dropna() \
-                .set_index('cid')['character']
-
-        dss.append((data, chars))
+            nocid.append(data)
 
     logging.info(
-        f'align datasets {", ".join([d.name for d in original_datasets])}'
-        f'embedding size = {args.embedding_size} ...'
+        f'align datasets {", ".join(names)}, '
+        f'embedding size = {args.embedding_size}...'
     )
 
-    dialects = pandas.concat(
-        dialects,
-        axis=0,
-        keys=[d.name for d in original_datasets]
-    ) \
+    dialects = pandas.concat(dialects, axis=0, keys=names) \
         .reset_index(names=['dataset', 'original_did']) \
         .rename_axis('did')
 
     # 对齐多音字，生成旧字 ID 到新字 ID 的映射表
-    char_lists = align(*dss, emb_size=args.embedding_size)
+    names = [d.name for d, _ in withcid]
+    logging.info(f'align datasets {", ".join(names)}...')
+    char_lists = align(*withcid, emb_size=args.embedding_size)
 
     # 整合成一个总的新旧字 ID 映射表
-    names = [d.name for d in original_datasets]
     charmap = pandas.concat(char_lists, axis=0, keys=names) \
         .rename_axis(['dataset', 'cid'])
 
@@ -611,18 +595,52 @@ if __name__ == '__main__':
         axis=1
     ).bfill(axis=1).iloc[:, 0])
 
+    logging.info(f'annotate datasets without characer ID {", ".join([d.name for d in nocid])}...')
+    base = pandas.concat(
+        [preprocess.transform(
+            d.dropna(subset=['cid', 'did']).replace({'cid': c['label']}),
+            index='cid',
+            columns='did',
+            values=['initial', 'final', 'tone'],
+            aggfunc=lambda x: ' '.join(x.dropna()) if x.count() > 0 else pandas.NA
+        ) for (d, _), c in zip(withcid, char_lists)],
+        axis=1
+    ).reindex(chars.index)
+    label_list = align_no_cid(base, chars['character'], *nocid)
+
+    # 额外对不含字 ID 数据集特有的字编码
+    unknown= []
+    for labels in label_list:
+        for lbl, chr in labels:
+            unknown.append(chr[lbl == None])
+
+    unknown = pandas.Series(numpy.concatenate(unknown)) \
+        .sort_values() \
+        .drop_duplicates() \
+        .dropna() \
+        .reset_index(drop=True) \
+        .rename_axis('cid')
+    unknown.index += chars.shape[0]
+    unknown_map = pandas.Series(unknown.index, index=unknown)
+    chars = pandas.concat([chars, unknown.to_frame(name='character')], axis=0)
+
+    # 根据生成的字 ID 对原来缺失的字赋值
+    for labels in label_list:
+        for lbl, chr in labels:
+            lbl[lbl == None] = unknown_map.reindex(chr[lbl == None])
+
     path = os.path.abspath(args.charmap_output)
-    logging.info(f'save {charmap.shape[0]} character mapping to {path} ...')
+    logging.info(f'save {charmap.shape[0]} character mapping to {path}...')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     charmap.to_csv(path, encoding='utf-8', lineterminator='\n')
 
     path = os.path.abspath(args.char_output)
-    logging.info(f'save {chars.shape[0]} character information to {path} ...')
+    logging.info(f'save {chars.shape[0]} character information to {path}...')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     chars.to_csv(path, encoding='utf-8', lineterminator='\n')
 
     path = os.path.abspath(args.dialect_output)
-    logging.info(f'save {dialects.shape[0]} dialect information to {path} ...')
+    logging.info(f'save {dialects.shape[0]} dialect information to {path}...')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     dialects.to_csv(path, encoding='utf-8', lineterminator='\n')
 
@@ -630,12 +648,8 @@ if __name__ == '__main__':
     dialect_map = dialects[['dataset', 'original_did']].reset_index() \
         .set_index(['dataset', 'original_did'])['did']
 
-    for dataset, c in zip(original_datasets, char_lists):
+    for (dataset, _), c in zip(withcid, char_lists):
         for did, data in dataset.items():
-            # MCPDict 数据集没有字 ID，特殊处理
-            if dataset is datasets.mcpdict:
-                data = data.rename(columns={'character': 'cid'})
-
             did = dialect_map[(dataset.name, did)]
             data = data.assign(did=did, cid=data['cid'].map(c['label'])) \
                 .reindex([
@@ -655,5 +669,28 @@ if __name__ == '__main__':
                 dirname = os.path.abspath(os.path.join(args.prefix, dataset.name))
                 path = os.path.join(dirname, str(did))
                 os.makedirs(dirname, exist_ok=True)
-                logging.info(f'save {data.shape[0]} aligned data to {path} ...')
+                logging.info(f'save {data.shape[0]} aligned data to {path}...')
+                data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
+
+    # 为不含字 ID 的数据集加上字 ID 并保存
+    for dataset, labels in zip(nocid, label_list):
+        for (did, data), (cid, _) in zip(dataset.items(), labels):
+            did = dialect_map[(dataset.name, did)]
+            data = data.assign(did=did, cid=cid).reindex([
+                'did',
+                'cid',
+                'initial',
+                'final',
+                'tone',
+                'tone_category',
+                'note'
+            ], axis=1).dropna(subset=['did', 'cid'])
+
+            if data.shape[0] > 0:
+                data['cid'] = data['cid'].astype(int)
+
+                dirname = os.path.abspath(os.path.join(args.prefix, dataset.name))
+                path = os.path.join(dirname, str(did))
+                os.makedirs(dirname, exist_ok=True)
+                logging.info(f'save {data.shape[0]} aligned data to {path}...')
                 data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
