@@ -425,10 +425,7 @@ class MCPDictDataset(FileCacheDataset):
     def __init__(
         self,
         cache_dir: str,
-        uniform_name: bool = True,
         uniform_info: bool = True,
-        did_prefix: str | None = None,
-        cid_prefix: str | None = None,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = '∅',
@@ -437,10 +434,7 @@ class MCPDictDataset(FileCacheDataset):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
-            uniform_name: 为真时，把数据列名转为通用名称
-            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
-            did_prefix: 非空时在方言 ID 添加该前缀
-            cid_prefix: 非空时在字 ID 添加该前缀
+            uniform_info: 规范化方言信息，包括统一格式、繁转简等
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
@@ -448,10 +442,7 @@ class MCPDictDataset(FileCacheDataset):
         """
 
         self._path = os.path.join(cache_dir, 'tools', 'tables', 'output')
-        self._uniform_name = uniform_name
         self._uniform_info = uniform_info
-        self._did_prefix = did_prefix
-        self._cid_prefix = cid_prefix
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
@@ -478,8 +469,22 @@ class MCPDictDataset(FileCacheDataset):
                 cat[k] = v[3]
             self._tone_map[i] = tone, cat
 
-        self.dialect_info = info
-        self.metadata = {'dialect_info': info}
+        self._dialect_info = info
+        self.metadata = {'dialect_info': info[[
+            'name',
+            'province',
+            'city',
+            'county',
+            'town',
+            'village',
+            'group',
+            'subgroup',
+            'cluster',
+            'subcluster',
+            'spot',
+            'latitude',
+            'longitude'
+        ]] if self._uniform_info else info}
 
     @staticmethod
     @retry.retry(exceptions=urllib.error.URLError, tries=3, delay=1)
@@ -556,57 +561,55 @@ class MCPDictDataset(FileCacheDataset):
 
         # 使用音典排序作为方言 ID
         info.set_index('音典排序', inplace=True)
-        if self._did_prefix is not None:
-            info.set_index(self._did_prefix + info.index, inplace=True)
-
-        # 解析方言分类
-        cat = info.pop('地圖集二分區').str.partition(',').iloc[:, 0].str.split('-')
-        # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
-        info['group'] = cat.str[0].replace('鄕話', '鄉話')
-        info['cluster'] = cat.str[1]
-        info['subcluster'] = cat.str[2]
-
-        mask = info['group'].str.endswith('官話') | info['group'].str.endswith('官话')
-        info.loc[mask, 'subgroup'] = info.loc[mask, 'group']
-        info.loc[mask, 'group'] = '官話'
-
-        # 解析经纬度
-        info[['latitude', 'longitude']] = info.pop('經緯度').str.partition(',') \
-            .iloc[:, [2, 0]].astype(float, errors='ignore')
 
         if self._uniform_info:
+            # 解析方言分类
+            cat = info.pop('地圖集二分區').str.partition(',').iloc[:, 0].str.split('-')
+            # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
+            info['group'] = cat.str[0].replace('鄕話', '鄉話')
+            info['cluster'] = cat.str[1]
+            info['subcluster'] = cat.str[2]
+
+            mask = info['group'].str.endswith('官話') | info['group'].str.endswith('官话')
+            info.loc[mask, 'subgroup'] = info.loc[mask, 'group']
+            info.loc[mask, 'group'] = '官話'
+
+            # 原始分区部分平话和土话，根据子分区信息尽量分开
+            mask = info['group'] == '平話和土話'
+            info.loc[mask, 'group'] = numpy.where(
+                info.loc[mask, 'cluster'].isin(['桂南片', '桂北片']),
+                '平話',
+                '土話'
+            )
+
+            # 解析经纬度
+            info[['latitude', 'longitude']] = info.pop('經緯度').str.partition(',') \
+                .iloc[:, [2, 0]].astype(float, errors='ignore')
+
+            info = info.rename_axis('did') \
+                .assign(spot=info['簡稱']) \
+                .rename(columns={
+                    '簡稱': 'name',
+                    '省': 'province',
+                    '市': 'city',
+                    '縣': 'county',
+                    '鎮': 'town',
+                    '村': 'village',
+                })
+
             # 把方言信息转换成简体中文
             info.update(info[[
-                '簡稱',
-                '省',
-                '市',
-                '縣',
-                '鎮',
-                '村',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
                 'group',
                 'subgroup',
                 'cluster',
-                'subcluster'
+                'subcluster',
+                'spot'
             ]].map(opencc.OpenCC('t2s').convert, na_action='ignore'))
-
-            # 原始分区部分平话和土话，根据子分区信息尽量分开
-            mask = info['group'] == '平话和土话'
-            info.loc[mask, 'group'] = numpy.where(
-                info.loc[mask, 'cluster'].isin(['桂南片', '桂北片']),
-                '平话',
-                '土话'
-            )
-
-        if self._uniform_name:
-            info.index.rename('did', inplace=True)
-            info.rename(columns={
-                '簡稱': 'spot',
-                '省': 'province',
-                '市': 'city',
-                '縣': 'county',
-                '鎮': 'town',
-                '村': 'village',
-            }, inplace=True)
 
         return info
 
@@ -653,12 +656,9 @@ class MCPDictDataset(FileCacheDataset):
             data: 方言读音数据表
         """
 
-        logging.info(f'load data from {self.dialect_info.at[did, "path"]}.')
-        data = self.load_raw(
-            did if self._did_prefix is None else did[len(self._did_prefix):],
-            self.dialect_info.at[did, 'path']
-        )
-        data['did'] = did
+        logging.info(f'load data from {self._dialect_info.at[did, "path"]}.')
+        data = self.load_raw(did, self._dialect_info.at[did, 'path']) \
+            .assign(did=did)
 
         # 把原始读音切分成声母、韵母、声调
         seg = data.pop('音標').str.extract(r'([^0-9]*)([0-9][0-9a-z]*)?')
@@ -695,7 +695,7 @@ class MCPDictDataset(FileCacheDataset):
                 inplace=True
             )
 
-        if self._uniform_name:
+        if self._uniform_info:
             # 替换列名为统一的名称
             data.rename(columns={'漢字': 'character', '解釋': 'note'}, inplace=True)
 
@@ -712,10 +712,7 @@ class CCRDataset(FileCacheDataset):
     def __init__(
         self,
         cache_dir: str,
-        uniform_name: bool = True,
         uniform_info: bool = True,
-        did_prefix: str | None = None,
-        cid_prefix: str | None = None,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None,
@@ -724,10 +721,7 @@ class CCRDataset(FileCacheDataset):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
-            uniform_name: 为真时，把数据列名转为通用名称
-            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
-            did_prefix: 非空时在方言 ID 添加该前缀
-            cid_prefix: 非空时在字 ID 添加该前缀
+            uniform_info: 规范化方言信息，包括统一格式、繁转简等
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
@@ -735,19 +729,30 @@ class CCRDataset(FileCacheDataset):
         """
 
         self._path = cache_dir
-        self._uniform_name = uniform_name
         self._uniform_info = uniform_info
-        self._did_prefix = did_prefix
-        self._cid_prefix = cid_prefix
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
 
         info = self.load_dialect_info()
         super().__init__(cache_dir, info.index, name=name)
-        self.dialect_info = info
+        self._dialect_info = info
         self.metadata = {
-            'dialect_info': info,
+            'dialect_info': info.reindex([
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            ], axis=1) if self._uniform_info else info,
             'char_info': self.load_char_info()
         }
 
@@ -795,12 +800,6 @@ class CCRDataset(FileCacheDataset):
         """
         加载方言点信息
 
-        Parameters:
-            fname: 方言点信息文件路径
-            did_prefix: 非空时在方言 ID 添加该前缀
-            uniform_name: 为真时，把数据列名转为通用名称
-            uniform_info: 小学堂原始数据为繁体中文，把方言信息转换成简体中文
-
         Returns:
             info: 方言点信息数据表，只包含文件中编号非空的方言点
         """
@@ -831,48 +830,35 @@ class CCRDataset(FileCacheDataset):
             '_' + info['方言點'] + '.xlsx'
         info.set_index('編號', inplace=True)
 
-        # 部分平话被归为粤语，尽量根据名称还原
-        info['方言'].where(
-            (info['方言'] != '粵語') | ~info['方言點'].str.contains('平話', na=False),
-            '平話',
-            inplace=True
-        )
-
-        info['區'] = self.clean_subgroup(info['區'])
-
-        # 部分方言点包含来源文献，删除
-        info['方言點'] = info['方言點'].str.replace(
-            r'\(安徽省志\)|\(珠江三角洲\)|\(客贛方言調查報告\)|\(廣西漢語方言\)'
-            r'|\(平話音韻研究\)|\(廣東閩方言\)|\(漢語方音字匯\)|\(當代吳語\)',
-            '',
-            regex=True
-        )
-
-        if self._did_prefix is not None:
-            info.set_index(self._did_prefix + info.index, inplace=True)
-
         if self._uniform_info:
-            # 把方言信息转换成简体中文
-            info.update(info[['方言', '區', '片／小區', '小片', '方言點']].map(
-                opencc.OpenCC('t2s').convert,
-                na_action='ignore'
-            ))
-
             # 少数方言名称转成更通行的名称
-            info.replace({'方言': {'客语': '客家话', '其他土话': '土话'}}, inplace=True)
+            info.replace({'方言': {'客語': '客家話', '其他土話': '土話'}}, inplace=True)
 
-        if self._uniform_name:
-            info.index.rename('did', inplace=True)
-            info.rename(columns={
-                '方言': 'group',
-                '區': 'subgroup',
-                '片／小區': 'cluster',
-                '小片': 'subcluster',
-                '方言點': 'spot',
-                '資料筆數': 'size',
-                '緯度': 'latitude',
-                '經度': 'longitude'
-            }, inplace=True)
+            info['區'] = self.clean_subgroup(info['區'])
+
+            # 部分方言点包含来源文献，删除
+            info['方言點'] = info['方言點'].str.replace(
+                r'\(安徽省志\)|\(珠江三角洲\)|\(客贛方言調查報告\)|\(廣西漢語方言\)'
+                r'|\(平話音韻研究\)|\(廣東閩方言\)|\(漢語方音字匯\)|\(當代吳語\)',
+                '',
+                regex=True
+            )
+
+            info = info.rename_axis('did') \
+                .assign(name=info['方言點']) \
+                .rename(columns={
+                    '方言': 'group',
+                    '區': 'subgroup',
+                    '片／小區': 'cluster',
+                    '小片': 'subcluster',
+                    '方言點': 'spot',
+                    '緯度': 'latitude',
+                    '經度': 'longitude'
+                })
+
+            # 把方言信息转换成简体中文
+            info.update(info[['group', 'subgroup', 'cluster', 'subcluster', 'spot']] \
+                .map(opencc.OpenCC('t2s').convert, na_action='ignore'))
 
         return info
 
@@ -890,10 +876,7 @@ class CCRDataset(FileCacheDataset):
         )
         info = info[info['字號'].notna()].set_index('字號')
 
-        if self._did_prefix is not None:
-            info.set_index(self._did_prefix + info.index, inplace=True)
-
-        if self._uniform_name:
+        if self._uniform_info:
             info.index.rename('cid', inplace=True)
             info.rename(columns={'字': 'character'}, inplace=True)
 
@@ -1003,17 +986,13 @@ class CCRDataset(FileCacheDataset):
         如果要加载的数据文件不存在，先从网站下载。
         """
 
-        path = self.dialect_info.at[did, 'path']
+        path = self._dialect_info.at[did, 'path']
         if not os.path.isfile(path):
             # 方言数据文件不存在，从网站下载
-            self.download(self.dialect_info.at[did, 'url'], self._cache_dir)
+            self.download(self._dialect_info.at[did, 'url'], self._cache_dir)
 
         logging.info(f'loading data from {path}...')
-        data = self.load_raw(
-            did if self._did_prefix is None else did[len(self._did_prefix):],
-            path
-        )
-        data['did'] = did
+        data = self.load_raw(did, path).assign(did=did)
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
         data['聲母'] = preprocess.clean_initial(data['聲母'].str.split('.').str[0])
@@ -1046,7 +1025,7 @@ class CCRDataset(FileCacheDataset):
                 inplace=True
             )
 
-        if self._uniform_name:
+        if self._uniform_info:
             # 替换列名为统一的名称
             data.rename(columns={
                 '字號': 'cid',
@@ -1057,10 +1036,6 @@ class CCRDataset(FileCacheDataset):
                 '調類': 'tone_category',
                 '備註': 'note'
             }, inplace=True)
-
-            if self._cid_prefix is not None:
-                # 字 ID 添加前缀
-                data['cid'] = self._cid_prefix + data['cid']
 
         return ((did, data),)
 
@@ -1076,9 +1051,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         self,
         cache_dir: str,
         path: str,
-        uniform_name: bool = True,
-        did_prefix: str | None = None,
-        cid_prefix: str | None = None,
+        uniform_info: bool = True,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None,
@@ -1088,9 +1061,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         Parameters:
             cache_dir: 缓存文件所在目录路径
             path: 数据集所在的基础路径
-            uniform_name: 为真时，把数据列名转为通用名称
-            did_prefix: 非空时在方言 ID 添加该前缀
-            cid_prefix: 非空时在字 ID 添加该前缀
+            uniform_info: 规范化方言信息，包括统一格式、清洗方言信息等
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失数据的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
@@ -1098,18 +1069,30 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         """
 
         self._path = os.path.join(path, 'csv')
-        self._uniform_name = uniform_name
-        self._did_prefix = did_prefix
-        self._cid_prefix = cid_prefix
+        self._uniform_info = uniform_info
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
 
         info = self.load_dialect_info()
         super().__init__(cache_dir, info.index, name=name)
-        self.dialect_info = info
+        self._dialect_info = info
         self.metadata = {
-            'dialect_info': info,
+            'dialect_info': info.reindex([
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            ], axis=1) if self._uniform_info else info,
             'char_info': self.load_char_info()
         }
 
@@ -1154,7 +1137,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
 
         clean = location.assign(
             city=norm(location['city']),
-            county=norm(location['country'])
+            county=norm(location.pop('country'))
         )
 
         # 直辖市的地区统一置空
@@ -1378,36 +1361,33 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         info['path'] = os.path.join(self._path, 'dialect') + os.sep + \
             info.index + 'mb01dz.csv'
 
-        info = self.clean_location(info)
+        if self._uniform_info:
+            info = self.clean_location(info)
 
-        # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
-        info['spot'] = info['city'].where(
-            info['city'] == info['county'],
-            info['city'].fillna('') + info['county'].fillna('')
-        )
-        info['spot'] = info['spot'].where(info['spot'] != '', info['province'])
+            # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
+            info['name'] = info['city'].where(
+                info['city'] == info['county'],
+                info['city'].fillna('') + info['county'].fillna('')
+            )
+            info['name'] = info['name'].where(info['name'] != '', info['province'])
 
-        # 清洗方言区、片、小片名称
-        info['group'] = self.get_group(info)
-        info['subgroup'] = self.get_subgroup(info)
-        info['cluster'] = self.get_cluster(info)
-        info['subcluster'] = self.get_subcluster(info)
+            # 清洗方言区、片、小片名称
+            info['group'] = self.get_group(info)
+            info['subgroup'] = self.get_subgroup(info)
+            info['cluster'] = self.get_cluster(info)
+            info['subcluster'] = self.get_subcluster(info)
 
-        # 个别官话方言点标注的大区和子区不一致，去除
-        info.loc[
-            (info['group'] == '官话') & ~info['subgroup'].str.endswith('官话', na=False),
-            ['group', 'subgroup']
-        ] = numpy.nan
+            # 个别官话方言点标注的大区和子区不一致，去除
+            info.loc[
+                (info['group'] == '官话') & ~info['subgroup'].str.endswith('官话', na=False),
+                ['group', 'subgroup']
+            ] = numpy.nan
 
-        # 个别方言点的经纬度有误，去除
-        info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.nan
-        info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.nan
+            # 个别方言点的经纬度有误，去除
+            info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.nan
+            info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.nan
 
-        if self._did_prefix is not None:
-            info.set_index(self._did_prefix + info.index, inplace=True)
-
-        if self._uniform_name:
-            info.index.rename('did', inplace=True)
+            info = info.rename_axis('did').assign(spot=info['name'])
 
         return info
 
@@ -1422,10 +1402,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         path = os.path.join(self._path, 'words.csv')
         info = pandas.read_csv(path, dtype=str).set_index('cid')
         
-        if self._cid_prefix is not None:
-            info.set_index(self._cid_prefix + info.index, inplace=True)
-
-        if self._uniform_name:
+        if self._uniform_info:
             info.rename(columns={'item': 'character'}, inplace=True)
 
         return info
@@ -1493,11 +1470,8 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             data: 方言字音表
         """
 
-        data = self.load_raw(
-            did if self._did_prefix is None else did[len(self._did_prefix):],
-            self.dialect_info.loc[did, 'path']
-        )
-        data['did'] = did
+        data = self.load_raw(did, self._dialect_info.loc[did, 'path']) \
+            .assign(did=did)
 
         # 清洗读音数据
         data['initial'] = preprocess.clean_initial(data['initial'])
@@ -1532,7 +1506,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
                 inplace=True
             )
 
-        if self._uniform_name:
+        if self._uniform_info:
             # 替换列名为统一的名称
             data.rename(columns={
                 'iid': 'cid',
@@ -1540,10 +1514,6 @@ class ZhongguoyuyanDataset(FileCacheDataset):
                 'finals': 'final',
                 'memo': 'note'
             }, inplace=True)
-
-            if self._cid_prefix is not None:
-                # 字 ID 添加前缀
-                data['cid'] = self._cid_prefix + data['cid']
 
         return ((did, data),)
 
@@ -1567,7 +1537,7 @@ ccr = CCRDataset(os.path.join(cache_dir, 'ccr'))
 try:
     mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'))
 except Exception as e:
-    logging.error(e)
+    logging.error(e, exc_info=True)
 
 try:
     path = os.environ['ZHONGGUOYUYAN_HOME']
