@@ -15,6 +15,60 @@ import pandas
 from common import data_dir, setUpModule, tearDownModule
 
 
+class TestDataset(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+
+        import sincomp.datasets
+
+        data = []
+        prefix = os.path.join(data_dir, 'custom_dataset1')
+        for fname in os.listdir(prefix):
+            data.append(pandas.read_csv(
+                os.path.join(prefix, fname),
+                encoding='utf-8',
+                dtype=str
+            ))
+
+        cls.dataset = sincomp.datasets.Dataset(
+            pandas.concat(data, axis=0, ignore_index=True)
+        )
+
+    def test_dialect_ids(self):
+        self.assertSetEqual(set(self.dataset.dialect_ids), {'08533', '23C57'})
+
+    def test_items(self):
+        count = 0
+        for did, data in self.dataset.items():
+            self.assertIsInstance(data, pandas.DataFrame)
+            for col in 'did', 'cid', 'initial', 'final', 'tone':
+                self.assertIn(col, data.columns)
+
+            self.assertTrue((data['did'] == did).all())
+
+            count += 1
+
+        self.assertEqual(count, 2)
+
+    def test_filter(self):
+        data = self.dataset.filter(['08533']).data
+        self.assertIsInstance(data, pandas.DataFrame)
+        for col in 'did', 'cid', 'initial', 'final', 'tone':
+            self.assertIn(col, data.columns)
+
+    def test_iter(self):
+        count = 0
+        for data in iter(self.dataset):
+            self.assertIsInstance(data, pandas.DataFrame)
+            for col in 'did', 'cid', 'initial', 'final', 'tone':
+                self.assertIn(col, data.columns)
+
+            count += 1
+
+        self.assertEqual(count, 2)
+
+
 class TestFileDataset(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -27,6 +81,9 @@ class TestFileDataset(unittest.TestCase):
 
     def test_file_dataset(self):
         self.assertEqual(len(self.dataset), 2)
+
+    def test_dialect_ids(self):
+        self.assertSetEqual(set(self.dataset.dialect_ids), {'08533', '23C57'})
 
     def test_items(self):
         count = 0
@@ -99,8 +156,24 @@ class TestCCRDataset(unittest.TestCase):
         info = sincomp.datasets.ccr.metadata['dialect_info']
         self.assertIsInstance(info, pandas.DataFrame)
         self.assertGreater(info.shape[0], 0)
-        for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertIn(col, info.columns)
+        self.assertSetEqual(
+            set(info.columns),
+            {
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            }
+        )
 
     def test_char_info(self):
         import sincomp.datasets
@@ -126,8 +199,24 @@ class TestMCPDictDataset(unittest.TestCase):
         info = sincomp.datasets.mcpdict.metadata['dialect_info']
         self.assertIsInstance(info, pandas.DataFrame)
         self.assertEqual(info.shape[0], 2)
-        for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertIn(col, info.columns)
+        self.assertSetEqual(
+            set(info.columns),
+            {
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            }
+        )
 
     def test_data(self):
         import sincomp.datasets
@@ -146,8 +235,24 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
         info = sincomp.datasets.zhongguoyuyan.metadata['dialect_info']
         self.assertIsInstance(info, pandas.DataFrame)
         self.assertEqual(info.shape[0], 2)
-        for col in 'group', 'subgroup', 'cluster', 'subcluster', 'spot':
-            self.assertIn(col, info.columns)
+        self.assertSetEqual(
+            set(info.columns),
+            {
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            }
+        )
 
     def test_char_info(self):
         import sincomp.datasets
