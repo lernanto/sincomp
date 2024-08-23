@@ -7,16 +7,17 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import unittest
+import numpy
 import os
 import pandas
+import unittest
 import sincomp.preprocess
 import sincomp.align
 
 from common import data_dir, setUpModule, tearDownModule
 
 
-class TestSimilarity(unittest.TestCase):
+class TestAlign(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -31,8 +32,31 @@ class TestSimilarity(unittest.TestCase):
 
     def test_align(self):
         chars1, chars2 = sincomp.align.align((self.data1, None), (self.data2, None))
-        self.assertTrue(chars1['label'].nunique() == chars1.shape[0])
-        self.assertTrue(chars2['label'].nunique() == chars2.shape[0])
+        self.assertEqual(chars1['label'].nunique(), chars1.shape[0])
+        self.assertEqual(chars2['label'].nunique(), chars2.shape[0])
         cid = pandas.Index(chars1['label']).intersection(chars2['label'])
         self.assertTrue((chars1.set_index('label')['character'].reindex(cid)
             == chars2.set_index('label')['character'].reindex(cid)).all())
+
+    def test_align_no_cid(self):
+        chars1 = self.data1[['cid', 'character']].drop_duplicates() \
+            .dropna(subset='cid').set_index('cid')['character']
+
+        result = sincomp.align.align_no_cid(
+            pandas.pivot_table(
+                self.data1.data,
+                values=['initial', 'final', 'tone'],
+                index='cid',
+                columns='did',
+                aggfunc='first'
+            ),
+            chars1,
+            self.data2
+        )
+        self.assertEqual(len(result), 1)
+
+        labels, chars2 = result[0][0]
+        self.assertEqual(labels.shape[0], chars2.shape[0])
+        self.assertTrue(
+            numpy.all(chars1.loc[labels][labels != None] == chars2[labels != None])
+        )
