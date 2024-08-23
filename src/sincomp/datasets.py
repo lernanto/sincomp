@@ -66,20 +66,60 @@ class Dataset:
     ):
         """
         Parameters:
-            data: 方言字音数据表
+            data: 方言字音数据表，或另一个数据集
             name: 数据集名字
         """
+
+        if isinstance(data, Dataset):
+            data = data.data
 
         self._data = data
         self.name = name
 
     @property
     def data(self) -> pandas.DataFrame | None:
+        """返回数据集内部数据"""
+
         return self._data
 
-    def __iter__(self):
+    @property
+    def dialect_ids(self) -> list[str]:
+        """
+        返回所有方言 ID
+
+        Returns:
+            ids: 方言 ID 列表
+        """
+
         data = self.data
-        return iter(()) if data is None else iter(data)
+        return [] if data is None \
+            else data['did'].drop_duplicates().dropna().to_list()
+
+    def items(self):
+        """
+        依次访问每个方言点的数据
+        """
+
+        data = self.data
+        for did in self.dialect_ids:
+            yield did, data[data['did'] == did]
+
+    def filter(self, dids: str | list[str]):
+        """
+        从数据集中筛选方言
+
+        Parameters:
+            dids: 保留的方言 ID 列表
+
+        Returns:
+            output: 筛选后的数据集，只包含指定的方言
+        """
+
+        data = self.data
+        return Dataset() if data is None else Dataset(data[data['did'].isin(dids)])
+
+    def __iter__(self):
+        return (data for _, data in self.items())
 
     def __getitem__(self, key):
         data = self.data
@@ -164,17 +204,24 @@ class FileDataset(Dataset):
 
         return self.load_file(self._file_map[did])
 
+    @property
+    def dialect_ids(self) -> list[str]:
+        """
+        返回所有方言 ID
+
+        Returns:
+            ids: 方言 ID 列表
+        """
+
+        return self._file_map.index.to_list()
+
     def items(self):
         """
         依次访问每个方言点的数据
         """
 
-        for did in self._file_map.index:
+        for did in self.dialect_ids:
             yield did, self.load(did)
-
-    def __iter__(self):
-        for _, data in self.items():
-            yield data
 
     @property
     def data(self) -> pandas.DataFrame:
@@ -202,20 +249,18 @@ class FileDataset(Dataset):
             for r in data.iterrows():
                 yield r
 
-    def filter(self, idx) -> Dataset:
+    def filter(self, dids: str | list[str]):
         """
-        从数据集中筛选满足条件的方言
-
-        只支持针对方言筛选。
+        从数据集中筛选方言
 
         Parameters:
-            idx: 任何 pandas.Series 接受的索引或筛选条件
+            dids: 保留的方言 ID 列表
 
         Returns:
-            output: 筛选后的数据集，只包含满足条件的方言
+            output: 筛选后的数据集，只包含指定的方言
         """
 
-        return FileDataset(file_map=self._file_map.loc[idx])
+        return FileDataset(file_map=self._file_map.loc[dids])
 
     def sample(self, *args, **kwargs) -> Dataset:
         """
