@@ -92,6 +92,7 @@ sim = sincomp.similarity.chi2(data)
 | 模块 | 说明 |
 |:-|:-|
 | datasets | 提供加载数据集的通用接口 |
+| align | 对齐不同数据集之间的字 ID |
 | similarity | 提供若干无监督的方法计算方言之间的相似度 |
 | compare | 支持手工设定的规则来计算方言对规则的符合程度 |
 | models | 为方言读音建模，当前主要是基于浅层神经网络的编解码器模型 |
