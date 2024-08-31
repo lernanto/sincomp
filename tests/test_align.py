@@ -35,8 +35,8 @@ class TestAlign(unittest.TestCase):
         self.assertEqual(chars1['label'].nunique(), chars1.shape[0])
         self.assertEqual(chars2['label'].nunique(), chars2.shape[0])
         cid = pandas.Index(chars1['label']).intersection(chars2['label'])
-        self.assertTrue((chars1.set_index('label')['character'].reindex(cid)
-            == chars2.set_index('label')['character'].reindex(cid)).all())
+        self.assertTrue((chars1.set_index('label')['simplified'].reindex(cid)
+            == chars2.set_index('label')['simplified'].reindex(cid)).all())
 
     def test_align_no_cid(self):
         chars1 = self.data1[['cid', 'character']].drop_duplicates() \
@@ -51,11 +51,12 @@ class TestAlign(unittest.TestCase):
                 aggfunc='first'
             ),
             chars1,
+            None,
             self.data2
         )
         self.assertEqual(len(result), 1)
 
-        labels, chars2 = result[0][0]
+        labels, chars2, _ = result[0][0]
         self.assertEqual(labels.shape[0], chars2.shape[0])
         self.assertTrue(
             numpy.all(chars1.loc[labels][labels != None] == chars2[labels != None])
