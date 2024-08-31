@@ -1532,10 +1532,17 @@ cache_dir = os.environ.get(
         'datasets'
     )
 )
+
 ccr = CCRDataset(os.path.join(cache_dir, 'ccr'))
+_datasets = {
+    'ccr': ccr,
+    'CCR': ccr
+}
 
 try:
     mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'))
+    _datasets['mcpdict'] = mcpdict
+    _datasets['MCPDict'] = mcpdict
 except Exception as e:
     logging.error(e, exc_info=True)
 
@@ -1547,18 +1554,14 @@ except KeyError:
         'dirctory then reload this module to make use of the dataset.'
     )
 else:
-    zhongguoyuyan = ZhongguoyuyanDataset(
-        os.path.join(cache_dir, 'zhongguoyuyan'),
-        path
-    )
-
-_datasets = {
-    'ccr': ccr,
-    'CCR': ccr,
-    'mcpdict': mcpdict,
-    'MCPDict': mcpdict,
-    'zhongguoyuyan': zhongguoyuyan
-}
+    try:
+        zhongguoyuyan = ZhongguoyuyanDataset(
+            os.path.join(cache_dir, 'zhongguoyuyan'),
+            path
+        )
+        _datasets['zhongguoyuyan'] = zhongguoyuyan
+    except Exception as e:
+        logging.error(e, exc_info=True)
 
 def get(name: str) -> Dataset | None:
     """
