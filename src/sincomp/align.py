@@ -17,6 +17,7 @@
 import itertools
 import logging
 import numpy
+import opencc
 import os
 import pandas
 import scipy.sparse
@@ -37,7 +38,12 @@ from .preprocess import transform
 def prepare(
     dataset: pandas.DataFrame,
     chars: pandas.Series | numpy.ndarray[str] | None = None
-) -> tuple[pandas.DataFrame, pandas.Series]:
+) -> tuple[
+    scipy.sparse.csr_matrix,
+    numpy.ndarray[str],
+    numpy.ndarray[str],
+    numpy.ndarray[str] | None
+]:
     """
     把数据集长表预处理成宽表
 
@@ -48,7 +54,9 @@ def prepare(
 
     Returns:
         matrix: 数据集变换并编码后的特征矩阵列表，每行代表一个字
-        transformed_chars: transformed 中包含的字表，顺序和 `matrix` 相同
+        cids: transformed 中包含的字的 ID，顺序和 `matrix` 相同
+        simplified: transformed 中包含的字表的简体
+        traditional: transformed 中包含的字表的繁体，如原始字表未提供繁体，则为空
     """
 
     transformed = transform(
@@ -61,22 +69,23 @@ def prepare(
     )
 
     if chars is None:
-        # 从 dataset 生成字表
-        transformed_chars = dataset[['cid', 'character']] \
+        # 从 dataset 生成字表，默认为繁体字
+        chars = dataset[['cid', 'character']] \
             .dropna() \
             .sort_values(['cid', 'character']) \
             .drop_duplicates('cid') \
             .set_index('cid')['character']
+        cids = chars.index
 
     else:
         # dataset 和 chars 的字取交集
         chars = pandas.Series(chars)
-        index = transformed.index.intersection(
+        cids = transformed.index.intersection(
             chars.dropna().index.drop_duplicates()
         ).sort_values()
-        transformed_chars = chars.loc[index]
+        chars = chars.loc[cids]
 
-    transformed = transformed.loc[transformed_chars.index]
+    transformed = transformed.loc[cids]
     matrix = sklearn.compose.make_column_transformer(
         *[(sklearn.pipeline.make_pipeline(
             sklearn.feature_extraction.text.CountVectorizer(
@@ -89,11 +98,81 @@ def prepare(
             sklearn.preprocessing.Normalizer('l2')
         ), i) for i in range(transformed.shape[1])]
     ).fit_transform(transformed)
-    
-    return matrix, transformed_chars
+
+     # 假设字表为繁体，尝试转成简体
+    simplified = chars.map(opencc.OpenCC('t2s').convert, na_action='ignore')
+    if (chars != simplified).sum() < 3:
+        # 绝大多数字转化后相同，认为原始字表为简体
+        simplified = chars.values
+        traditional = None
+    else:
+        simplified = simplified.values
+        traditional = chars.values
+
+    return matrix, cids.values, simplified, traditional
+
+def align_chars(
+    *char_lists: list[tuple[numpy.ndarray[str] | None, numpy.ndarray[str] | None]]
+) -> tuple[numpy.ndarray[str], numpy.ndarray[int]]:
+    """
+    根据繁简字形构造数据集间的字对应表
+
+    Parameters:
+        char_lists: 方言数据集字形列表，每个数据集包含简体字表和繁体字表，
+            简体和繁体顺序相同，且不能同时为空
+
+    Returns:
+        chars: 对齐后的字表，优先用简体，如果所有输入字表均为繁体，则为繁体
+        indices: `chars` 中的每个字在每个数据集字表中的位置，列数等于 char_lists 长度，
+            如某数据集缺某字，相应位置为 -1
+
+    如果某数据集的字表具备简体和繁体，根据两种字形和其他数据集严格对齐；
+    如果只提供了简体或繁体，只根据提供的字体对齐。
+    """
+
+    chars = pandas.DataFrame(columns=['simplified', 'traditional'], dtype=str)
+    for i, (s, t) in enumerate(char_lists):
+        if s is not None and t is not None:
+            # 字表具备简体和繁体，根据两者严格对齐
+            chars = chars.merge(
+                pandas.DataFrame({
+                    'simplified': s,
+                    'traditional': t,
+                    i: range(len(s))
+                }),
+                how='outer',
+                on=['simplified', 'traditional']
+            )
+        elif s is not None:
+            # 只有简体，根据简体对齐
+            chars = chars.merge(
+                pandas.DataFrame({'simplified': s, i: range(len(s))}),
+                how='outer',
+                on='simplified'
+            )
+        elif t is not None:
+            # 只有繁体，根据繁体对齐
+            chars = chars.merge(
+                pandas.DataFrame({'traditional': t, i: range(len(t))}),
+                how='outer',
+                on='traditional'
+            )
+        else:
+            raise ValueError('Either of implified and titional characters must be valid.')
+
+    return (
+        # 为尽可能把同形字归到一组，以简体字为准，除非简体为空
+        chars['simplified'].where(
+            chars['simplified'].notna(),
+            chars['traditional']
+        ).fillna('').values,
+        chars.loc[:, range(len(char_lists))].fillna(-1).astype(int).values
+    )
 
 def polyphone_distance(
-    *datasets: list[tuple[scipy.sparse.csr_matrix, numpy.ndarray[str]]],
+    chars: numpy.ndarray[str],
+    indices: numpy.ndarray[int],
+    *matrices,
     emb_size: int = 10,
     metric: typing.Callable = sklearn.metrics.pairwise.paired_cosine_distances
 ) -> tuple[
@@ -108,9 +187,10 @@ def polyphone_distance(
     计算不同语料集的多音字之间的距离
 
     Parameters:
-        datasets: 数据集的列表，每个数据集为如下的二元组：
-            - matrix: 数据集的编码矩阵，每行代表一个字
-            - chars: 字表，字的数量和顺序和 matrix 相同，在多音字的情况下，会包含重复的字
+        chars: 全部数据集对齐后的字表
+        indices: `chars` 中的每个字在 `matrices` 中的行索引，列数等于 matrices 长度，
+            -1 表示对应数据集无该字
+        matrices: 数据集矩阵列表，每个元素为一个数据集字音的稀疏编码矩阵，每行代表一个字
         emb_size: 矩阵分解使用的字音向量长度
         metric: 计算字向量距离的函数，接受2个参数，各为 char_num * emb_size 的矩阵，
             返回长度为 char_num 的距离数组
@@ -118,7 +198,7 @@ def polyphone_distance(
     Returns:
         dataset_index1, dataset_index2: 指明后面的距离为哪两个数据集的字
         char_index1, char_index2: 指明后面的距离为数据集中各自哪个位置的字
-        chars: 上述位置的字
+        polyphone_chars: 上述位置的字形
         distances: 上述两个字的距离。以上只包含多音字，即字表中重复出现的字，
             且只包含不同数据集之间字形相同的字
 
@@ -128,59 +208,51 @@ def polyphone_distance(
     4. 计算不同数据集的多音字的向量之间的距离。
     """
 
-    datasets = [(m, pandas.Series(range(len(c)), index=c)) for m, c in datasets]
+    chars = numpy.asarray(chars)
+    indices = numpy.asarray(indices)
 
-    # 构造单音字矩阵
-    monophones = pandas.concat(
-        [c.loc[c.index.drop_duplicates(keep=False)] for _, c in datasets],
-        axis=1,
-        join='inner'
-    )
+    # 检索字表中在所有数据集均为单音字的字，作为训练集
+    monophone_mask = pandas.Series(chars).groupby(chars).transform('count') == 1
+
+    monophones = indices[monophone_mask & numpy.all(indices >= 0, axis=1)]
     if monophones.shape[0] == 0:
-        raise ValueError('Common monophones between datasets must not be empty.')
+        raise ValueError('Common monophones between datasets is empty.')
 
     mat = scipy.sparse.hstack(
-        [m[monophones.iloc[:, i]] for i, (m, _) in enumerate(datasets)]
+        [m[monophones[:, i]] for i, m in enumerate(matrices)]
     )
 
     # 对单音字矩阵 SVD 矩阵分解
     _, _, vt = scipy.sparse.linalg.svds(mat, emb_size)
     # 为每个数据集计算读音编码到字音向量的变换，是 VT 的子矩阵的伪逆
-    limits = numpy.cumsum([0] + [m.shape[1] for m, _ in datasets])
+    limits = numpy.cumsum([0] + [m.shape[1] for m in matrices])
     trans = []
-    for i in range(len(datasets)):
+    for i in range(len(matrices)):
         trans.append(numpy.linalg.pinv(vt[:, limits[i]:limits[i + 1]].T).T)
 
     dataset_index1 = [numpy.empty(0, dtype=int)]
     dataset_index2 = [numpy.empty(0, dtype=int)]
     char_index1 = [numpy.empty(0, dtype=int)]
     char_index2 = [numpy.empty(0, dtype=int)]
-    chars = [numpy.empty(0, dtype=str)]
+    polyphone_chars = [numpy.empty(0, dtype=str)]
     distances = [numpy.empty(0, dtype=float)]
 
-    for (i, (m1, c1)), (j, (m2, c2)) in itertools.combinations(enumerate(datasets), 2):
+    for (i, m1), (j, m2) in itertools.combinations(enumerate(matrices), 2):
         # 数据集两两之间，为每种可能的多音字对应关系计算距离
         # 只计算在任一数据集为多音字的字
-        polyphones = pandas.merge(
-            c1.to_frame(),
-            c2.to_frame(),
-            left_index=True,
-            right_index=True
-        )
-        polyphones = polyphones[
-            polyphones.index.to_series().groupby(level=0).transform('count') > 1
-        ]
+        mask = ~monophone_mask & (indices[:, i] >= 0) & (indices[:, j] >= 0)
+        idx = indices[mask]
+        if idx.shape[0] > 0:
+            dist = metric(
+                m1[idx[:, i]] * trans[i],
+                m2[idx[:, j]] * trans[j]
+            )
 
-        if polyphones.shape[0] > 0:
-            idx1 = polyphones.iloc[:, 0]
-            idx2 = polyphones.iloc[:, 1]
-            dist = metric(m1[idx1] * trans[i], m2[idx2] * trans[j])
-
-            dataset_index1.append(numpy.full(idx1.shape[0], i))
-            dataset_index2.append(numpy.full(idx2.shape[0], j))
-            char_index1.append(idx1)
-            char_index2.append(idx2)
-            chars.append(polyphones.index)
+            dataset_index1.append(numpy.full(idx.shape[0], i))
+            dataset_index2.append(numpy.full(idx.shape[0], j))
+            char_index1.append(idx[:, i])
+            char_index2.append(idx[:, j])
+            polyphone_chars.append(chars[mask])
             distances.append(dist)
 
     return (
@@ -188,7 +260,7 @@ def polyphone_distance(
         numpy.concatenate(dataset_index2),
         numpy.concatenate(char_index1),
         numpy.concatenate(char_index2),
-        numpy.concatenate(chars),
+        numpy.concatenate(polyphone_chars),
         numpy.concatenate(distances)
     )
 
@@ -204,7 +276,6 @@ def cluster(
 ) -> tuple[
     numpy.ndarray[int],
     numpy.ndarray[int],
-    numpy.ndarray[str],
     numpy.ndarray[int]
 ]:
     """
@@ -213,7 +284,7 @@ def cluster(
     Parameters:
         dataset_index1, dataset_index2: 指明后面的距离为哪两个数据集的字
         char_index1, char_index2: 指明后面的距离为数据集中各自哪个位置的字
-        chars: 上述位置的字
+        chars: 上述位置的字形
         distances: 上述位置的字在对应方言之间的距离
         max_distance: 代表非常大的距离，使两个字不可能合为一类，应设置成远大于距离函数的最大值
         distance_threshold: 距离均值小于该值的两组字会合为一类
@@ -221,7 +292,6 @@ def cluster(
     Returns:
         dataset_indeces: 数据集的位置列表
         char_indeces: 字的位置列表
-        chars: 上述对应位置的数据集的字
         clusters: 上述对应位置的字的聚类 ID
     """
 
@@ -233,20 +303,16 @@ def cluster(
         'character': chars,
         'distance': distances
     })
-    polyphones['index1'] = polyphones[['dataset_index1', 'char_index1']] \
-        .apply(tuple, axis=1)
-    polyphones['index2'] = polyphones[['dataset_index2', 'char_index2']] \
-        .apply(tuple, axis=1)
 
     dataset_indeces = [numpy.empty(0, dtype=int)]
     char_indeces = [numpy.empty(0, dtype=int)]
-    chars = [numpy.empty(0, dtype=str)]
     clusters = [numpy.empty(0, dtype=int)]
 
-    for char in polyphones['character'].drop_duplicates():
+    # 为尽可能把同形字归到一组，以简体字为准，除非简体为空
+    for _, g in polyphones.groupby('character'):
         # 为单个多音字构造距离矩阵
         dist = pandas.pivot_table(
-            polyphones[polyphones['character'] == char],
+            g,
             values='distance',
             index=('dataset_index1', 'char_index1'),
             columns=('dataset_index2', 'char_index2'),
@@ -267,13 +333,11 @@ def cluster(
 
         dataset_indeces.append(dist.index.get_level_values(0).values)
         char_indeces.append(dist.index.get_level_values(1).values)
-        chars.append(numpy.full(cls.shape[0], char))
         clusters.append(cls)
 
     return (
         numpy.concatenate(dataset_indeces),
         numpy.concatenate(char_indeces),
-        numpy.concatenate(chars),
         numpy.concatenate(clusters)
     )
 
@@ -297,31 +361,55 @@ def align(
 
     Returns:
         char_lists: 字映射表的列表，顺序和 datasets 一致。每个字表包含了对应 `chars` 所有 cid 非空的字，
-            索引为 cid，label 列为该字新的 ID
+            索引为 cid，包含如下列：
+            - simplified: 该字的简体，一般不为空
+            - traditional: 该字的繁体，所有数据集都未提供该字的繁体时为空
+            - label: 该字的新 ID
     """
 
     datasets = [prepare(d, c) for d, c in datasets]
-    data = polyphone_distance(*datasets, emb_size=emb_size)
-    dataset_indeces, char_indeces, chars, clusters = cluster(*data)
+    chars, indices = align_chars(*[(s, t) for _, _, s, t in datasets])
+
+    data = polyphone_distance(
+        chars,
+        indices,
+        *[m for m, _, _, _ in datasets],
+        emb_size=emb_size
+    )
+    dataset_indeces, char_indeces, clusters = cluster(*data)
 
     # 对每个数据集的字表，建立原始字 ID 到对齐后的字 ID 的映射
     char_lists = []
-    for i, (_, c) in enumerate(datasets):
+    for i, (_, cids, s, t) in enumerate(datasets):
         # 单音字的聚类均为 0
-        labels = pandas.Series(0, index=c.index)
+        chr = pandas.DataFrame({
+            'simplified': s,
+            'traditional': t,
+            'character': '',
+            'label': 0
+        }, index=cids)
+
+        # 只在一个数据集中出现的多音字保持该数据集的划分
+        valid = (indices >= 0).astype(int)
+        idx = numpy.unique(indices[valid[:, i] == numpy.sum(valid, axis=1), i])
+        chr.iloc[idx, chr.columns.get_loc('label')] = idx
+
         mask = (dataset_indeces == i)
-        labels.iloc[char_indeces[mask]] = clusters[mask]
-        char_lists.append(
-            c.to_frame('character').assign(label=c + '-' + labels.astype(str))
-        )
+        chr.iloc[char_indeces[mask], chr.columns.get_loc('label')] = clusters[mask]
+
+        mask = indices[:, i] >= 0
+        chr.iloc[indices[mask, i], chr.columns.get_loc('character')] = chars[mask]
+        chr['label'] = chr['character'] + '\0' + chr['label'].astype(str)
+        char_lists.append(chr)
 
     # 对字 ID 重新编码，使每个字的 ID 均不同
     encoder = sklearn.preprocessing.LabelEncoder().fit(
         pandas.concat(char_lists, axis=0, ignore_index=True)['label'].sort_values()
     )
 
-    for chars in char_lists:
-        chars['label'] = encoder.transform(chars['label'])
+    for chr in char_lists:
+        chr['label'] = encoder.transform(chr['label'])
+        chr.drop('character', axis=1, inplace=True)
 
     return char_lists
 
@@ -397,17 +485,19 @@ def annotate(
 
 def align_no_cid(
     base: scipy.sparse.csr_matrix | pandas.DataFrame,
-    chars: numpy.ndarray[str] | pandas.Series,
+    simplified: numpy.ndarray[str] | pandas.Series,
+    traditional: numpy.ndarray[str] | pandas.Series | None,
     *datasets: list,
     na_threshold: float = 0.5,
     emb_size: int = 10
-) -> list[list[tuple[numpy.ndarray, numpy.ndarray[str]]]]:
+) -> list[list[tuple[numpy.ndarray, numpy.ndarray[str], numpy.ndarray[str]]]]:
     """
     把没有字 ID 的数据集中的多音字对齐到基础数据集的字 ID
 
     Parameters:
         base: 基础数据集，每行代表一个字，多音字占多行
-        chars: base 中对应字的字形，多音字会出现多次。如类型为 pandas.Series，则索引为字 ID
+        simplified: base 中对应字的简体，多音字会出现多次。如类型为 pandas.Series，则索引为字 ID
+        traditional: base 中对应字的繁体，为空的情况下只支持根据简体对齐
         datasets: 待对齐的无字 ID 数据集列表，每个元素为一个数据集，
             必须包含 did, initial, final, tone 字段
         na_threshold: base 中有读音的比例超过该值的字才会用于训练向量编码器。
@@ -416,9 +506,11 @@ def align_no_cid(
 
     Returns:
         result: 标注结果列表，长度和 dataset 相同，每个元素又是一个列表，长度为对应数据集的方言数。
-            每个元素为标注的字 ID 列表和字形列表的二元组，长度均为该方言的记录数。
-            字 ID 列表的内容为该数据集的每条记录对应 chars 中字的位置，如 chars 为 pandas.Series，
-            则为字 ID，如在 chars 中不存在该字形，则为 -1 或 None。字形列表为对应位置的字形
+            每个元素为如下三元组：
+            - labels: 标注的字 ID 列表，长度等于该方言的记录数。内容为该数据集的每条记录对应 chars 中字的位置，
+                如 chars 为 pandas.Series，则为字 ID，如在 chars 中不存在该字形，则为 -1 或 None
+            - simplified: labels 对应位置的字的简体，如原始数据集没有提供简体，由原始字形转换得出
+            - traditional: labels 对应位置的字的繁体，如原始数据集没有提供繁体，由原始字形转换得出
 
     先把基础数据集降维编码成字向量，在对每个数据集中每个方言应用 annotate 标注多音字。
     """
@@ -441,21 +533,40 @@ def align_no_cid(
         .transform(matrix)
 
     # 针对每个数据集中的每个方言标注多音字
+    t2s = opencc.OpenCC('t2s')
+    s2t = opencc.OpenCC('s2t')
     result = []
     for dataset in datasets:
         labels = []
         for data in dataset:
-            data_chars = data['character'].fillna('')
+            sim = data['character'].map(t2s.convert, na_action='ignore')
+            if (sim != data['character']).sum() < 3:
+                # 认为待标注数据集为简体
+                sim = data['character']
+                trad = data['character'].map(s2t.convert, na_action='ignore')
+                chars = simplified
+                data_chars = sim
+            else:
+                trad = data['character']
+                if traditional is None:
+                    # 待标注数据集为繁体，但基础数据集未提供繁体，根据简体对齐
+                    chars = simplified
+                    data_chars = sim
+                else:
+                    # 使用繁体对齐
+                    chars = traditional
+                    data_chars = trad
+
             l = annotate(
                 emb,
                 chars,
                 data[['initial', 'final', 'tone']].fillna(''),
-                data_chars
+                data_chars.fillna('')
             )
             # 输入字表含有字 ID，把位置转成字 ID
             if isinstance(chars, pandas.Series):
                 l = numpy.where(l >= 0, chars.index[l].values, None)
-            labels.append((l, data_chars.values))
+            labels.append((l, sim.values, trad.values))
 
         result.append(labels)
 
@@ -464,7 +575,6 @@ def align_no_cid(
 
 if __name__ == '__main__':
     import argparse
-    import opencc
 
     from . import datasets, preprocess
 
@@ -507,8 +617,6 @@ if __name__ == '__main__':
 
     logging.getLogger().setLevel(logging.INFO)
 
-    t2s = opencc.OpenCC('t2s')
-
     names = []
     dialects = []
     withcid = []
@@ -538,25 +646,9 @@ if __name__ == '__main__':
             has_cid = 'cid' in data.columns
 
         if has_cid:
-            if data is datasets.ccr:
-                # 从数据集生成字表，下同
-                # TODO: 为对齐多音字，当前把字形统一转换为简体字，应分别处理繁体和简体
-                chars = data[['cid', 'character']] \
-                    .sort_values(['cid', 'character']) \
-                    .drop_duplicates('cid') \
-                    .dropna() \
-                    .set_index('cid')['character'] \
-                    .map(t2s.convert)
-
-            elif data is datasets.zhongguoyuyan:
-                chars = data.metadata['char_info']['character']
-
-            else:
-                chars = data[['cid', 'character']] \
-                    .sort_values(['cid', 'character']) \
-                    .drop_duplicates('cid') \
-                    .dropna() \
-                    .set_index('cid')['character']
+            chars = data.metadata['char_info']['character'] \
+                if data is datasets.zhongguoyuyan \
+                else None
 
             withcid.append((data, chars))
 
@@ -582,18 +674,15 @@ if __name__ == '__main__':
         .rename_axis(['dataset', 'cid'])
 
     chars = pandas.pivot_table(
-        charmap.rename(columns={'label': 'cid'}) \
-            .reset_index(names=['dataset', 'old_cid']),
+        charmap.reset_index(names=['dataset', 'old_cid']),
         values='old_cid',
-        index='cid',
+        index='label',
         columns='dataset',
         aggfunc='first'
     ).reindex(names, axis=1)
-
-    chars.insert(0, 'character', pandas.concat(
-        [i.map(c['character']) for (_, i), c in zip(chars.items(), char_lists)],
-        axis=1
-    ).bfill(axis=1).iloc[:, 0])
+    chars.loc[:, ['simplified', 'traditional']] = charmap.sort_index() \
+        .groupby('label')[['simplified', 'traditional']].first()
+    chars.rename_axis('cid', inplace=True)
 
     logging.info(f'annotate datasets without characer ID {", ".join([d.name for d in nocid])}...')
     base = pandas.concat(
@@ -606,28 +695,43 @@ if __name__ == '__main__':
         ) for (d, _), c in zip(withcid, char_lists)],
         axis=1
     ).reindex(chars.index)
-    label_list = align_no_cid(base, chars['character'], *nocid)
+    label_list = align_no_cid(
+        base,
+        chars['simplified'],
+        chars['traditional'],
+        *nocid
+    )
 
     # 额外对不含字 ID 数据集特有的字编码
     unknown= []
     for labels in label_list:
-        for lbl, chr in labels:
-            unknown.append(chr[lbl == None])
+        for l, s, t in labels:
+            unknown.append(
+                pandas.DataFrame({'label': l, 'simplified': s, 'traditional': t})
+            )
 
-    unknown = pandas.Series(numpy.concatenate(unknown)) \
-        .sort_values() \
-        .drop_duplicates() \
-        .dropna() \
-        .reset_index(drop=True) \
-        .rename_axis('cid')
-    unknown.index += chars.shape[0]
-    unknown_map = pandas.Series(unknown.index, index=unknown)
-    chars = pandas.concat([chars, unknown.to_frame(name='character')], axis=0)
+    if unknown:
+        unknown = pandas.concat(unknown, axis=0, ignore_index=True)
+        unknown = unknown.loc[
+            unknown['label'].isna(),
+            ['simplified', 'traditional']
+        ] \
+            .dropna() \
+            .sort_values(['simplified', 'traditional']) \
+            .drop_duplicates() \
+            .reset_index(drop=True) \
+            .rename_axis('cid')
+        unknown.index += chars.shape[0]
+        chars = pandas.concat([chars, unknown], axis=0)
 
-    # 根据生成的字 ID 对原来缺失的字赋值
-    for labels in label_list:
-        for lbl, chr in labels:
-            lbl[lbl == None] = unknown_map.reindex(chr[lbl == None])
+        # 根据生成的字 ID 对原来缺失的字赋值
+        unknown_map = unknown.reset_index() \
+            .set_index(['simplified', 'traditional'])['cid']
+        for labels in label_list:
+            for l, s, t in labels:
+                l[l == None] = unknown_map.reindex(
+                    pandas.MultiIndex.from_arrays([s[l == None], t[l == None]])
+                )
 
     path = os.path.abspath(args.charmap_output)
     logging.info(f'save {charmap.shape[0]} character mapping to {path}...')
@@ -674,7 +778,7 @@ if __name__ == '__main__':
 
     # 为不含字 ID 的数据集加上字 ID 并保存
     for dataset, labels in zip(nocid, label_list):
-        for (did, data), (cid, _) in zip(dataset.items(), labels):
+        for (did, data), (cid, _, _) in zip(dataset.items(), labels):
             did = dialect_map[(dataset.name, did)]
             data = data.assign(did=did, cid=cid).reindex([
                 'did',
