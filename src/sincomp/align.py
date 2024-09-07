@@ -599,12 +599,12 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--char-output',
-        default='char.csv',
+        default=os.path.join('aligned', '.characters'),
         help='对齐后的新字 ID 到各数据集的原字 ID 的映射文件'
     )
     parser.add_argument(
         '--dialect-output',
-        default='dialect.csv',
+        default=os.path.join('aligned', '.dialects'),
         help='合并各数据集的方言信息文件'
     )
     parser.add_argument(
@@ -627,31 +627,11 @@ if __name__ == '__main__':
             continue
 
         names.append(data.name)
-        try:
-            dlt = data.metadata['dialect_info']
-        except (AttributeError, KeyError):
-            # 数据集不包含方言点信息，根据数据生成基本的信息
-            logging.warning(f'{repr(data)} has no dialect information.')
-            dlt = pandas.DataFrame(index=pandas.Index(
-                data['did'].drop_duplicates().dropna().sort_values(),
-                name='did'
-            ))
-
-        dialects.append(dlt)
+        dialects.append(data.dialects)
 
         # 区分含有字 ID 的数据集和不含字 ID 的数据集
-        try:
-            has_cid = 'cid' in next(iter(data)).columns
-        except AttributeError:
-            has_cid = 'cid' in data.columns
-
-        if has_cid:
-            chars = data.metadata['char_info']['character'] \
-                if data is datasets.zhongguoyuyan \
-                else None
-
-            withcid.append((data, chars))
-
+        if (chars := data.characters).shape[0] > 0:
+            withcid.append((data, chars['character']))
         else:
             nocid.append(data)
 
