@@ -680,7 +680,7 @@ class MCPDictDataset(FileCacheDataset):
 
         if self._superscript_tone:
             # 把声调中的普通数字转成上标数字
-            data['調值'] = preprocess.tone2super(data['調值'])
+            data['tone'] = preprocess.tone2super(data['tone'])
 
         # 根据需要替换缺失值及空值
         if self._na is not None:
