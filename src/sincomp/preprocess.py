@@ -3,17 +3,25 @@
 """
 预处理方言读音数据的功能函数
 
-基于正则表达式或 CRF 模型切分汉语音节声母、韵母、声调。
+- 基于正则表达式或 CRF 模型切分汉语音节声母、韵母、声调
+- 使用 KNN 算法填充读音缺失值
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import logging
 import collections
-import re
+import joblib
+import logging
 import numpy
 import pandas
+import re
+import sklearn.compose
+import sklearn.feature_extraction.text
+import sklearn.impute
+import sklearn.metrics
+import sklearn.pipeline
+
 try:
     from sklearn_crfsuite import CRF
 except ImportError:
@@ -911,3 +919,133 @@ parse = RegexParser(
     f'([{"".join(_DIACRITICS)}]*[{"".join(_LETTERS)}][{"".join(_LETTERS | _DIACRITICS | _SUPRASEGMENTALS)}]*)'
     f'([{"".join(_TONES)}]*)'
 )
+
+
+def character_distances(
+    data1: numpy.ndarray[str],
+    data2: numpy.ndarray[str] | None = None,
+    n_jobs: int = 1
+) -> numpy.ndarray[float]:
+    """
+    根据读音矩阵计算字之间的读音距离
+
+    Parameters:
+        data1: 方言字音数据表，每行为一个字，每列为一个方言的一部分读音，如声母，缺失值以空字符串表示
+        data2: 另一方言字音数据表，列的数量和顺序必须和 `data1` 相同，为空时计算 `data1` 的字相互之间的距离
+        n_jobs: 并行计算的并行数
+
+    Returns:
+        distances: data1 和 data2 的字两两之间的距离矩阵
+
+    把 data1 和 data2 编码成稀疏矩阵后计算字向量的余弦距离
+    """
+
+    # 字音转化成稀疏矩阵并计算距离
+    vectorizer = sklearn.feature_extraction.text.CountVectorizer(
+        lowercase=False,
+        tokenizer=str.split,
+        token_pattern=None,
+        stop_words=None,
+        binary=True
+    )
+    transformer = sklearn.compose.make_column_transformer(
+        *[(sklearn.pipeline.make_pipeline(
+            vectorizer,
+            sklearn.preprocessing.Normalizer('l2')
+        ), i) for i in range(data1.shape[1])],
+        n_jobs=n_jobs
+    )
+
+    if data2 is None:
+        matrix1 = transformer.fit_transform(data1)
+        matrix2 = matrix1
+    else:
+        transformer.fit(numpy.concatenate([data1, data2], axis=0))
+        matrix1 = transformer.transform(data1)
+        matrix2 = transformer.transform(data2)
+
+    return sklearn.metrics.pairwise.cosine_distances(matrix1, matrix2)
+
+def impute_dialect(
+    data: numpy.ndarray[str],
+    distances: numpy.ndarray[float],
+    n_neighbors: int = 3,
+    output: numpy.ndarray[str] | None = None
+) -> numpy.ndarray[str]:
+    """
+    根据字之间的距离填充一个方言的读音缺失值
+
+    Parameters:
+        data: 含有缺失值的读音数据，缺失值以空字符串表示
+        distances: 预计算的 `data` 中两两字之间的距离，大小为 data.shape[0] * data.shape[0]
+        n_neighbors: 填充缺失值时根据最近的多少个有值的字
+        output: 指定结果输出位置
+
+    Returns:
+        output: 填充后的读音，顺序和 `data` 相同
+    """
+
+    vectorizer = sklearn.feature_extraction.text.CountVectorizer(
+        lowercase=False,
+        tokenizer=str.split,
+        token_pattern=None,
+        stop_words=None,
+        binary=True,
+        dtype=distances.dtype
+    )
+
+    missing = data == ''
+    dist = distances[missing][:, ~missing]
+    idx = numpy.argsort(dist, axis=1)[:, :n_neighbors]
+    vec = vectorizer.fit_transform(data)
+    # 距离越近权重越高
+    weights = vec[~missing].toarray()[idx]
+    weights /= numpy.take_along_axis(dist, idx, axis=1)[..., None] + 1e-4
+    idx = numpy.argmax(numpy.sum(weights, axis=1), axis=-1)
+
+    if output is None:
+        output = data.copy()
+    else:
+        output[:] = data[:]
+    output[missing] = vectorizer.get_feature_names_out()[idx]
+    return output
+
+def impute(
+    data: numpy.ndarray[str],
+    n_neighbors: int = 3,
+    n_jobs: int = 1,
+    inplace: bool = False
+) -> numpy.ndarray[str]:
+    """
+    填充方言读音中的缺失值
+
+    Paramters:
+        data: 原始方言读音表，每行为一个字，每列为一个读音片段，如声母，缺失值用空字符串或 pandas.NA 代表
+        n_neighbors: 填充缺失值时根据最近的多少个有值的字
+        n_jobs: 并行计算的并行数
+
+    Returns:
+        imputed: 填充后的方言读音表
+
+    使用 KNN 算法，使用有值的读音计算字之间的距离，对每一个缺失读音，使用同方言的 `n_neighbors`
+    个最近的有值的字的读音权重最大的填充，权重和邻居的距离负相关。
+    """
+
+    imputed = data if inplace else data.copy()
+    if isinstance(data, pandas.DataFrame):
+        data = data.fillna('').values if isinstance(data, pandas.DataFrame) else data
+        output = imputed.values
+
+    dist = character_distances(data)
+
+    # 根据最近的有值的字音填充缺失读音
+    for i, o in enumerate(joblib.Parallel(n_jobs)(
+        joblib.delayed(impute_dialect)(
+            data[:, i],
+            dist,
+            n_neighbors=n_neighbors
+        ) for i in range(data.shape[1])
+    )):
+        output[:, i] = o
+
+    return imputed
