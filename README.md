@@ -38,7 +38,7 @@ python3 -O -m sincomp.datasets
 如果由于网络或其他原因下载失败，可以手动到下文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
 
 > [!Note]
-> 注意小学堂数据文件名中“閩語”笔误为“閔語”，需手工改正。
+> 注意小学堂数据文件名中“閩語”笔误为“閔語”，手工下载时需手工改正。
 
 之后即可在 Python 代码中使用上述数据集，如：
 
@@ -46,8 +46,8 @@ python3 -O -m sincomp.datasets
 import sincomp.datasets
 
 # 采用延迟加载方式，在使用时才加载实际数据并缓存，数据集对外表现如同 pandas.DataFrame
-print(sincomp.datasets.ccr[:10])
-print(sincomp.datasets.ccr.metadata['dialect_info'][:10])
+print(sincomp.datasets.get('CCR').dialects)
+print(sincomp.datasets.get('CCR').sample(1))
 ```
 
 ### 计算方言相似度
@@ -62,8 +62,8 @@ python3 -O -m sincomp.similarity
 
 | 文件 | 说明 |
 |:-|:-|
-| ccr_chi2.csv | 使用卡方方法计算的相似度 |
-| ccr_entropy.csv | 使用条件熵计算的相似度 |
+| CCR_chi2.csv | 使用卡方方法计算的相似度 |
+| CCR_entropy.csv | 使用条件熵计算的相似度 |
 
 上述命令实际上在内部调用了相似度函数，其用法如下所示：
 
@@ -74,10 +74,12 @@ import sincomp.similarity
 
 # 把原始数据集转成宽表，每个字为一行，如果一个字有多个读音，以空格分隔
 data = sincomp.preprocess.transform(
-    sincomp.datasets.ccr.fillna({'initial': '', 'final': '', 'tone': ''}),
+    sincomp.datasets.get('CCR'),
     index='cid',
+    columns='did',
     values=['initial', 'final', 'tone'],
-    aggfunc='first'
+    aggfunc='first',
+    fill_value=''
 )
 # 使用卡方计算方言之间相似度
 sim = sincomp.similarity.chi2(data)
@@ -92,6 +94,7 @@ sim = sincomp.similarity.chi2(data)
 | 模块 | 说明 |
 |:-|:-|
 | datasets | 提供加载数据集的通用接口 |
+| preprocess | 预处理，包括把音节切分成声韵调、填充缺失读音等 |
 | align | 对齐不同数据集之间的字 ID |
 | similarity | 提供若干无监督的方法计算方言之间的相似度 |
 | compare | 支持手工设定的规则来计算方言对规则的符合程度 |
@@ -110,11 +113,11 @@ sim = sincomp.similarity.chi2(data)
 
 本库当前支持处理如下方言读音数据集：
 
-| 代号 | 说明 | 简称 | 链接 |
-|:-|:-|:-|:-|
-| ccr | 小学堂汉字古今音资料库现代音 | 小学堂 | [小学堂汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/) |
-| mcpdict | 汉字音典方言汉字读音 | 汉字音典 | [汉字音典](https://mcpdict.sourceforge.io/) |
-| zhongguoyuyan | 中国语言资源保护工程汉语方言单字音 | 语保 | [中国语言资源保护工程采录展示平台](https://zhongguoyuyan.cn/) |
+| 代号 | 说明 | 简称 | 链接 | 别名 |
+|:-|:-|:-|:-|:-|
+| CCR | 小学堂汉字古今音资料库现代音 | 小学堂 | [小学堂汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/) | ccr、xiaoxue |
+| MCPDict | 汉字音典方言汉字读音 | 汉字音典 | [汉字音典](https://mcpdict.sourceforge.io/) | mcpdict |
+| zhongguoyuyan | 中国语言资源保护工程汉语方言单字音 | 语保 | [中国语言资源保护工程采录展示平台](https://zhongguoyuyan.cn/) | yubao |
 
 如下为以上数据集的版权声明：
 
@@ -155,8 +158,8 @@ $env:ZHONGGUOYUYAN_HOME = $env:HOME\zhongguoyuyan
 ```python
 import sincomp.datasets
 
-print(sincomp.datasets.zhongguoyuyan[:10])
-print(sincomp.datasets.zhongguoyuyan.metadata['dialect_info'][:10])
+print(sincomp.datasets.get('zhongguoyuyan').dialects)
+print(sincomp.datasets.get('zhongguoyuyan').sample(1))
 ```
 
 ### 数据格式
@@ -183,7 +186,7 @@ import sincomp.datasets
 import sincomp.preprocess
 
 # 把原始数据集的长表转成宽表，每个方言为一行，每个字的声韵调等为一列，如果一个字有多个声韵调，取第一个
-wide = sincomp.preprocess.transform(sincomp.datasets.ccr)
+wide = sincomp.preprocess.transform(sincomp.datasets.get('CCR'))
 print(wide[:10])
 ```
 
@@ -196,9 +199,9 @@ import pandas as pd
 import sincomp.datasets
 
 # 从指定目录加载数据集，该目录树下每个文件视为一个方言点，主文件名为方言 ID
-mydataset = sincomp.datasets.FileDataset(path='path/to/dataset/directory')
+mydataset = sincomp.datasets.get('path/to/dataset/directory')
 # 自定义数据集的用法与自带数据集相同
-print(mydataset[:10])
+print(mydataset.sample(1))
 ```
 
 # 开发计划
