@@ -7,17 +7,22 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import datetime
 import logging
 import os
+import platform
 import torch
+import torch._dynamo.config
 import torch.utils.tensorboard
-import torchmetrics
 
 
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
+
+
+# torch.compile 在非 Linux 系统上的支持不是很好，先关闭
+if platform.system() != 'Linux':
+    torch._dynamo.config.disable = True
 
 
 class EncoderBase(torch.nn.Module):
@@ -42,10 +47,10 @@ class EncoderBase(torch.nn.Module):
         dialect_emb_size: int = 20,
         char_emb_size: int = 20,
         output_emb_size: int = 20,
+        missing_id: int = 0,
         output_bias: bool = True,
         residual: bool = False,
-        l2: float = 0,
-        name: str = 'encoder'
+        dropout: float | None = None
     ):
         """
         Parameters:
@@ -55,10 +60,10 @@ class EncoderBase(torch.nn.Module):
             dialect_emb_size: 方言向量长度
             char_emb_size: 输入向量长度
             output_emb_size: 输出向量长度
+            missing_id: 代表缺失值的 ID
             output_bias: 是否为输出添加偏置
             residual: 为真时，子类 _transform 返回值为残差
-            l2: L2 正则化系数
-            name: 生成的模型名字
+            dropout: 训练时输出向量的丢弃率
         """
 
         super().__init__()
@@ -69,46 +74,40 @@ class EncoderBase(torch.nn.Module):
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
         self.output_emb_size = output_emb_size
+        self.missing_id = missing_id
         self.residual = residual
-        self.l2 = l2
-        self.name = name
 
         # 在向量表最后追加一项作为缺失值的向量，下同
         self.dialect_embs = torch.nn.ModuleList(
-            [torch.nn.Embedding(n + 1, dialect_emb_size) \
+            [torch.nn.Embedding(n, dialect_emb_size, padding_idx=missing_id) \
                 for n in self.dialect_vocab_sizes]
         )
 
         self.char_embs = torch.nn.ModuleList(
-            [torch.nn.Embedding(n + 1, char_emb_size) \
+            [torch.nn.Embedding(n, char_emb_size, padding_idx=missing_id) \
                 for n in self.char_vocab_sizes]
         )
 
         self.linears = torch.nn.ModuleList(
-            [torch.nn.Linear(output_emb_size, n + 1, bias=output_bias) \
+            [torch.nn.Linear(output_emb_size, n, bias=output_bias) \
                 for n in self.target_vocab_sizes]
         )
+
+        self.dropout = None if dropout is None else torch.nn.Dropout(dropout)
 
     def encode_dialect(self, dialects: torch.Tensor) -> torch.Tensor:
         """
         把方言点编码成向量.
 
         Parameters:
-            dialects: 方言张量，形状为 batch_size * 1，内容为整数编码
+            dialects: 方言张量，形状为 batch_size * len(dialect_vocab_sizes)，内容为整数编码
 
         Returns:
             char_emb: 编码的方言向量，形状为 batch_size * self.dialect_emb_size
         """
 
-        # 输入中的 -1 代表缺失值，替换为最后一个向量
         return torch.stack(
-            [self.dialect_embs[i](
-                torch.where(
-                    dialects[:, i] >= 0,
-                    dialects[:, i],
-                    self.dialect_vocab_sizes[i]
-                )
-            ) for i in range(len(self.dialect_embs))],
+            [e(dialects[:, i]) for i, e in enumerate(self.dialect_embs)],
             dim=2
         ).mean(dim=-1)
 
@@ -123,11 +122,8 @@ class EncoderBase(torch.nn.Module):
             char_emb: 编码的输入向量，形状为 batch_size * self.char_emb_size
         """
 
-        # 输入中的 -1 代表缺失值，替换为最后一个向量
         return torch.stack(
-            [self.char_embs[i](
-                torch.where(chars[:, i] >= 0, chars[:, i], self.char_vocab_sizes[i])
-            ) for i in range(len(self.char_embs))],
+            [e(chars[:, i]) for i, e in enumerate(self.char_embs)],
             dim=2
         ).mean(dim=-1)
 
@@ -165,6 +161,7 @@ class EncoderBase(torch.nn.Module):
 
         return [l(output_emb) for l in self.linears]
 
+    @torch.compile
     def forward(self, dialects: torch.Tensor, chars: torch.Tensor) -> torch.Tensor:
         """
         正向传播，根据方言编码和输入输出对数几率.
@@ -179,332 +176,12 @@ class EncoderBase(torch.nn.Module):
         dialect_emb = self.encode_dialect(dialects)
         char_emb = self.encode_char(chars)
         output_emb = self.transform(dialect_emb, char_emb)
+
+        if self.dropout is not None:
+            output_emb = self.dropout(output_emb)
+
         return self.decode(output_emb)
 
-    def predict(self, dialects: list[int], chars: list[int]) -> torch.Tensor:
-        """
-        根据方言编码和输入预测输出编码.
-
-        Parameters:
-            dialects: 方言编码，形状为 batch_size，batch_size 为批大小
-            chars: 输入张量，形状为 batch_size * len(char_vocab_sizes)，
-                数组内容为整数编码
-
-        Returns:
-            outputs: 输出张量，每个张量的形状为 batch_size，内容为输出编码
-        """
-
-        dialects = torch.as_tensor(dialects)
-        chars = torch.as_tensor(chars)
-
-        logits = self.forward(dialects, chars)
-        # 最后一项代表缺失值，预测时不输出
-        return torch.stack(
-            [l[:, :l.size(1) - 1].argmax(dim=1) for l in logits],
-            dim=1
-        )
-
-    def predict_proba(
-        self,
-        dialects: list[int],
-        chars: list[int]
-    ) -> list[torch.Tensor]:
-        """
-        根据方言编码和输入预测输出的概率.
-
-        Parameters:
-            dialects: 方言编码，形状为 batch_size，batch_size 为批大小
-            chars: 输入张量，形状为 batch_size * len(char_vocab_sizes)，数组内容为整数编码
-
-        Returns:
-            probs: 输出张量的数组，每个张量的形状为 batch_size * self.target_vocab_sizes[i]，
-                内容为输出的概率
-        """
-
-        dialects = torch.as_tensor(dialects)
-        chars = torch.as_tensor(chars)
-
-        logits = self.forward(dialects, chars)
-        # 最后一项代表缺失值，预测时不输出
-        return [torch.nn.functional.softmax(l[:, :l.size(1) - 1], dim=-1) \
-            for l in logits]
-
-    def loss(
-        self,
-        dialects: list[int],
-        chars: list[int],
-        targets: list[int]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        根据方言编码、输入和目标输出计算损失.
-
-        Parameters:
-            dialects: 方言编码，形状为 batch_size，batch_size 为批大小
-            chars: 输入张量，形状为 batch_size * len(char_vocab_sizes)，数组内容为整数编码
-            targets: 目标输出张量的数组，每个张量的形状为批大小，内容为输出编码
-
-        Returns:
-            loss: 每个样本的损失，形状为 batch_size
-            acc: 每个样本的预测是否等于目标，形状为 batch_size * len(self.target_vocab_sizes)
-        """
-
-        dialects = torch.as_tensor(dialects)
-        chars = torch.as_tensor(chars)
-        targets = torch.as_tensor(targets, dtype=torch.long)
-
-        logits = self.forward(dialects, chars)
-
-        # 输入中的 -1 代表缺失值，替换为最后一个向量
-        loss = torch.stack(
-            [torch.nn.functional.cross_entropy(
-                l,
-                torch.where(
-                    targets[:, i] >= 0,
-                    targets[:, i],
-                    self.target_vocab_sizes[i]
-                ),
-                reduction='none'
-            ) for i, l in enumerate(logits)],
-            dim=1
-        )
-
-        pred = torch.stack([l.argmax(dim=1) for l in logits], axis=1)
-        acc = (targets == pred).float()
-
-        return loss, acc
-
-    def update(
-        self,
-        optimizer: torch.optim.Optimizer,
-        dialects: list[int],
-        chars: list[int],
-        targets: list[int],
-        weights: list[float] | None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        反向传播更新模型参数.
-
-        Parameters:
-            optimizer: 用于更新的优化器
-            dialects, chars, targets: self.loss 的输入
-            weights: 各目标输出的权重
-
-        Returns:
-            loss, acc: self.loss 的返回值
-        """
-
-        dialects = torch.as_tensor(dialects)
-        chars = torch.as_tensor(chars)
-        targets = torch.as_tensor(targets)
-        if weights is not None:
-            weights = torch.as_tensor(weights)
-
-        optimizer.zero_grad()
-
-        loss, acc = self.loss(dialects, chars, targets)
-        loss = loss.mean(dim=0)
-        loss = (loss if weights is None else loss * weights).sum()
-        if self.l2 > 0:
-            loss += self.l2 * torch.as_tensor(
-                [torch.nn.MSELoss()(v) for v in self.trainable_variables]
-            ).sum()
-
-        loss.backward()
-        optimizer.step()
-        return loss, acc.mean(dim=0)
-
-    def train(
-        self,
-        optimizer: torch.optim.Optimizer,
-        data: torch.utils.data.DataLoader,
-        weights: list[float] | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        使用数据集训练模型.
-
-        Parameters:
-            optimizer: 用于更新的优化器
-            data: 训练数据集
-            weights: 各目标的权重
-
-        Returns:
-            loss, acc: 模型在训练数据集上的损失及精确度
-        """
-
-        if weights is not None:
-            weights = torch.as_tensor(weights)
-
-        loss_stat = torchmetrics.MeanMetric()
-        acc_stats = [torchmetrics.MeanMetric() for _ in self.linears]
-
-        for dialects, chars, targets in data:
-            loss, acc = self.update(optimizer, dialects, chars, targets, weights)
-            loss_stat.update(loss)
-            for i, s in enumerate(acc_stats):
-                s.update(acc[i])
-
-        return (
-            loss_stat.compute(),
-            torch.as_tensor([s.compute() for s in acc_stats])
-        )
-
-    def evaluate(
-        self,
-        data: torch.utils.data.DataLoader,
-        weights: list[float] | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        使用测试数据集评估模型.
-
-        Parameters:
-            data: 测试数据集
-            weights: 各目标的权重
-
-        Returns:
-            loss, acc: 模型在测试数据集上的损失及精确度
-        """
-
-        if weights is not None:
-            weights = torch.as_tensor(weights)
-
-        loss_stat = torchmetrics.MeanMetric()
-        acc_stats = [torchmetrics.MeanMetric() for _ in self.linears]
-
-        for dialects, chars, targets in data:
-            loss, acc = self.loss(dialects, chars, targets)
-
-            # 目标数据中的缺失值不计入
-            loss = torch.where(targets >= 0, loss, 0)
-            if weights is not None:
-                loss = torch.tensordot(loss, weights, ([-1], [0]))
-            loss_stat.update(loss)
-
-            for i, s in enumerate(acc_stats):
-                mask = targets[:, i] >= 0
-                s.update(
-                    torch.where(mask, acc[:, i], 0),
-                    weight=mask.float()
-                )
-
-        return (
-            loss_stat.compute(),
-            torch.as_tensor([s.compute() for s in acc_stats])
-        )
-
-    def fit(
-        self,
-        optimizer: torch.optim.Optimizer,
-        train_data: torch.utils.data.Dataset,
-        validate_data: torch.utils.data.Dataset | None = None,
-        weights: list[float] | None = None,
-        epochs: int = 20,
-        batch_size: int = 100,
-        output_path: str | None = None
-    ) -> None:
-        """
-        训练模型.
-
-        Parameters:
-            optimizer: 用于训练的优化器
-            train_data: 训练数据集
-            validate_data: 测试数据集
-            weights: 各目标的权重
-            epochs: 训练轮次
-            batch_size: 批大小
-            output_path: 检查点及统计数据输出路径
-
-        训练过程中的检查点及统计数据输出到 output_path，如果 output_path 已有数据，
-        先从最近一次检查点恢复训练状态。
-        """
-
-        train_data_loader = torch.utils.data.DataLoader(
-            train_data,
-            batch_size=batch_size,
-            shuffle=True,
-        )
-        if validate_data is not None:
-            validate_data_loader = torch.utils.data.DataLoader(
-                validate_data,
-                batch_size=batch_size
-            )
-
-        if output_path is None:
-            output_path = os.path.join(
-                self.name,
-                f'{datetime.datetime.now():%Y%m%d%H%M}'
-            )
-
-        logger.info(
-            f'train {self.name}, epochs = {epochs}, weights = {weights}, '
-            f'batch size = {batch_size}, output path = {output_path}'
-        )
-
-        train_writer = torch.utils.tensorboard.SummaryWriter(
-            os.path.join(output_path, 'train')
-        )
-        if validate_data is not None:
-            validate_writer = torch.utils.tensorboard.SummaryWriter(
-                os.path.join(output_path, 'validate')
-            )
-
-        checkpoint_dir = os.path.join(output_path, 'checkpoints')
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        epoch = 0
-
-        # 如果目标路径已包含检查点，先从检查点恢复
-        entries = [e for e in os.scandir(checkpoint_dir) if e.is_file]
-        if len(entries) > 0:
-            entries.sort(key=lambda e: e.stat.st_mtime)
-            latest = entries[-1].path
-            checkpoint = torch.load(latest, weights_only=True)
-
-            epoch = checkpoint['epoch']
-            self.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-        while epoch < epochs:
-            epoch += 1
-            loss, acc = self.train(
-                optimizer,
-                train_data_loader,
-                weights
-            )
-
-            logger.info(
-                f'epoch {epoch}/{epochs}: '
-                f'training loss = {loss}, accuracy = {acc}'
-            )
-
-            train_writer.add_scalar('loss', loss, epoch)
-            for i in range(acc.size(0)):
-                train_writer.add_scalar(f'accuracy{i}', acc[i], epoch)
-
-            train_writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
-
-            for name, param in self.named_parameters():
-                train_writer.add_histogram(name, param, epoch)
-
-            if validate_data is not None:
-                loss, acc = self.evaluate(validate_data_loader, weights)
-                logger.info(
-                    f'epoch {epoch}/{epochs}: '
-                    f'validation loss = {loss}, accuracy = {acc}'
-                )
-
-                validate_writer.add_scalar('loss', loss, epoch)
-                for i in range(acc.size(0)):
-                    validate_writer.add_scalar(f'accuracy{i}', acc[i], epoch)
-
-            path = os.path.join(checkpoint_dir, f'cpkt-{epoch}.pt')
-            torch.save(
-                {
-                    'epoch': epoch,
-                    'model_state_dict': self.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict()
-                },
-                path
-            )
 
 class BilinearEncoder(EncoderBase):
     """
@@ -513,8 +190,8 @@ class BilinearEncoder(EncoderBase):
     字向量经过以方言向量为参数的线性变换得到输出向量。
     """
 
-    def __init__(self, *args, name: str = 'bilinear_encoder', **kwargs):
-        super().__init__(*args, name=name, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         self.bilinear = torch.nn.Bilinear(
             self.dialect_emb_size,
@@ -590,3 +267,218 @@ class MultiTargetLoss(torch.nn.Module):
 
         return losses.sum(dim=-1) if self.weight is None \
             else torch.tensordot(losses, self.weight, ([-1], [0]))
+
+
+torch.compile
+def train(
+    model: torch.nn.Module,
+    loss: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    data: torch.utils.data.DataLoader
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    使用数据集训练模型
+
+    Parameters:
+        model: 待训练模型
+        loss: 损失函数
+        optimizer: 用于训练的优化器
+        data: 训练数据集
+
+    Returns:
+        loss, acc: 模型在训练数据集上的损失及准确率
+    """
+
+    old_mode = model.training
+    model.train()
+    count = 0
+    total_loss = torch.zeros(())
+    total_acc = torch.zeros(len(model.target_vocab_sizes))
+
+    for (dialects, chars), targets in data:
+        optimizer.zero_grad()
+        logits = model(dialects, chars)
+        lss = loss(logits, targets)
+        (lss if lss.dim() == 0 else lss.mean()).backward()
+        optimizer.step()
+
+        preds = torch.stack([l.argmax(dim=-1) for l in logits], dim=1)
+        count += dialects.size(0)
+        total_loss += lss * dialects.size(0) if lss.dim() == 0 else lss.sum()
+        total_acc += (preds == targets).to(total_acc.dtype).sum(dim=0)
+
+    model.train(old_mode)
+    return total_loss / count, total_acc / count
+
+torch.compile
+def evaluate(
+    model: torch.nn.Module,
+    loss: torch.nn.Module,
+    data: torch.utils.data.DataLoader
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    使用测试数据集评估模型
+
+    Parameters:
+        model: 待评估模型
+        loss: 损失函数
+        data: 测试数据集
+
+    Returns:
+        loss, acc: 模型在测试数据集上的损失及准确率
+    """
+
+    old_mode = model.training
+    model.eval()
+    count = 0
+    total_loss = torch.zeros(())
+    total_acc = torch.zeros(len(model.target_vocab_sizes))
+
+    with torch.no_grad():
+        for (dialects, chars), targets in data:
+            logits = model(dialects, chars)
+            preds = torch.stack([l.argmax(dim=-1) for l in logits], dim=1)
+            lss = loss(logits, targets)
+            count += dialects.size(0)
+            total_loss += lss * dialects.size(0) if lss.dim() == 0 else lss.sum()
+            total_acc += (preds == targets).to(total_acc.dtype).sum(dim=0)
+
+    model.train(old_mode)
+    return total_loss / count, total_acc / count
+
+def fit(
+    model,
+    train_data: torch.utils.data.Dataset,
+    validate_data: torch.utils.data.Dataset | None = None,
+    loss: torch.nn.Module = MultiTargetLoss(reduction='none'),
+    optimizer: torch.optim.Optimizer | None = None,
+    lr_scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    epochs: int = 20,
+    batch_size: int = 100,
+    num_workers: int = 0,
+    checkpoint_dir: str | None = None,
+    log_dir: str | None = None
+) -> None:
+    """
+    训练模型
+
+    Parameters:
+        model: 待训练模型
+        train_data: 训练数据集
+        validate_data: 测试数据集
+        loss: 损失函数
+        optimizer: 用于训练的优化器
+        lr_scheduler: 用于更新优化器学习率的调度器
+        epochs: 训练轮次
+        batch_size: 批大小
+        num_workers: 加载数据的并行数
+        checkpoint_dir: 检查点输出路径，如果该路径已有数据，先从最近一次检查点恢复训练状态
+        log_dir: 统计数据输出路径
+    """
+
+    logger.debug(
+        f'train model, epochs = {epochs}, batch_size = {batch_size}, '
+        f'num_workers = {num_workers}, checkpoint_dir = {checkpoint_dir}, '
+        f'log_dir = {log_dir} .'
+    )
+
+    train_data_loader = torch.utils.data.DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=not isinstance(train_data, torch.utils.data.IterableDataset),
+        num_workers=num_workers
+    )
+    if validate_data is not None:
+        validate_data_loader = torch.utils.data.DataLoader(
+            validate_data,
+            batch_size=batch_size,
+            num_workers=num_workers
+        )
+
+    if optimizer is None:
+        optimizer = torch.optim.SGD(model.parameters())
+
+    if log_dir is not None:
+        train_writer = torch.utils.tensorboard.SummaryWriter(
+            os.path.join(log_dir, 'train')
+        )
+        if validate_data is not None:
+            validate_writer = torch.utils.tensorboard.SummaryWriter(
+                os.path.join(log_dir, 'validate')
+            )
+
+    epoch = 0
+
+    if checkpoint_dir is not None:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        # 如果目标路径已包含检查点，先从检查点恢复
+        entries = [e for e in os.scandir(checkpoint_dir) if e.name.endswith('.pt')]
+        if len(entries) > 0:
+            entries.sort(
+                key=lambda e: int(os.path.splitext(e.name)[0].split('-')[-1])
+            )
+            checkpoint = torch.load(entries[-1].path, weights_only=True)
+
+            epoch = checkpoint['epoch']
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if lr_scheduler is not None:
+                lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
+
+    while epoch < epochs:
+        epoch += 1
+
+        lss, acc = train(model, loss, optimizer, train_data_loader)
+
+        logger.info(
+            f'epoch {epoch}/{epochs}: training loss = {lss}, '
+            f'accuracy = {acc}'
+        )
+
+        if log_dir is not None:
+            train_writer.add_scalar('loss', lss, epoch)
+            for i, a in enumerate(acc):
+                train_writer.add_scalar(f'accuracy{i}', a, epoch)
+
+            train_writer.add_scalar(
+                'learning rate',
+                optimizer.param_groups[0]['lr'],
+                epoch
+            )
+
+            for name, param in model.named_parameters():
+                train_writer.add_histogram(name, param, epoch)
+
+        if validate_data is not None:
+            lss, acc = evaluate(model, loss, validate_data_loader)
+            logger.info(
+                f'epoch {epoch}/{epochs}: '
+                f'validation loss = {lss}, accuracy = {acc}'
+            )
+
+            if log_dir is not None:
+                validate_writer.add_scalar('loss', lss, epoch)
+                for i, a in enumerate(acc):
+                    validate_writer.add_scalar(f'accuracy{i}', a, epoch)
+
+        if lr_scheduler is not None:
+            lr_scheduler.step()
+
+        if checkpoint_dir is not None:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict()
+            }
+            if lr_scheduler is not None:
+                checkpoint['lr_scheduler_state_dict'] = lr_scheduler.state_dict()
+
+            torch.save(
+                checkpoint,
+                os.path.join(checkpoint_dir, f'cpkt-{epoch}.pt')
+            )
+
+    if log_dir is not None:
+        train_writer.close()
+        if validate_data is not None:
+            validate_writer.close()
