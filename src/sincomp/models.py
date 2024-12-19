@@ -535,3 +535,58 @@ class BilinearEncoder(EncoderBase):
         """
 
         return self.bilinear(dialect_emb, char_emb)
+
+
+class MultiTargetLoss(torch.nn.Module):
+    """
+    计算方言读音声韵调等多目标的损失函数，为每个目标交叉熵损失之和
+    """
+
+    def __init__(
+        self,
+        weight: torch.Tensor | None = None,
+        ignore_index: int = -1,
+        reduction: str = 'mean'
+    ):
+        """
+        Parameters:
+            weight: 每个目标的权重，为空时视为全 1
+            ignore_index: 代表缺失值的 ID，不参与计算损失
+            reduction: 把一批样本损失值规约成一个的方法
+        """
+
+        super().__init__()
+
+        self.weight = None if weight is None \
+            else torch.nn.Buffer(torch.as_tensor(weight))
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+
+    def forward(
+        self,
+        logits: list[torch.Tensor],
+        targets: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        计算多目标损失
+
+        Parameters:
+            logits: 每个目标的对数几率，形状为 batch_size * target_vocab_size
+            targets: 目标标签，形状为 batch_size * target_num
+
+        Returns:
+            loss: 损失值
+        """
+
+        losses = torch.stack(
+            [torch.nn.functional.cross_entropy(
+                l,
+                targets[:, i],
+                ignore_index=self.ignore_index,
+                reduction=self.reduction
+            ) for i, l in enumerate(logits)],
+            dim=-1
+        )
+
+        return losses.sum(dim=-1) if self.weight is None \
+            else torch.tensordot(losses, self.weight, ([-1], [0]))
