@@ -354,6 +354,146 @@ def evaluate(
     model.train(old_mode)
     return total_loss / count, total_acc / count
 
+
+class PronunciationPredictor:
+    """
+    基于编码器的方言读音多目标分类器
+    """
+
+    def __init__(
+        self,
+        model,
+        loss: torch.nn.Module = MultiTargetLoss(reduction='none'),
+        optimizer: torch.optim.Optimizer | None = None,
+        lr_scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+        max_iter: int = 20,
+        batch_size: int = 100,
+        shuffle: bool = True
+    ):
+        """
+        Parameters:
+            loss: 损失函数
+            optimizer: 用于训练的优化器
+            lr_scheduler: 用于更新优化器学习率的调度器
+            epochs: 训练轮次
+            batch_size: 批大小
+            shuffle: 每轮训练是否打乱数据
+        """
+
+        self.model = model
+        self.loss = loss
+        self.optimizer = torch.optim.SGD(model.parameters()) \
+            if optimizer is None else optimizer
+        self.lr_scheduler = lr_scheduler
+        self.max_iter = max_iter
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.n_dialect_features = len(model.dialect_embs)
+
+    def _make_data_loader(self, features, labels) -> torch.utils.data.DataLoader:
+        """
+        把输出特征和标签转换成 PyTorch DataLoader
+
+        Parameters:
+            features: (n_samples, n_features)，输入特征
+            labels: (n_samples, n_outputs)，对应的标签
+
+        Returns:
+            data_loader: model 需要的 DataLoader，
+                每个元素为 ((dialects, chars), targets)
+        """
+
+        return torch.utils.data.DataLoader(
+            torch.utils.data.StackDataset(
+                torch.utils.data.TensorDataset(
+                    torch.as_tensor(features[:, :self.n_dialect_features]),
+                    torch.as_tensor(features[:, self.n_dialect_features:])
+                ),
+                torch.as_tensor(labels, dtype=torch.long)
+            ),
+            batch_size=self.batch_size,
+            shuffle=self.shuffle
+        )
+
+    def fit(self, features, labels):
+        """
+        训练模型
+
+        Parameters:
+            features: (n_samples, n_features)，训练的输入特征
+            labels: (n_samples, n_outputs)，对应的标签
+
+        Returns:
+            self
+        """
+
+        loader = self._make_data_loader(features, labels)
+        for _ in range(self.max_iter):
+            train(self.model, self.loss, self.optimizer, loader)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+        return self
+
+    def partial_fit(self, features, labels):
+        """
+        增量训练模型，在现有模型基础上只训练一轮数据
+
+        Parameters:
+            features: (n_samples, n_features)，训练的输入特征
+            labels: (n_samples, n_outputs)，对应的标签
+
+        Returns:
+            self
+        """
+
+        loader = self._make_data_loader(features, labels)
+        train(self.model, self.loss, self.optimizer, loader)
+        return self
+
+    def predict(self, inputs):
+        """
+        根据方言特征和字特征预测读音
+
+        Parameters:
+            inputs: (n_samples, n_dialect_features + n_char_features)，方言特征和字特征
+
+        Returns:
+            outputs: (n_samples, n_outputs)，方言读音信息，如声母、韵母、声调
+        """
+
+        dialects = torch.as_tensor(inputs[:, :self.n_dialect_features])
+        chars = torch.as_tensor(inputs[:, self.n_dialect_features:])
+
+        with torch.no_grad():
+            logits = self.model(dialects, chars)
+            preds = torch.stack([l.argmax(dim=-1) for l in logits], dim=1)
+
+        return preds.cpu().numpy()
+
+    def predict_proba(self, inputs):
+        """
+        根据方言特征和字特征预测读音概率
+
+        Parameters:
+            inputs: (n_samples, n_dialect_features + n_char_features)，方言特征和字特征
+
+        Returns:
+            probs: 长度为 n_outputs 的列表，每个形状为 (n_samples, n_classes)，
+                为方言读音分类的概率，如声母为每个可能声母的概率
+        """
+
+        dialects = torch.as_tensor(inputs[:, :self.n_dialect_features])
+        chars = torch.as_tensor(inputs[:, self.n_dialect_features:])
+
+        with torch.no_grad():
+            logits = self.model(dialects, chars)
+            probs = [torch.nn.functional.softmax(l, dim=-1).cpu().numpy() \
+                for l in logits]
+
+        return probs
+
+
 def fit(
     model,
     train_data: torch.utils.data.Dataset,
