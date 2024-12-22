@@ -15,12 +15,12 @@ description = "A toolset for computation and comparison of Chinese dialects"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pandas[excel]>=1.5",
+    "OpenCC",
     "numpy",
+    "pandas[excel]>=1.5",
+    "retry",
     "scipy",
     "scikit-learn>=1.2",
-    "retry",
-    "OpenCC",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -33,19 +33,23 @@ Homepage = "https://github.com/lernanto/sincomp"
 Issues = "https://github.com/lernanto/sincomp/issues"
 
 [project.optional-dependencies]
+models = [
+    "tensorboard>=2.0",
+    "torch>=2.0",
+]
 parser = [
     "sklearn-crfsuite",
 ]
-models = [
-    "tensorflow>=2.8",
-]
 plot = [
-    "matplotlib",
-    "seaborn",
-    "geopandas",
     "cartopy",
+    "folium",
+    "geopandas",
+    "matplotlib",
     "plotly",
-    "folium"
+    "seaborn",
+]
+test = [
+    "sincomp[models,parser,plot]"
 ]
 
 [tool.setuptools_scm]
