@@ -292,10 +292,14 @@ def train(
     old_mode = model.training
     model.train()
     count = 0
-    total_loss = torch.zeros(())
-    total_acc = torch.zeros(len(model.target_vocab_sizes))
+    device = next(iter(model.parameters())).device
+    total_loss = torch.zeros((), device=device)
+    total_acc = torch.zeros(len(model.target_vocab_sizes), device=device)
 
     for (dialects, chars), targets in data:
+        dialects = dialects.to(device)
+        chars = chars.to(device)
+        targets = targets.to(device)
         optimizer.zero_grad()
         logits = model(dialects, chars)
         lss = loss(logits, targets)
@@ -331,11 +335,15 @@ def evaluate(
     old_mode = model.training
     model.eval()
     count = 0
-    total_loss = torch.zeros(())
-    total_acc = torch.zeros(len(model.target_vocab_sizes))
+    device = next(iter(model.parameters())).device
+    total_loss = torch.zeros((), device=device)
+    total_acc = torch.zeros(len(model.target_vocab_sizes), device=device)
 
     with torch.no_grad():
         for (dialects, chars), targets in data:
+            dialects = dialects.to(device)
+            chars = chars.to(device)
+            targets = targets.to(device)
             logits = model(dialects, chars)
             preds = torch.stack([l.argmax(dim=-1) for l in logits], dim=1)
             lss = loss(logits, targets)
@@ -356,6 +364,7 @@ def fit(
     epochs: int = 20,
     batch_size: int = 100,
     num_workers: int = 0,
+    device: torch.device | str | None = None,
     checkpoint_dir: str | None = None,
     log_dir: str | None = None
 ) -> None:
@@ -372,14 +381,18 @@ def fit(
         epochs: 训练轮次
         batch_size: 批大小
         num_workers: 加载数据的并行数
+        device: 训练的设备，未指定时优先使用 GPU
         checkpoint_dir: 检查点输出路径，如果该路径已有数据，先从最近一次检查点恢复训练状态
         log_dir: 统计数据输出路径
     """
 
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     logger.debug(
         f'train model, epochs = {epochs}, batch_size = {batch_size}, '
-        f'num_workers = {num_workers}, checkpoint_dir = {checkpoint_dir}, '
-        f'log_dir = {log_dir} .'
+        f'num_workers = {num_workers}, device = {device}, '
+        f'checkpoint_dir = {checkpoint_dir}, log_dir = {log_dir} .'
     )
 
     train_data_loader = torch.utils.data.DataLoader(
@@ -425,10 +438,15 @@ def fit(
             if lr_scheduler is not None:
                 lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
 
+    model.to(device)
+    loss.to(device)
+
     while epoch < epochs:
         epoch += 1
 
         lss, acc = train(model, loss, optimizer, train_data_loader)
+        lss = lss.item()
+        acc = acc.tolist()
 
         logger.info(
             f'epoch {epoch}/{epochs}: training loss = {lss}, '
@@ -451,6 +469,8 @@ def fit(
 
         if validate_data is not None:
             lss, acc = evaluate(model, loss, validate_data_loader)
+            lss = lss.item()
+            acc = acc.tolist()
             logger.info(
                 f'epoch {epoch}/{epochs}: '
                 f'validation loss = {lss}, accuracy = {acc}'
