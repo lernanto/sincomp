@@ -324,7 +324,12 @@ class FileDataset(Dataset):
             output: 合并所有文件数据的长表
         """
 
-        output = pandas.concat(self, axis=0, ignore_index=True)
+        dfs = list(self)
+        output = pandas.DataFrame(
+            columns=['did', 'cid', 'initial', 'final', 'tone']
+        ) if len(dfs) == 0 \
+            else pandas.concat(dfs, axis=0, ignore_index=True)
+
         logging.debug(f'{output.shape[0]} records loaded.')
         return output
 

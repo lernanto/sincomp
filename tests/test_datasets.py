@@ -122,6 +122,19 @@ class TestFileDataset(unittest.TestCase):
         for col in 'did', 'cid', 'initial', 'final', 'tone':
             self.assertIn(col, data.columns)
 
+    def test_data_empty(self):
+        import sincomp.datasets
+
+        dataset = sincomp.datasets.FileDataset(
+            path=os.path.join(data_dir, 'not_exist')
+        )
+        data = dataset.data
+
+        self.assertIsInstance(data, pandas.DataFrame)
+        self.assertEqual(data.shape[0], 0)
+        for col in 'did', 'cid', 'initial', 'final', 'tone':
+            self.assertIn(col, data.columns)
+
     def test_iterrows(self):
         count = 0
         for i, r in self.dataset.iterrows():
