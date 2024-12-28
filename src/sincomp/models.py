@@ -304,6 +304,7 @@ def train(
         logits = model(dialects, chars)
         lss = loss(logits, targets)
         (lss if lss.dim() == 0 else lss.mean()).backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
         optimizer.step()
 
         preds = torch.stack([l.argmax(dim=-1) for l in logits], dim=1)
