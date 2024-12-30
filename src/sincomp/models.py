@@ -204,7 +204,6 @@ class EncoderBase(tf.Module):
         logits = self(dialects, chars)
         return [tf.nn.softmax(l) for l in logits]
 
-    @tf.function
     def loss(
         self,
         dialects: tf.Tensor,
@@ -242,7 +241,6 @@ class EncoderBase(tf.Module):
 
         return loss, acc
 
-    @tf.function
     def update(
         self,
         optimizer: tf.optimizers.Optimizer,
@@ -276,6 +274,7 @@ class EncoderBase(tf.Module):
 
         return loss, tf.reduce_mean(acc, axis=0)
 
+    @tf.function
     def train(
         self,
         optimizer: tf.optimizers.Optimizer,
@@ -300,11 +299,12 @@ class EncoderBase(tf.Module):
                 dtype=tf.float32
             )
 
-        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
-        acc_stats = [tf.keras.metrics.Mean(dtype=tf.float32) \
-            for _ in self.target_embs]
+        count = tf.zeros((), dtype=tf.int32)
+        total_loss = tf.zeros((), dtype=tf.float32)
+        total_acc = tf.zeros(len(self.target_vocab_sizes), dtype=tf.float32)
 
         for (dialects, chars), targets in data:
+            count += 1
             loss, acc = self.update(
                 optimizer,
                 dialects,
@@ -312,15 +312,13 @@ class EncoderBase(tf.Module):
                 targets,
                 target_weights
             )
-            loss_stat.update_state(loss)
-            for i, s in enumerate(acc_stats):
-                s.update_state(acc[i])
+            total_loss += loss
+            total_acc += acc
 
-        return (
-            loss_stat.result(),
-            tf.convert_to_tensor([s.result() for s in acc_stats])
-        )
+        count = tf.cast(count, tf.float32)
+        return total_loss / count, total_acc / count
 
+    @tf.function
     def evaluate(
         self,
         data: tf.data.Dataset,
@@ -343,29 +341,28 @@ class EncoderBase(tf.Module):
                 dtype=tf.float32
             )
 
-        loss_stat = tf.keras.metrics.Mean(dtype=tf.float32)
-        acc_stats = [tf.keras.metrics.Mean(dtype=tf.float32) \
-            for _ in self.target_embs]
+        loss_count = tf.zeros((), dtype=tf.int32)
+        total_loss = tf.zeros((), dtype=tf.float32)
+        acc_count = tf.zeros(len(self.target_vocab_sizes), dtype=tf.int32)
+        total_acc = tf.zeros(len(self.target_vocab_sizes), dtype=tf.float32)
 
         for (dialects, chars), targets in data:
             loss, acc = self.loss(dialects, chars, targets)
 
             # 目标数据中的缺失值不计入
-            loss = tf.where(targets != self.missing_id, loss, 0)
+            mask = targets != self.missing_id
+            loss = tf.where(mask, loss, 0)
             loss = tf.reduce_sum(loss, axis=-1) if target_weights is None \
                 else tf.tensordot(loss, target_weights, -1)
-            loss_stat.update_state(loss)
+            loss_count += tf.shape(targets)[0]
+            total_loss += tf.reduce_sum(loss)
 
-            for i, s in enumerate(acc_stats):
-                mask = targets[:, i] != self.missing_id
-                s.update_state(
-                    tf.where(mask, acc[:, i], 0),
-                    sample_weight=tf.cast(mask, tf.float32)
-                )
+            acc_count += tf.reduce_sum(tf.cast(mask, tf.int32), axis=0)
+            total_acc += tf.reduce_sum(tf.where(mask, acc, 0), axis=0)
 
         return (
-            loss_stat.result(),
-            tf.convert_to_tensor([s.result() for s in acc_stats])
+            total_loss / tf.cast(loss_count, tf.float32),
+            total_acc/ tf.cast(acc_count, tf.float32)
         )
 
     def fit(
