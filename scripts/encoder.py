@@ -245,6 +245,61 @@ def make_data(
     )
     return train_data, test_data, dialect_dicts, char_dicts
 
+def split(config: dict) -> None:
+    """
+    把数据集划分成训练集、验证集、测试集
+
+    Parameters:
+        config: 全局配置字典
+
+    划分后的数据保存到 config['split_dir']
+    """
+
+    data = load_datasets(config['datasets']).data
+
+    validation_size = config.get('validation_size', 0.1)
+    if isinstance(validation_size, float):
+        validation_size = int(data.shape[0] * validation_size)
+
+    test_size = config.get('test_size', 0.1)
+    if isinstance(test_size, float):
+        test_size = int(data.shape[0] * test_size)
+
+    # 按字分层随机划分
+    groups=data[config['columns']['char'][0]]
+    train_data, test_data = train_test_split(
+        data,
+        test_size=test_size,
+        stratify=np.where(
+            groups.groupby(groups).transform('count') >= 2,
+            groups,
+            ''
+        )
+    )
+    groups=train_data[config['columns']['char'][0]]
+    train_data, val_data = train_test_split(
+        train_data,
+        test_size=validation_size,
+        stratify=np.where(
+            groups.groupby(groups).transform('count') >= 2,
+            groups,
+            ''
+        )
+    )
+
+    output_dir = config.get('split_dir', '.')
+    os.makedirs(output_dir, exist_ok=True)
+
+    path = os.path.join(output_dir, 'train.csv')
+    logging.info(f'save train data to {path} .')
+    train_data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
+    path = os.path.join(output_dir, 'validation.csv')
+    logging.info(f'save validation data to {path} .')
+    val_data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
+    path = os.path.join(output_dir, 'test.csv')
+    logging.info(f'save test data to {path} .')
+    test_data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
+
 def mkdict(config: dict) -> None:
     """
     根据方言数据构建词典
@@ -541,7 +596,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
     parser.add_argument(
         'command',
-        choices=['mkdict', 'train', 'evaluate', 'benchmark', 'export'],
+        choices=['split', 'mkdict', 'train', 'evaluate', 'benchmark', 'export'],
         help='执行操作'
     )
     parser.add_argument('-D', '--debug', action='store_true', default=False, help='显示调试信息')
@@ -586,7 +641,10 @@ if __name__ == '__main__':
                     reshuffle_each_iteration=True
                 )
 
-    if args.command == 'mkdict':
+    if args.command == 'split':
+        split(config)
+
+    elif args.command == 'mkdict':
         mkdict(config)
 
     elif args.command == 'train':
