@@ -8,7 +8,6 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import logging
-import os
 import tensorflow as tf
 
 
@@ -68,23 +67,23 @@ class EncoderBase(tf.Module):
         # 在向量表最后追加一项作为缺失值的向量，下同
         self.dialect_embs = [tf.Variable(
             init(shape=(n, self.dialect_emb_size), dtype=tf.float32),
-            name=f'dialect_emb{i}'
+            name=f'dialect_emb/{i}'
         ) for i, n in enumerate(self.dialect_vocab_sizes)]
 
         self.char_embs = [tf.Variable(
             init(shape=(n, self.char_emb_size), dtype=tf.float32),
-            name=f'char_emb{i}'
+            name=f'char_emb/{i}'
         ) for i, n in enumerate(self.char_vocab_sizes)]
 
         self.target_embs = [tf.Variable(
             init(shape=(n, self.output_emb_size), dtype=tf.float32),
-            name=f'target_emb{i}'
+            name=f'target_emb/{i}'
         ) for i, n in enumerate(self.target_vocab_sizes)]
 
         if target_bias:
             self.target_biases = [tf.Variable(
                 init(shape=(n,), dtype=tf.float32),
-                name=f'target_bias{i}'
+                name=f'target_bias/{i}'
             ) for i, n in enumerate(self.target_vocab_sizes)]
 
     def encode_dialect(self, dialects: tf.Tensor) -> tf.Tensor:
@@ -400,13 +399,7 @@ class EncoderBase(tf.Module):
         )
 
         if log_dir is not None:
-            train_writer = tf.summary.create_file_writer(
-                os.path.join(log_dir, 'train')
-            )
-            if validate_data is not None:
-                validate_writer = tf.summary.create_file_writer(
-                    os.path.join(log_dir, 'validate')
-                )
+            writer = tf.summary.create_file_writer(log_dir)
 
         epoch = 0
 
@@ -436,10 +429,14 @@ class EncoderBase(tf.Module):
             )
 
             if log_dir is not None:
-                with train_writer.as_default():
-                    tf.summary.scalar('loss', loss, step=epoch)
+                with writer.as_default():
+                    tf.summary.scalar('loss/train', loss, step=epoch)
                     for i in range(acc.shape[0]):
-                        tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
+                        tf.summary.scalar(
+                            f'accuracy/train/{i}',
+                            acc[i],
+                            step=epoch
+                        )
 
                     lr = optimizer.learning_rate
                     if isinstance(
@@ -463,10 +460,14 @@ class EncoderBase(tf.Module):
                 )
 
                 if log_dir is not None:
-                    with validate_writer.as_default():
-                        tf.summary.scalar('loss', loss, step=epoch)
+                    with writer.as_default():
+                        tf.summary.scalar('loss/validation', loss, step=epoch)
                         for i in range(acc.shape[0]):
-                            tf.summary.scalar(f'accuracy{i}', acc[i], step=epoch)
+                            tf.summary.scalar(
+                                f'accuracy/validation/{i}',
+                                acc[i],
+                                step=epoch
+                            )
 
             if checkpoint_dir is not None:
                 manager.save()
