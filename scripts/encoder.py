@@ -40,8 +40,9 @@ def load_dictionaries(prefix='.'):
     dicts = {}
     for e in os.scandir(prefix):
         if e.is_file() and e.name.endswith('.csv'):
-            dicts[os.path.splitext(e.name)[0]] \
-                = pd.read_csv(e.path, index_col=0, encoding='utf-8')
+            dic = pd.read_csv(e.path, dtype=str, encoding='utf-8')
+            dic.set_index(dic.iloc[:, 0], inplace=True)
+            dicts[os.path.splitext(e.name)[0]] = dic
 
     return dicts
 
