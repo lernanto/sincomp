@@ -8,12 +8,12 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import logging
 import argparse
-import os
 import json
-import pandas as pd
+import logging
 import numpy as np
+import os
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 import tensorflow as tf
@@ -156,12 +156,9 @@ def encode_data(
         data[:, limits[2]:limits[3]]
     ))
 
-def split(config: dict) -> None:
+def split(args: argparse.Namespace, config: dict) -> None:
     """
     把数据集划分成训练集、验证集、测试集
-
-    Parameters:
-        config: 全局配置字典
 
     划分后的数据保存到 config['split_dir']
     """
@@ -211,13 +208,8 @@ def split(config: dict) -> None:
     logging.info(f'save test data to {path} .')
     test_data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
 
-def mkdict(config: dict) -> None:
-    """
-    根据方言数据构建词典
-
-    Parameters:
-        config: 全局配置字典
-    """
+def mkdict(args: argparse.Namespace, config: dict) -> None:
+    """根据方言数据构建词典"""
 
     prefix = config.get('dictionary_dir', '.')
     logging.info(f'make dictionaries to {prefix}...')
@@ -240,12 +232,9 @@ def mkdict(config: dict) -> None:
 
     logging.info('done.')
 
-def compare(config: dict) -> None:
+def compare(args: argparse.Namespace, config: dict) -> None:
     """
     对比各种配置的模型效果
-
-    Parameters:
-        config: 全局配置字典
 
     从 config 读取所有模型配置，为每一组配置创建一个模型，训练并评估效果。
     """
@@ -282,7 +271,7 @@ def compare(config: dict) -> None:
         target_dicts
     )
     train_data = train_data.shuffle(
-        train_data.cardinality,
+        train_data.cardinality(),
         reshuffle_each_iteration=True
     )
     val_data = encode_data(
@@ -329,30 +318,35 @@ def compare(config: dict) -> None:
         )
         logging.info('done.')
 
-def train(
-    config: dict,
-    name: str,
-    dialect_vocab_sizes: list[int],
-    char_vocab_sizes: list[int],
-    target_vocab_sizes: list[int],
-    train_data: tf.data.Dataset,
-    validate_data: tf.data.Dataset | None = None
-) -> None:
+def train(args: argparse.Namespace, config: dict) -> None:
     """
     训练模型
 
-    Parameters:
-        config: 多层级的配置字典，分析配置文件获得
-        name: 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_vocab_sizes, char_vocab_sizes, target_vocab_sizes: 传给模型构造函数的参数
-        train_data: 训练数据
-        validate_data: 评估数据
-
-    从 config 中读取由 name 指定的配置，创建并训练模型。
+    从 config 中读取由 args.model 指定的配置，创建并训练模型。
     """
 
+    # 载入词典及数据
+    dicts = load_dictionaries(config.get('dictionary_dir', '.'))
+    dialect_dicts, char_dicts, target_dicts = \
+        [[dicts[c] for c in config['columns'][name]] \
+            for name in ('dialect', 'char', 'target')]
+    dialect_vocab_sizes, char_vocab_sizes, target_vocab_sizes = \
+        [[d.shape[0] + 1 for d in ds] \
+            for ds in (dialect_dicts, char_dicts, target_dicts)]
+
+    data = encode_data(
+        load_datasets(config['datasets']),
+        config['columns']['dialect'],
+        config['columns']['char'],
+        config['columns']['target'],
+        dialect_dicts,
+        char_dicts,
+        target_dicts
+    )
+    data = data.shuffle(data.cardinality(), reshuffle_each_iteration=True)
+
     # 从模型列表中查找待训练的模型
-    conf = next((c for c in config['models'] if c['name'] == name)).copy()
+    conf = next((c for c in config['models'] if c['name'] == args.model)).copy()
     conf.pop('name')
     model, optimizer = build_model(
         conf,
@@ -362,43 +356,46 @@ def train(
         missing_id=0
     )
 
-    checkpoint_dir = os.path.join(config.get('checkpoint_dir', '.'), name)
-    log_dir = os.path.join(config.get('log_dir', '.'), name)
+    checkpoint_dir = os.path.join(config.get('checkpoint_dir', '.'), args.model)
+    log_dir = os.path.join(config.get('log_dir', '.'), args.model)
     logging.info(
-        f'start training model {name}, '
+        f'start training model {args.model}, '
         f'checkpoint directory = {checkpoint_dir}, '
         f'log directory = {log_dir} ...'
     )
 
     model.fit(
         optimizer,
-        train_data,
-        validate_data=validate_data,
+        data,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
         **conf
     )
     logging.info('done.')
 
-def evaluate(
-    config: dict,
-    name: str,
-    dialect_vocab_sizes: list[int],
-    char_vocab_sizes: list[int],
-    target_vocab_sizes: list[int],
-    data: tf.data.Dataset
-) -> None:
-    """
-    评估训练完成的模型效果
+def evaluate(args: argparse.Namespace, config: dict) -> None:
+    """评估模型效果"""
 
-    Parameters:
-        config: 多层级的配置字典，分析配置文件获得
-        name: 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dialect_vocab_sizes, char_vocab_sizes, target_vocab_sizes: 传给模型构造函数的参数
-        data: 评估数据
-    """
+    # 载入词典及数据
+    dicts = load_dictionaries(config.get('dictionary_dir', '.'))
+    dialect_dicts, char_dicts, target_dicts = \
+        [[dicts[c] for c in config['columns'][name]] \
+            for name in ('dialect', 'char', 'target')]
+    dialect_vocab_sizes, char_vocab_sizes, target_vocab_sizes = \
+        [[d.shape[0] + 1 for d in ds] \
+            for ds in (dialect_dicts, char_dicts, target_dicts)]
 
-    conf = next((c for c in config['models'] if c['name'] == name)).copy()
+    data = encode_data(
+        load_datasets(config['datasets']),
+        config['columns']['dialect'],
+        config['columns']['char'],
+        config['columns']['target'],
+        dialect_dicts,
+        char_dicts,
+        target_dicts
+    )
+
+    conf = next((c for c in config['models'] if c['name'] == args.model)).copy()
     model, _ = build_model(
         conf,
         dialect_vocab_sizes=dialect_vocab_sizes,
@@ -410,35 +407,25 @@ def evaluate(
     checkpoint = tf.train.Checkpoint(model=model)
     manager = tf.train.CheckpointManager(
         checkpoint,
-        os.path.join(config['output_dir'], name, 'checkpoints'),
+        os.path.join(config['checkpoint_dir'], args.model),
         None
     )
-    checkpoint.restore(manager.latest_checkpoint)
-    logging.info(f'restored model from checkpoint {manager.latest_checkpoint} .')
+    ckpt = manager.checkpoints[args.checkpoint]
+    logging.info(f'restored model {args.model} from checkpoint {ckpt} .')
+    checkpoint.restore(ckpt)
 
     logging.info('evaluating model ...')
     loss, acc = model.evaluate(data.batch(conf.get('batch_size', 100)))
     logging.info(f'done. loss = {loss}, accuracy = {acc}')
+    print(f'loss = {loss}, accuracy = {acc}')
 
-def export(
-    config: dict,
-    name: str,
-    dicts: dict[str,
-    pd.DataFrame],
-    prefix: str = '.'
-) -> None:
-    """
-    从模型导出向量及其他权重到文件
+def export(args: argparse.Namespace, config: dict) -> None:
+    """从模型导出向量及其他权重到文件"""
 
-    Parameters:
-        config: 多层级的配置字典，分析配置文件获得
-        name: 用于训练的模型配置名称，用于从 config 中读取指定配置
-        dicts: 模型输入输出字典
-        prefix: 输出路径前缀
-    """
+    dicts = load_dictionaries(config.get('dictionary_dir', '.'))
 
-    conf = next((c for c in config['models'] if c['name'] == name)).copy()
-    model, _, _ = build_model(
+    conf = next((c for c in config['models'] if c['name'] == args.model)).copy()
+    model, _ = build_model(
         conf,
         dialect_vocab_sizes=[dicts[c].shape[0] + 1 for c in config['columns']['dialect']],
         char_vocab_sizes=[dicts[c].shape[0] + 1 for c in config['columns']['char']],
@@ -449,15 +436,16 @@ def export(
     checkpoint = tf.train.Checkpoint(model=model)
     manager = tf.train.CheckpointManager(
         checkpoint,
-        os.path.join(config['output_dir'], name, 'checkpoints'),
+        os.path.join(config['checkpoint_dir'], args.model),
         None
     )
-    checkpoint.restore(manager.latest_checkpoint)
-    logging.info(f'restore model from checkpoint {manager.latest_checkpoint} .')
+    ckpt = manager.checkpoints[args.checkpoint]
+    logging.info(f'restore {args.model} from checkpoint {ckpt} .')
+    checkpoint.restore(ckpt)
 
-    output_dir = os.path.join(prefix, name)
-    logging.info(f'exporting {name} weights to {output_dir} ...')
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = os.path.join(args.output, args.model)
+    logging.info(f'exporting model {args.model} weights to {args.output} ...')
+    os.makedirs(args.output, exist_ok=True)
 
     # 导出输入输出向量，保存为 CSV 格式
     for name in ('dialect', 'char', 'target'):
@@ -497,79 +485,50 @@ def export(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
-    parser.add_argument(
-        'command',
-        choices=['split', 'mkdict', 'train', 'evaluate', 'compare', 'export'],
-        help='执行操作'
+    parser.add_argument('-c', '--config', type=argparse.FileType('r'), help='配置文件')
+
+    subparsers = parser.add_subparsers()
+
+    split_parser = subparsers.add_parser('split')
+    split_parser.set_defaults(func=split)
+
+    mkdict_parser = subparsers.add_parser('mkdict')
+    mkdict_parser.set_defaults(func=mkdict)
+
+    train_parser = subparsers.add_parser('train')
+    train_parser.set_defaults(func=train)
+    train_parser.add_argument('model', help='指定训练的模型')
+
+    evaluate_parser = subparsers.add_parser('evaluate')
+    evaluate_parser.set_defaults(func=evaluate)
+    evaluate_parser.add_argument('model', help='指定评估的模型')
+    evaluate_parser.add_argument(
+        'checkpoint',
+        nargs='?',
+        type=int,
+        default=-1,
+        help='指定导出的检查点'
     )
-    parser.add_argument('-D', '--debug', action='store_true', default=False, help='显示调试信息')
-    parser.add_argument('config', type=argparse.FileType('r'), help='配置文件')
-    parser.add_argument('model', nargs='?', help='指定训练或评估的模型')
-    parser.add_argument('output', nargs='?', help='指定输出路径前缀')
+
+    compare_parser = subparsers.add_parser('compare')
+    compare_parser.set_defaults(func=compare)
+
+    export_parser = subparsers.add_parser('export')
+    export_parser.set_defaults(func=export)
+    export_parser.add_argument('-o', '--output', default='.', help='指定输出路径前缀')
+    export_parser.add_argument('model', help='指定导出的模型')
+    export_parser.add_argument(
+        'checkpoint',
+        nargs='?',
+        type=int,
+        default=-1,
+        help='指定导出的检查点'
+    )
+
     args = parser.parse_args()
 
-    logging.getLogger().setLevel(logging.DEBUG if args.debug else logging.INFO)
-
-    logging.info(f'load configuration from {args.config.name}')
     config = json.load(args.config)
-
-    if args.command in ('train', 'evaluate', 'export'):
-        dicts = load_dictionaries(config.get('dictionary_dir', '.'))
-        dialect_dicts, char_dicts, target_dicts \
-            = [[dicts[c] for c in config['columns'][name]] \
-                for name in ('dialect', 'char', 'target')]
-
-    if args.command in ('train', 'evaluate'):
-        data = load_datasets(config['datasets']).shuffle(random_state=98101)
-
-        # 删除不含有效方言、字、读音信息的记录
-        for name in 'dialect', 'char', 'target':
-            data = data.dropna(how='all', subset=config['columns'][name])
-
-        if args.command in ('train', 'evaluate'):
-            data = encode_data(
-                data,
-                config['columns']['dialect'],
-                config['columns']['char'],
-                config['columns']['target'],
-                dialect_dicts,
-                char_dicts,
-                target_dicts
-            )
-
-            if args.command == 'train':
-                data = data.shuffle(
-                    100000,
-                    seed=10273,
-                    reshuffle_each_iteration=True
-                )
-
-    if args.command == 'split':
-        split(config)
-
-    elif args.command == 'mkdict':
-        mkdict(config)
-
-    elif args.command == 'train':
-        train(
-            config,
-            args.model,
-            *[[d.shape[0] + 1 for d in dicts] \
-                for dicts in (dialect_dicts, char_dicts, target_dicts)],
-            data
-        )
-
-    elif args.command == 'evaluate':
-        evaluate(
-            config,
-            args.model,
-            *[[d.shape[0] + 1 for d in dicts] \
-                for dicts in (dialect_dicts, char_dicts, target_dicts)],
-            data
-        )
-
-    elif args.command == 'compare':
-        compare(config)
-
-    elif args.command == 'export':
-        export(config, args.model, dicts, args.output)
+    logging.getLogger().setLevel(
+        getattr(logging, config.get('log_level', 'WARNING'))
+    )
+    args.func(args, config)
