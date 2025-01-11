@@ -11,7 +11,6 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import logging
 import argparse
 import os
-import itertools
 import json
 import pandas as pd
 import numpy as np
@@ -157,95 +156,6 @@ def encode_data(
         data[:, limits[2]:limits[3]]
     ))
 
-def make_data(
-    data: pd.DataFrame,
-    dialect_indeces: list[str],
-    char_indeces: list[str],
-    target_indeces: list[str],
-    target_dicts: list[pd.Series],
-    dialect_dicts: list[pd.Series] | None = None,
-    char_dicts: list[pd.Series] | None = None,
-    test_size: float = 0.2,
-    minfreq: float | int = 0.00001,
-    random_state: np.random.RandomState | None = None
-) -> tuple[
-    tf.data.Dataset,
-    tf.data.Dataset,
-    list[pd.Series],
-    list[pd.Series]
-]:
-    """
-    为模型构造训练及测试数据集
-
-    Parameters:
-        data: 输入的方言数据
-        dialect_indeces: data 中代表方言特征的列
-        char_indeces: data 中代表子特征的列
-        target_indeces: data 中代表目标输出的列
-        target_dicts: 输出数据的词典列表
-        dialect_dicts: 方言数据的词典列表
-        char_dicts: 字数据的词典列表
-        test_size: 切分评估数据的比例
-        minfreq: 为数据构造编码器时只保留出现频次或比例不小于该值的值
-        random_state: 用于复现划分数据结果
-
-    Returns:
-        train_data: 训练数据集
-        test_data: 测试数据集
-        dialect_dicts: 最终的方言数据词典列表
-        char_dicts: 最终的字数据词典列表
-
-    把原始数据按 test_size 随机分为训练集和评估集，并用 dialect_dicts、
-    char_dicts 和 target_dicts 编码数据。如果 dialect_dicts 或 char_dicts 为空，
-    根据相应的训练数据构建。
-    """
-
-    # 分割数据为训练集和测试集
-    train_data, test_data = train_test_split(
-        data,
-        test_size=test_size,
-        random_state=random_state
-    )
-
-    logging.info(
-        f'split {data.shape[0]} data into {train_data.shape[0]} train data '
-        f'and {test_data.shape[0]} test data.'
-    )
-
-    # 如果输入词典为空，根据训练数据创建
-    if dialect_dicts is None:
-        dialect_dicts = [sincomp.auxiliary.make_dict(c, minfreq=minfreq) \
-            for _, c in train_data[dialect_indeces].items()]
-
-    if char_dicts is None:
-        char_dicts = [sincomp.auxiliary.make_dict(c, minfreq=minfreq) \
-            for _, c in train_data[char_indeces].items()]
-
-    if any(d.shape[0] <= 0 for d in itertools.chain(
-            dialect_dicts, char_dicts, target_dicts
-        )) or (train_data.shape[0] <= 0):
-        raise RuntimeError('Empty dictionary or training data, check your data!')
-
-    train_data = encode_data(
-        train_data,
-        dialect_indeces,
-        char_indeces,
-        target_indeces,
-        dialect_dicts,
-        char_dicts,
-        target_dicts
-    )
-    test_data = encode_data(
-        test_data,
-        dialect_indeces,
-        char_indeces,
-        target_indeces,
-        dialect_dicts,
-        char_dicts,
-        target_dicts
-    )
-    return train_data, test_data, dialect_dicts, char_dicts
-
 def split(config: dict) -> None:
     """
     把数据集划分成训练集、验证集、测试集
@@ -330,72 +240,60 @@ def mkdict(config: dict) -> None:
 
     logging.info('done.')
 
-def benchmark(config: dict, data: pd.DataFrame) -> None:
+def compare(config: dict) -> None:
     """
-    评估各种配置的模型效果
+    对比各种配置的模型效果
 
     Parameters:
         config: 全局配置字典
-        data: 用于训练及评估的数据集
 
     从 config 读取所有模型配置，为每一组配置创建一个模型，训练并评估效果。
     """
 
-    # 输出数据必须全部编码
-    target_dicts = [sincomp.auxiliary.make_dict(
-        data[c],
-        minfreq=config.get('min_freq')
-    ) for c in config['columns']['target']]
-
-    # 切分数据用于训练及不同项目的评估
-    random_state = np.random.RandomState(37511)
-    train_dialect, _ = sincomp.auxiliary.split_data(
-        data[config['columns']['dialect']].fillna('').apply(' '.join, axis=1),
-        return_mask=True,
-        random_state=random_state
+    # 载入训练和评估数据
+    train_data = sincomp.datasets.get(
+        os.path.join(config.get('split_dir', '.'), 'train.csv')
     )
-    train_char, _ = sincomp.auxiliary.split_data(
-        data[config['columns']['char']].fillna('').apply(' '.join, axis=1),
-        return_mask=True,
-        random_state=random_state
-    )
-    train_data, validate_data, dialect_dicts, char_dicts = make_data(
-        data[train_dialect & train_char],
-        config['columns']['dialect'],
-        config['columns']['char'],
-        config['columns']['target'],
-        target_dicts,
-        test_size=0.1,
-        minfreq=config.get('min_freq'),
-        random_state=random_state
+    val_data = sincomp.datasets.get(
+        os.path.join(config.get('split_dir', '.'), 'validation.csv')
     )
 
-    dialect_vocab_sizes = [len(d) + 1 for d in dialect_dicts]
-    char_vocab_sizes = [len(d) + 1 for d in char_dicts]
-    target_vocab_sizes = [len(d) + 1 for d in target_dicts]
+    # 载入词典
+    dicts = load_dictionaries(config.get('dictionary_dir', '.'))
+    dialect_dicts, char_dicts, target_dicts = \
+        [[dicts[c] for c in config['columns'][name]] \
+            for name in ('dialect', 'char', 'target')]
+    dialect_vocab_sizes, char_vocab_sizes, target_vocab_sizes = \
+        [[d.shape[0] + 1 for d in ds] \
+            for ds in (dialect_dicts, char_dicts, target_dicts)]
     logging.info(
         f'dialect_vocab_sizes = {dialect_vocab_sizes}, '
         f'char_vocab_sizes = {char_vocab_sizes}, '
         f'target_vocab_sizes = {target_vocab_sizes}.'
     )
 
-    # 保存词典
-    dict_dir = config.get('dictionary_dir', '.')
-    os.makedirs(dict_dir, exist_ok=True)
-    logging.info(f'saving dictionaries to {dict_dir}...')
-
-    for name, dic in zip(
-        config['columns']['dialect'] + config['columns']['char'] \
-            + config['columns']['target'],
-        dialect_dicts + char_dicts + target_dicts
-    ):
-        dic.to_csv(
-            os.path.join(dict_dir, name + '.csv'),
-            encoding='utf-8',
-            lineterminator='\n'
-        )
-
-    logging.info('done.')
+    train_data = encode_data(
+        train_data,
+        config['columns']['dialect'],
+        config['columns']['char'],
+        config['columns']['target'],
+        dialect_dicts,
+        char_dicts,
+        target_dicts
+    )
+    train_data = train_data.shuffle(
+        train_data.cardinality,
+        reshuffle_each_iteration=True
+    )
+    val_data = encode_data(
+        val_data,
+        config['columns']['dialect'],
+        config['columns']['char'],
+        config['columns']['target'],
+        dialect_dicts,
+        char_dicts,
+        target_dicts
+    )
 
     for conf in config['models']:
         # 根据配置文件创建模型并训练
@@ -409,8 +307,12 @@ def benchmark(config: dict, data: pd.DataFrame) -> None:
             missing_id=0
         )
 
-        checkpoint_dir = os.path.join(config.get('checkpoint_dir', '.'), name)
-        log_dir = os.path.join(config.get('log_dir', '.'), name)
+        checkpoint_dir = os.path.join(
+            config.get('checkpoint_dir', '.'),
+            'compare',
+            name
+        )
+        log_dir = os.path.join(config.get('log_dir', '.'), 'compare', name)
         logging.info(
             f'start training model {name}, '
             f'checkpoint directory = {checkpoint_dir}, '
@@ -420,7 +322,7 @@ def benchmark(config: dict, data: pd.DataFrame) -> None:
         model.fit(
             optimizer,
             train_data,
-            validate_data,
+            val_data,
             checkpoint_dir=checkpoint_dir,
             log_dir=log_dir,
             **conf
@@ -597,7 +499,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
     parser.add_argument(
         'command',
-        choices=['split', 'mkdict', 'train', 'evaluate', 'benchmark', 'export'],
+        choices=['split', 'mkdict', 'train', 'evaluate', 'compare', 'export'],
         help='执行操作'
     )
     parser.add_argument('-D', '--debug', action='store_true', default=False, help='显示调试信息')
@@ -617,7 +519,7 @@ if __name__ == '__main__':
             = [[dicts[c] for c in config['columns'][name]] \
                 for name in ('dialect', 'char', 'target')]
 
-    if args.command in ('train', 'evaluate', 'benchmark'):
+    if args.command in ('train', 'evaluate'):
         data = load_datasets(config['datasets']).shuffle(random_state=98101)
 
         # 删除不含有效方言、字、读音信息的记录
@@ -666,8 +568,8 @@ if __name__ == '__main__':
             data
         )
 
-    elif args.command == 'benchmark':
-        benchmark(config, data)
+    elif args.command == 'compare':
+        compare(config)
 
     elif args.command == 'export':
         export(config, args.model, dicts, args.output)
