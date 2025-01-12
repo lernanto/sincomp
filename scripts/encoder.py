@@ -247,6 +247,9 @@ def compare(args: argparse.Namespace, config: dict) -> None:
     val_data = sincomp.datasets.get(
         os.path.join(config.get('split_dir', '.'), 'validation.csv')
     )
+    test_data = sincomp.datasets.get(
+        os.path.join(config.get('split_dir', '.'), 'test.csv')
+    )
 
     # 载入词典
     dicts = load_dictionaries(config.get('dictionary_dir', '.'))
@@ -277,6 +280,15 @@ def compare(args: argparse.Namespace, config: dict) -> None:
     )
     val_data = encode_data(
         val_data,
+        config['columns']['dialect'],
+        config['columns']['char'],
+        config['columns']['target'],
+        dialect_dicts,
+        char_dicts,
+        target_dicts
+    )
+    test_data = encode_data(
+        test_data,
         config['columns']['dialect'],
         config['columns']['char'],
         config['columns']['target'],
@@ -318,6 +330,12 @@ def compare(args: argparse.Namespace, config: dict) -> None:
             **conf
         )
         logging.info('done.')
+
+        # 使用测试数据集评估模型效果
+        logging.info('evaluating model ...')
+        loss, acc = model.evaluate(test_data.batch(conf.get('batch_size', 100)))
+        logging.info(f'done. loss = {loss}, accuracy = {acc}')
+        print(f'{name}: loss = {loss}, accuracy = {acc}')
 
 def train(args: argparse.Namespace, config: dict) -> None:
     """
