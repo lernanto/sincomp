@@ -14,6 +14,7 @@ import logging
 import numpy as np
 import os
 import pandas as pd
+import re
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 import tensorflow as tf
@@ -443,7 +444,6 @@ def export(args: argparse.Namespace, config: dict) -> None:
     logging.info(f'restore {args.model} from checkpoint {ckpt} .')
     checkpoint.restore(ckpt)
 
-    output_dir = os.path.join(args.output, args.model)
     logging.info(f'exporting model {args.model} weights to {args.output} ...')
     os.makedirs(args.output, exist_ok=True)
 
@@ -452,7 +452,7 @@ def export(args: argparse.Namespace, config: dict) -> None:
         columns = config['columns'][name]
 
         for c, e in zip(columns, (getattr(model, f'{name}_embs'))):
-            fname = os.path.join(output_dir, c + '.csv')
+            fname = os.path.join(args.output, c + '.csv')
             logging.info(f'save {fname}')
             idx = dicts[c].index
             pd.DataFrame(e.numpy(), index=idx.insert(idx.shape[0], '')).to_csv(
@@ -463,7 +463,7 @@ def export(args: argparse.Namespace, config: dict) -> None:
             )
 
         for c, b in zip(columns, (getattr(model, f'{name}_biases', []))):
-            fname = os.path.join(output_dir, c + '_bias.csv')
+            fname = os.path.join(args.output, c + '_bias.csv')
             logging.info(f'save {fname}')
             idx = dicts[c].index
             pd.Series(b.numpy(), index=idx.insert(idx.shape[0], '')).to_csv(
@@ -475,7 +475,10 @@ def export(args: argparse.Namespace, config: dict) -> None:
 
     # 导出所有模型权重
     for v in model.variables:
-        fname = os.path.join(output_dir, v.name.partition(':')[0] + '.txt')
+        fname = os.path.join(
+            args.output,
+            re.sub(r'[^0-9A-Za-z_]', '_', v.name.partition(':')[0]) + '.txt'
+        )
         logging.info(f'save {fname}')
         a = v.numpy()
         np.savetxt(fname, np.reshape(a, (-1, a.shape[-1])) if a.ndim > 2 else a)
