@@ -38,6 +38,7 @@ class EncoderBase(tf.Module):
         char_emb_size: int = 20,
         output_emb_size: int = 20,
         missing_id: int = 0,
+        dropout: float | None = None,
         target_bias: bool = True
     ):
         """
@@ -49,6 +50,7 @@ class EncoderBase(tf.Module):
             char_emb_size: 输入向量长度
             output_emb_size: 输出向量长度
             missing_id: 代表缺失值的 ID
+            dropout: 以一定的概率把数据向量的某些维度置 0，为空不丢弃任何维度
             target_bias: 是否为输出添加偏置
         """
 
@@ -60,6 +62,7 @@ class EncoderBase(tf.Module):
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
         self.output_emb_size = output_emb_size
+        self.dropout = dropout
         self.missing_id = missing_id
 
         init = tf.random_normal_initializer()
@@ -140,13 +143,19 @@ class EncoderBase(tf.Module):
 
         return logits
 
-    def __call__(self, dialects: tf.Tensor, chars: tf.Tensor) -> list[tf.Tensor]:
+    def __call__(
+        self,
+        dialects: tf.Tensor,
+        chars: tf.Tensor,
+        train: bool = False
+    ) -> list[tf.Tensor]:
         """
         正向传播，根据方言和字特征输出目标的对数几率
 
         Parameters:
             dialects: 方言编码，形状为 batch_size * len(dialect_vocab_sizes)
             chars: 字编码，形状为 batch_size * len(char_vocab_sizes)
+            train: 是否训练，训练时需应用 dropout，预测时不需要
 
         Returns:
             logits: self.decode 的输出
@@ -154,7 +163,11 @@ class EncoderBase(tf.Module):
 
         dialect_emb = self.encode_dialect(dialects)
         char_emb = self.encode_char(chars)
+
         output_emb = self.transform(dialect_emb, char_emb)
+        if train and self.dropout is not None:
+            output_emb = tf.nn.dropout(output_emb, self.dropout)
+
         return self.decode(output_emb)
 
     @tf.function
@@ -207,7 +220,8 @@ class EncoderBase(tf.Module):
         self,
         dialects: tf.Tensor,
         chars: tf.Tensor,
-        targets: tf.Tensor
+        targets: tf.Tensor,
+        train: bool = False
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """
         根据方言特征、字特征和目标编码计算损失
@@ -216,13 +230,14 @@ class EncoderBase(tf.Module):
             dialects: 方言编码，形状为 batch_size * len(dialect_vocab_sizes)
             chars: 字编码，形状为 batch_size * len(char_vocab_sizes)
             targets: 目标编码，形状问 batch_size * len(target_vocab_sizes)
+            train: 是否训练，训练时需应用 dropout，预测时不需要
 
         Returns:
             loss: 每个样本的损失，形状为 batch_size
             acc: 每个样本的预测是否等于目标，形状为 batch_size * len(target_vocab_sizes)
         """
 
-        logits = self(dialects, chars)
+        logits = self(dialects, chars, train=train)
 
         loss = tf.stack(
             [tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -261,7 +276,7 @@ class EncoderBase(tf.Module):
         """
 
         with tf.GradientTape() as tape:
-            loss, acc = self.loss(dialects, chars, targets)
+            loss, acc = self.loss(dialects, chars, targets, train=True)
             loss = tf.where(targets != self.missing_id, loss, 0)
             loss = tf.reduce_mean(
                 tf.reduce_sum(loss, axis=-1) if target_weights is None \
