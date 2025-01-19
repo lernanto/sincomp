@@ -37,7 +37,7 @@ class EncoderBase(tf.Module):
         dialect_emb_size: int = 20,
         char_emb_size: int = 20,
         output_emb_size: int = 20,
-        missing_id: int = 0,
+        missing_id: int | None = None,
         dropout: float | None = None,
         target_bias: bool = True
     ):
@@ -49,7 +49,7 @@ class EncoderBase(tf.Module):
             dialect_emb_size: 方言向量长度
             char_emb_size: 输入向量长度
             output_emb_size: 输出向量长度
-            missing_id: 代表缺失值的 ID
+            missing_id: 代表缺失值的 ID，为空表示不接受缺失值
             dropout: 以一定的概率把数据向量的某些维度置 0，为空不丢弃任何维度
             target_bias: 是否为输出添加偏置
         """
@@ -62,8 +62,8 @@ class EncoderBase(tf.Module):
         self.dialect_emb_size = dialect_emb_size
         self.char_emb_size = char_emb_size
         self.output_emb_size = output_emb_size
-        self.dropout = dropout
         self.missing_id = missing_id
+        self.dropout = dropout
 
         init = tf.random_normal_initializer()
 
@@ -277,7 +277,8 @@ class EncoderBase(tf.Module):
 
         with tf.GradientTape() as tape:
             loss, acc = self.loss(dialects, chars, targets, train=True)
-            loss = tf.where(targets != self.missing_id, loss, 0)
+            if self.missing_id is not None:
+                loss = tf.where(targets != self.missing_id, loss, 0)
             loss = tf.reduce_mean(
                 tf.reduce_sum(loss, axis=-1) if target_weights is None \
                     else tf.tensordot(loss, target_weights, -1)
@@ -363,16 +364,17 @@ class EncoderBase(tf.Module):
         for (dialects, chars), targets in data:
             loss, acc = self.loss(dialects, chars, targets)
 
-            # 目标数据中的缺失值不计入
-            mask = targets != self.missing_id
-            loss = tf.where(mask, loss, 0)
+            if self.missing_id is not None:
+                # 目标数据中的缺失值不计入
+                mask = targets != self.missing_id
+                acc_count += tf.reduce_sum(tf.cast(mask, tf.int32), axis=0)
+                total_acc += tf.reduce_sum(tf.where(mask, acc, 0), axis=0)
+                loss = tf.where(mask, loss, 0)
+
             loss = tf.reduce_sum(loss, axis=-1) if target_weights is None \
                 else tf.tensordot(loss, target_weights, -1)
             loss_count += tf.shape(targets)[0]
             total_loss += tf.reduce_sum(loss)
-
-            acc_count += tf.reduce_sum(tf.cast(mask, tf.int32), axis=0)
-            total_acc += tf.reduce_sum(tf.where(mask, acc, 0), axis=0)
 
         return (
             total_loss / tf.cast(loss_count, tf.float32),
