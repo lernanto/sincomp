@@ -212,7 +212,7 @@ def polyphone_distance(
     indices = numpy.asarray(indices)
 
     # 检索字表中在所有数据集均为单音字的字，作为训练集
-    monophone_mask = pandas.Series(chars).groupby(chars).transform('count') == 1
+    monophone_mask = (pandas.Series(chars).groupby(chars).transform('count') == 1).values
 
     monophones = indices[monophone_mask & numpy.all(indices >= 0, axis=1)]
     if monophones.shape[0] == 0:
@@ -462,7 +462,7 @@ def annotate(
 
     # 单音字只有一个 ID，直接标注
     labels = numpy.full(data.shape[0], -1, dtype=int)
-    mask = idx.notna()
+    mask = idx.notna().values
     labels[mask] = chars.index[idx[mask].astype(int)]
 
     if numpy.any(~mask):
@@ -516,7 +516,7 @@ def align_no_cid(
     """
 
     # 把基础数据集编码成字向量
-    mask = base.isna().mean(axis=1) < na_threshold
+    mask = (base.isna().mean(axis=1) < na_threshold).values
     matrix = sklearn.compose.make_column_transformer(*[(
         sklearn.pipeline.make_pipeline(
             sklearn.feature_extraction.text.CountVectorizer(
