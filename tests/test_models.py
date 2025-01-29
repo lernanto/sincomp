@@ -11,7 +11,7 @@ import os
 import unittest
 
 import numpy
-import sklearn.preprocessing
+import pandas
 import tensorflow as tf
 
 import sincomp.models
@@ -19,29 +19,56 @@ import sincomp.models
 from common import data_dir, setUpModule, tearDownModule, tmp_dir
 
 
-def encode_data(data) -> tuple[
-    numpy.ndarray[int],
-    numpy.ndarray[int],
-    list[int],
-    list[int],
-    list[int]
-]:
-    encoder = sklearn.preprocessing.OrdinalEncoder(
-        dtype=numpy.int32,
-        encoded_missing_value=-1
-    )
-    data = encoder.fit_transform(
-        data[['did', 'cid', 'character', 'initial', 'final', 'tone']]
-    ) + 1
+class TestProcessor(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
 
-    return (
-        data[:, :3],
-        data[:, 3:],
-        [len(c) + 1 for c in encoder.categories_[:1]],
-        [len(c) + 1 for c in encoder.categories_[1:3]],
-        [len(c) + 1 for c in encoder.categories_[3:]]
-    )
+        import sincomp.datasets
 
+        cls.data = sincomp.datasets.FileDataset(
+            path=os.path.join(data_dir, 'custom_dataset1')
+        ).data
+
+    def setUp(self):
+        super().setUp()
+
+        self.processor = sincomp.models.Processor(
+            [self.data['did'].drop_duplicates()],
+            [self.data['cid'].drop_duplicates()],
+            [
+                self.data['initial'].drop_duplicates(),
+                self.data['final'].drop_duplicates(),
+                self.data['tone'].drop_duplicates()
+            ]
+        )
+
+    def test_call(self):
+        dialects = self.data[['did']]
+        chars = self.data[['cid']]
+        targets = self.data[['initial', 'final', 'tone']]
+        dialect_ids, char_ids, target_ids = self.processor(dialects, chars, targets)
+
+        self.assertIsInstance(dialect_ids, numpy.ndarray)
+        self.assertTupleEqual(dialect_ids.shape, dialects.shape)
+        self.assertIsInstance(dialect_ids[0, 0], numpy.integer)
+        self.assertIsInstance(char_ids, numpy.ndarray)
+        self.assertTupleEqual(char_ids.shape, chars.shape)
+        self.assertIsInstance(char_ids[0, 0], numpy.integer)
+        self.assertIsInstance(target_ids, numpy.ndarray)
+        self.assertTupleEqual(target_ids.shape, targets.shape)
+        self.assertIsInstance(target_ids[0, 0], numpy.integer)
+
+    def test_call_na(self):
+        dialect_ids, char_ids, target_ids = self.processor(
+            [[pandas.NA]],
+            [[pandas.NA]],
+            [[pandas.NA, pandas.NA, pandas.NA]]
+        )
+
+        self.assertTrue(numpy.all(dialect_ids == 0))
+        self.assertTrue(numpy.all(char_ids == 0))
+        self.assertTrue(numpy.all(target_ids == 0))
 
 class TestBilinearEncoder(unittest.TestCase):
     @classmethod
@@ -52,17 +79,26 @@ class TestBilinearEncoder(unittest.TestCase):
 
         data = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')
+        ).data
+        cls.processor = sincomp.models.Processor(
+            [data['did'].drop_duplicates()],
+            [
+                data['cid'].drop_duplicates(),
+                data['character'].drop_duplicates()
+            ],
+            [
+                data['initial'].drop_duplicates(),
+                data['final'].drop_duplicates(),
+                data['tone'].drop_duplicates()
+            ]
         )
-        (
-            features,
-            targets,
-            cls.dialect_vocab_sizes,
-            cls.char_vocab_sizes,
-            cls.target_vocab_sizes
-        ) = encode_data(data)
-
+        dialects, chars, targets = cls.processor(
+            data[['did']],
+            data[['cid', 'character']],
+            data[['initial', 'final', 'tone']]
+        )
         cls.dataset = tf.data.Dataset.from_tensor_slices((
-            (features[:, :1], features[:, 1:]),
+            (dialects, chars),
             targets
         ))
 
@@ -70,18 +106,21 @@ class TestBilinearEncoder(unittest.TestCase):
         super().setUp()
 
         self.model = sincomp.models.BilinearEncoder(
-            self.dialect_vocab_sizes,
-            self.char_vocab_sizes,
-            self.target_vocab_sizes,
+            self.processor.dialect_vocab_sizes,
+            self.processor.char_vocab_sizes,
+            self.processor.target_vocab_sizes,
             missing_id=0
         )
         self.optimizer = tf.keras.optimizers.SGD()
 
     def test_call(self):
-        outputs = self.model(tf.convert_to_tensor([[1]]), tf.convert_to_tensor([[1, 0]]))
+        outputs = self.model(
+            tf.convert_to_tensor([[1]]),
+            tf.convert_to_tensor([[1, 0]])
+        )
 
         self.assertEqual(len(outputs), 3)
-        for o, n in zip(outputs, self.target_vocab_sizes):
+        for o, n in zip(outputs, self.processor.target_vocab_sizes):
             self.assertIsInstance(o, tf.Tensor)
             self.assertListEqual(o.shape.as_list(), [1, n])
 
@@ -91,7 +130,10 @@ class TestBilinearEncoder(unittest.TestCase):
         self.assertIsInstance(loss, tf.Tensor)
         self.assertListEqual(loss.shape.as_list(), [])
         self.assertIsInstance(acc, tf.Tensor)
-        self.assertListEqual(acc.shape.as_list(), [len(self.target_vocab_sizes)])
+        self.assertListEqual(
+            acc.shape.as_list(),
+            [len(self.processor.target_vocab_sizes)]
+        )
 
     def test_evaluate(self):
         loss, acc = self.model.evaluate(self.dataset.batch(10))
@@ -99,7 +141,10 @@ class TestBilinearEncoder(unittest.TestCase):
         self.assertIsInstance(loss, tf.Tensor)
         self.assertListEqual(loss.shape.as_list(), [])
         self.assertIsInstance(acc, tf.Tensor)
-        self.assertListEqual(acc.shape.as_list(), [len(self.target_vocab_sizes)])
+        self.assertListEqual(
+            acc.shape.as_list(),
+            [len(self.processor.target_vocab_sizes)]
+        )
 
     def test_fit(self):
         self.model.fit(

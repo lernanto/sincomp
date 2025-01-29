@@ -8,12 +8,131 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
 import logging
+import numpy
+import sklearn.preprocessing
 import tensorflow as tf
 
 
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
+
+
+class Processor:
+    """
+    预处理方言数据集，把符号转成 ID
+
+    根据预先统计的词汇表构造编码器，原始词汇表不包含缺失值和未知值，
+    在每个词汇表前插入缺失/未知值，ID 为 0，正常词汇从 1 开始编码。
+    """
+
+    def __init__(
+        self,
+        dialect_vocabs: list[list[str]],
+        char_vocabs: list[list[str]],
+        target_vocabs: list[list[str]]
+    ) -> None:
+        """
+        Parameters:
+            dialect_vocabs: 方言特征词汇表，如方言 ID 列表
+            char_vocabs: 字特征词汇表，如字 ID 列表
+            target_vocabs: 预测目标词汇表，如声韵调列表
+
+        所有词汇表均不包含缺失值和未知值。
+        """
+        self.dialect_vocabs = list(map(list, dialect_vocabs))
+        self.char_vocabs = list(map(list, char_vocabs))
+        self.target_vocabs = list(map(list, target_vocabs))
+        self.dialect_vocab_sizes = [len(v) + 1 for v in self.dialect_vocabs]
+        self.char_vocab_sizes = [len(v) + 1 for v in self.char_vocabs]
+        self.target_vocab_sizes = [len(v) + 1 for v in self.target_vocabs]
+
+        self.dialect_encoder = sklearn.preprocessing.OrdinalEncoder(
+            categories=self.dialect_vocabs,
+            dtype=numpy.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
+        ).fit([[''] * len(self.dialect_vocabs)])
+        self.char_encoder = sklearn.preprocessing.OrdinalEncoder(
+            categories=self.char_vocabs,
+            dtype=numpy.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
+        ).fit([[''] * len(self.char_vocabs)])
+        self.target_encoder = sklearn.preprocessing.OrdinalEncoder(
+            categories=self.target_vocabs,
+            dtype=numpy.int32,
+            handle_unknown='use_encoded_value',
+            unknown_value=-1,
+            encoded_missing_value=-1
+        ).fit([[''] * len(self.target_vocabs)])
+
+    def encode_dialect(self, dialects):
+        """
+        把输入的方言特征编码成模型识别的 ID
+
+        Parameters:
+            dialects: 代编码方言特征
+
+        Returns:
+            dialect_ids: 模型输入的方言 ID
+        """
+
+        # 缺失/未知值 ID 为 0，其他词汇在原始编码基础上延后1位
+        return self.dialect_encoder.transform(dialects) + 1
+
+    def encode_char(self, chars):
+        """
+        把输入的字特征编码成模型识别的 ID
+
+        Parameters:
+            chars: 代编码字特征
+
+        Returns:
+            char_ids: 模型输入的字 ID
+        """
+
+        # 缺失/未知值 ID 为 0，其他词汇在原始编码基础上延后1位
+        return self.char_encoder.transform(chars) + 1
+
+    def encode_target(self, targets):
+        """
+        把预测目标编码成模型识别的 ID
+
+        Parameters:
+            targets: 代编码预测目标
+
+        Returns:
+            target_ids: 模型输出的目标 ID
+        """
+
+        # 缺失/未知值 ID 为 0，其他词汇在原始编码基础上延后1位
+        return self.target_encoder.transform(targets) + 1
+
+    def __call__(
+        self,
+        dialects: numpy.ndarray[str],
+        chars: numpy.ndarray[str],
+        targets: numpy.ndarray[str]
+    ) -> tuple[numpy.ndarray[int], numpy.ndarray[int], numpy.ndarray[int]]:
+        """
+        把输入特征和预测目标编码成模型识别的 ID
+
+        Parameters:
+            dialects, chars: 方言、字输入特征
+            targets: 预测目标
+
+        Returns:
+            dialect_ids, char_ids, target_ids: 模型输入和预测 ID
+        """
+
+        return (
+            self.encode_dialect(dialects),
+            self.encode_char(chars),
+            self.encode_target(targets)
+        )
 
 
 class EncoderBase(tf.Module):
