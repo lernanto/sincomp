@@ -693,19 +693,22 @@ class MCPDictDataset(FileCacheDataset):
         # 汉字音典数据包含历史拟音、域外方音和一些拼音方案，只取用国际音标注音的现代方言数据
         info = info[
             (info['文件格式'] != '漢典') \
-            & (~info['音典分區'].isin(['歷史音,', '域外方音,', '戲劇,'])) \
+            & (~info['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
+            & (~info.index.str.match('^1[0-9]{3}') | info.index.isin([
+                '1935永明',
+                '1935南昌',
+                '1935醴陵',
+                '1935長沙',
+            ])) \
             & (~info.index.isin([
                 '普通話',
-                '1900梅惠',
-                '1926綜合',
-                '鶴山沙坪',
-                '1884甯城',
-                '1890會城',
+                '鄕音字類',
+                '淸末寧波',
+                '淸末溫州',
+                '訓詁諧音',
+                '湘音檢字',
                 '香港',
-                '臺灣',
-                '劍川金華白語',
-                '武鳴壯語',
-                '臨高話'
+                '臺灣'
             ])) \
             & ((self._path + os.sep + info.index + '.tsv').map(os.path.isfile))
         ]
@@ -714,8 +717,8 @@ class MCPDictDataset(FileCacheDataset):
             logging.warning(f'no valid data in {self._path}.')
             return
 
-        # 使用音典排序作为方言 ID
-        return info.set_index('音典排序')
+        # 使用简称作为方言 ID
+        return info.set_index('簡稱', drop=False)
 
     def load_dialect_info(self) -> pandas.DataFrame:
         """
@@ -728,8 +731,7 @@ class MCPDictDataset(FileCacheDataset):
         info = self.load_dialect_info_raw()
 
         # 解析方言分类
-        cat = info['地圖集二分區'].str.partition(',').iloc[:, 0] \
-            .str.split('-')
+        cat = info['地圖集二分區'].str.split('-')
         # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
         info = info.assign(
             group=cat.str[0].replace('鄕話', '鄉話'),
@@ -859,10 +861,7 @@ class MCPDictDataset(FileCacheDataset):
             data: 方言读音数据表
         """
 
-        path = os.path.join(
-            self._path,
-            self.load_dialect_info_raw().at[did, '簡稱'] + '.tsv'
-        )
+        path = os.path.join(self._path, did + '.tsv')
         logging.info(f'load data from {path}.')
         data = self.load_raw(did, path).assign(did=did)
 
