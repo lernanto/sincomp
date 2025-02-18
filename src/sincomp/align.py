@@ -630,7 +630,10 @@ def main(args: argparse.Namespace) -> None:
         .groupby('label')[['simplified', 'traditional']].first()
     chars.rename_axis('cid', inplace=True)
 
-    logger.info(f'annotate datasets without characer ID {", ".join([d.name for d in nocid])}...')
+    logger.info(
+        f'annotate datasets without characer ID: '
+        f'{", ".join([d.name for d in nocid])} ...'
+    )
     base = pandas.concat(
         [preprocess.transform(
             d.dropna(subset=['cid', 'did']).replace({'cid': c['label']}),
@@ -684,6 +687,11 @@ def main(args: argparse.Namespace) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     charmap.to_csv(path, encoding='utf-8', lineterminator='\n')
 
+    # 优先使用繁体字形，无繁体的用简体补足
+    chars['character'] = chars['traditional'].where(
+        chars['traditional'].notna(),
+        chars['simplified']
+    )
     path = os.path.abspath(args.character_output)
     logger.info(f'save {chars.shape[0]} character information to {path}...')
     os.makedirs(os.path.dirname(path), exist_ok=True)
