@@ -169,16 +169,20 @@ def prepare(args: argparse.Namespace, config: dict) -> None:
     # 根据方言数据构建词典
     data = load_data(config['datasets'])
 
-    minfreq = config.get('min_freq')
+    minfreq = config.get('min_frequency')
+    maxcat = config.get('max_categories')
+
     vocabs = {}
     for name, columns in config['columns'].items():
         voc = []
         for c in columns:
             dic = sincomp.auxiliary.make_dict(
                 data[c],
-                # 当 minfreq 为字典时，可以为不同列指定不同的最小频次
-                minfreq=minfreq.get(name) if isinstance(minfreq, dict) else minfreq,
-                sort='value'
+                # 当 minfreq, maxcat 为字典时，可以为不同列指定不同的值
+                min_frequency=minfreq.get(name) if isinstance(minfreq, dict) \
+                    else minfreq,
+                max_categories=maxcat.get(name) if isinstance(maxcat, dict) \
+                    else maxcat,
             )
             logging.info(f'{c} vocabulary size = f{dic.shape[0]}')
             voc.append(dic.index.tolist())

@@ -16,31 +16,40 @@ import sklearn.impute
 import sklearn.feature_extraction.text
 
 
-def make_dict(data, minfreq=None, sort=None):
+def make_dict(
+    data: numpy.ndarray[str],
+    min_frequency: int | float | None = None,
+    max_categories: int | None = None,
+    sort: str | None = None
+) -> pandas.Series:
     """
     根据方言数据构建词典.
 
     Parameters:
-        data (array-like): 读音样本数据中的一列，空字符串代表缺失值
-        minfreq (float or int): 出现频次不小于该值才计入词典
-        sort (str): 指定返回的词典排列：
+        data: 读音样本数据中的一列
+        min_frequency: 出现频次不小于该值才计入词典
+        max_categories: 只取频次最高的若干个类别
+        sort: 指定返回的词典排列：
             - value: 按符号的字典序
             - frequency: 按出现频率从大到小
 
     Returns:
-        dic (`pandas.Series`): 构建的词典，索引为 data 中出现的符号，值为出现频率
+        dic: 构建的词典，索引为 data 中出现的符号，值为出现频率
     """
 
     data = pandas.Series(data)
     dic = data[data != ''].value_counts().rename('frequency')
 
-    if minfreq is not None:
-        # 如果 minfreq 是实数，指定出现的最小比例
-        if isinstance(minfreq, float):
-            minfreq = int(minfreq * len(data))
+    if min_frequency is not None:
+        # 如果 min_frequency 是实数，指定出现的最小比例
+        if isinstance(min_frequency, float):
+            min_frequency = int(min_frequency * len(data))
 
-        if minfreq > 1:
-            dic = dic[dic >= minfreq]
+        if min_frequency > 1:
+            dic = dic[dic >= min_frequency]
+
+    if max_categories is not None:
+        dic = dic.sort_values(ascending=False)[:max_categories]
 
     # 按指定的方式排序
     if sort == 'value':
