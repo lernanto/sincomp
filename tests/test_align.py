@@ -11,8 +11,6 @@ import numpy
 import os
 import pandas
 import unittest
-import sincomp.preprocess
-import sincomp.align
 
 from common import data_dir, setUpModule, tearDownModule
 
@@ -31,6 +29,8 @@ class TestAlign(unittest.TestCase):
         )
 
     def test_align(self):
+        import sincomp.align
+
         chars1, chars2 = sincomp.align.align((self.data1, None), (self.data2, None))
         self.assertEqual(chars1['label'].nunique(), chars1.shape[0])
         self.assertEqual(chars2['label'].nunique(), chars2.shape[0])
@@ -39,6 +39,8 @@ class TestAlign(unittest.TestCase):
             == chars2.set_index('label')['simplified'].reindex(cid)).all())
 
     def test_align_no_cid(self):
+        import sincomp.align
+
         chars1 = self.data1[['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 
