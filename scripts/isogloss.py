@@ -8,13 +8,13 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import logging
 import argparse
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 from cartopy.io.shapereader import Reader
+import logging
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 import sincomp.datasets
 import sincomp.compare
@@ -142,7 +142,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output-prefix', help='输出路径前缀')
     parser.add_argument('-f', '--format', default='png', help='保存的图片格式')
     parser.add_argument('data', help='规则符合度数据文件')
-    parser.add_argument('rule', nargs='?', help='语音规则文件')
+    parser.add_argument('rule_file', nargs='?', help='语音规则文件')
     parser.add_argument(
         'dataset',
         nargs='?',
@@ -155,28 +155,32 @@ if __name__ == '__main__':
         else args.output_prefix
     logging.info(
         f'create isogloss, data = {args.data}, dataset = {args.dataset}, '
-        f'rule = {args.rule}, output prefix = {output_prefix}.'
+        f'rules = {args.rule_file}, output prefix = {output_prefix}.'
     )
 
     bg = None if args.background is None else plt.imread(args.background)
     geo = None if args.geography is None \
         else tuple(Reader(args.geography).geometries())
-    dialect = getattr(sincomp.datasets, args.dataset).metadata['dialect_info']
+    dialects = sincomp.datasets.get(args.dataset).dialects
 
     logging.info(f'loading data from {args.data} ...')
-    data = pd.read_csv(args.data, index_col=0)
+    data = pd.read_csv(args.data, dtype={'did': str}).set_index('did')
     logging.info(f'done. loaded {data.shape[0]} dialects x {data.shape[1]} rules.')
 
-    if args.rule is not None:
-        char = getattr(sincomp.datasets, args.dataset).metadata['char_info']
-        rule = sincomp.compare.load_rule(args.rule, characters=char['character'])
-        data.columns = rule.loc[data.columns.astype(int), 'name']
+    if args.rule_file is not None:
+        rules = pd.read_json(args.rule_file, orient='records', encoding='utf-8')
+        if 'id' in rules.columns:
+            rules.set_index('id', inplace=True)
+        rules.set_index(rules.index.astype(str), inplace=True)
 
     columns = data.columns
-    data[['latitude', 'longitude']] = dialect[['latitude', 'longitude']]
+    data[['latitude', 'longitude']] = dialects[['latitude', 'longitude']]
 
     for c in columns:
-        fname = f'{output_prefix}{c}.{args.format}'
+        if args.rule_file is None:
+            fname = f'{output_prefix}{c}.{args.format}'
+        else:
+            fname = f'{output_prefix}{c}_{rules.at[c, "name"]}.{args.format}'
         logging.info(f'creating {fname} ...')
 
         fig = plt.figure(figsize=args.size)
