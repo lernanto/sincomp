@@ -5,11 +5,18 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import pandas
+import argparse
+import logging
 import numpy
+import pandas
 import sklearn.compose
 import sklearn.feature_extraction.text
 import sklearn.preprocessing
+
+
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logger.addHandler(logging.StreamHandler())
 
 
 def load_rule(fname, characters=None):
@@ -112,3 +119,79 @@ def compliance(
 
     # 结果数据按输入规则的顺序重新排序
     return pandas.concat(comp, axis=1).reindex(rules.index, axis=1)
+
+
+if __name__ == '__main__':
+    from . import datasets, preprocess
+
+
+    parser = argparse.ArgumentParser(globals().get('__doc__'))
+    parser.add_argument(
+        '-l',
+        '--log-level',
+        default='WARNING',
+        help='日志级别'
+    )
+    parser.add_argument('-r', '--rule-file', default='rules.json', help='语音规则文件')
+    parser.add_argument(
+        '-m',
+        '--min-coverage',
+        type=float,
+        default=0,
+        help='覆盖方言比例达到该值的字才纳入计算'
+    )
+    parser.add_argument(
+        '-e',
+        '--embedding-size',
+        type=int,
+        default=128,
+        help='用于矩阵分解的字向量大小'
+    )
+    parser.add_argument(
+        '-n',
+        '--norm',
+        type=int,
+        default=2,
+        help='把规则符合度归一化到 [0, 1]，基于矩阵分解的算法只适用 L2 归一化'
+    )
+    parser.add_argument('-o', '--output', help='输出文件名')
+    parser.add_argument('dataset', help='指定输入方言数据集')
+    args = parser.parse_args()
+
+    logger.setLevel(getattr(logging, args.log_level.upper()))
+
+    dataset = datasets.get(args.dataset)
+    output = f'{dataset.name}_compliance_l{args.norm}.csv' \
+        if args.output is None else args.output
+
+    logger.info(
+        f'compute rule compliance for {dataset.name}, '
+        f'min coverage = {args.min_coverage}, '
+        f'norm = {args.norm}, output = {output}'
+    )
+
+    rules = pandas.read_json(args.rule_file, orient='records', encoding='utf-8')
+    logger.info(f'loaded {len(rules)} rules from {args.rule_file} .')
+
+    if 'id' in rules.columns:
+        rules.set_index('id', inplace=True)
+
+    encoder = sklearn.preprocessing.LabelEncoder()
+    rules['feature_id'] = encoder.fit_transform(rules['feature'])
+
+    data = dataset.data
+    if args.min_coverage > 0:
+        # 删除方言覆盖率小于阈值的字
+        data = data[data.groupby('cid')['did'].transform('nunique') \
+            > dataset.dialects.shape[0] * args.min_coverage]
+
+    data = preprocess.transform(
+        data,
+        index='cid',
+        columns='did',
+        values=encoder.classes_,
+        aggfunc=lambda x: ' '.join(x.dropna())
+    )
+
+    comp = compliance(data, rules, norm=args.norm if args.norm > 0 else None)
+    comp.to_csv(output, encoding='utf-8', lineterminator='\n')
