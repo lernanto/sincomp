@@ -31,7 +31,7 @@ def load_rule(fname, characters=None):
     )
 
     if characters is None:
-        rules['name'] = rules['element'] + ':' \
+        rules['name'] = rules['feature'] + ':' \
             + rules['cid1'].str[0].astype(str) + '=' \
             + rules['cid2'].str[0].astype(str)
     else:
@@ -63,8 +63,8 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
     """
 
     comp = []
-    for element, rule in rules.groupby('element'):
-        element_data = data.loc[:, pandas.IndexSlice[:, element]]
+    for feature, rule in rules.groupby('feature'):
+        feature_data = data.loc[:, pandas.IndexSlice[:, feature]]
 
         # 先对方言读音 one-hot 编码
         transformer = sklearn.compose.make_column_transformer(
@@ -73,9 +73,9 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
                 tokenizer=str.split,
                 stop_words=None,
                 dtype=dtype
-            ), i) for i in range(element_data.shape[1])]
+            ), i) for i in range(feature_data.shape[1])]
         )
-        code = transformer.fit_transform(element_data)
+        code = transformer.fit_transform(feature_data.fillna(''))
 
         lim = numpy.empty(len(transformer.transformers_) + 1, dtype=int)
         lim[0] = 0
@@ -92,8 +92,8 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
             code2[i] = code[data.index.get_indexer(r['cid2'])].sum(axis=0).A[0]
 
         # 计算读音分布相似度，对读音向量分别归一化后内积
-        sim = numpy.empty((element_data.shape[1], rule.shape[0]), dtype=dtype)
-        for i in range(element_data.shape[1]):
+        sim = numpy.empty((feature_data.shape[1], rule.shape[0]), dtype=dtype)
+        for i in range(feature_data.shape[1]):
             x1 = code1[:, lim[i]:lim[i + 1]]
             x2 = code2[:, lim[i]:lim[i + 1]]
             if norm is not None:
@@ -104,7 +104,7 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
 
         comp.append(pandas.DataFrame(
             sim,
-            index=element_data.columns.get_level_values(0),
+            index=feature_data.columns.get_level_values(0),
             columns=rule.index
         ))
 
