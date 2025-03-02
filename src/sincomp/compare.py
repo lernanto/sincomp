@@ -42,24 +42,26 @@ def load_rule(fname, characters=None):
 
     return rules
 
-def compliance(data, rules, dtype=numpy.float32, norm='l2'):
+def compliance(
+    data: pandas.DataFrame,
+    rules: pandas.DataFrame,
+    dtype: numpy.dtype = numpy.float32,
+    norm: int | None = 2
+) -> pandas.DataFrame:
     """
-    计算方言字音对语音规则的符合度.
+    计算方言字音对语音规则的符合度
     
     针对若干条读音规则，每条规则由2个字集组成，字集中每个字在一个方言中的读音为字集的读音分布，
     2个字集的读音分布归一化后的内积为字集的读音相似度，即方言对该规则的符合度，取值为 [0, 1]。
     当取 L2 归一化时，即为余弦相似度。
 
     Parameters:
-        data (`pandas.DataFrame`): 方言字音数据表
-        rules (`pandas.DataFrame`): 语音规则数据表
-        norm (str): 计算相似度时是否归一化
-            - None: 不归一化
-            - 'l1': 相似度除以向量的1范数
-            - 'l2': 相似度除以向量的2范数
+        data: 方言字音数据表
+        rules: 语音规则数据表
+        norm: 计算相似度时归一化的范数，None 表示不归一化
 
     Returns:
-        similarities (`pandas.DataFrame`): 读音相似度数据表，每行为一个方言，每列为一条规则
+        similarities: 读音相似度数据表，每行为一个方言，每列为一条规则
     """
 
     comp = []
@@ -97,8 +99,8 @@ def compliance(data, rules, dtype=numpy.float32, norm='l2'):
             x1 = code1[:, lim[i]:lim[i + 1]]
             x2 = code2[:, lim[i]:lim[i + 1]]
             if norm is not None:
-                x1 = sklearn.preprocessing.normalize(x1, norm=norm)
-                x2 = sklearn.preprocessing.normalize(x2, norm=norm)
+                x1 /= numpy.linalg.norm(x1, norm, axis=1, keepdims=True)
+                x2 /= numpy.linalg.norm(x2, norm, axis=1, keepdims=True)
 
             numpy.sum(x1 * x2, axis=1, out=sim[i])
 
