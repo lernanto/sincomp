@@ -180,8 +180,8 @@ def area(
     # 如果传入的是原始分类，先转化为 one-hont 编码
     if values.ndim == 1:
         mask &= numpy.isfinite(values)
-        values = OneHotEncoder(dtype=numpy.int32) \
-            .fit_transform(numpy.expand_dims(values[mask], 1)).A
+        values = OneHotEncoder(sparse_output=False, dtype=numpy.int32) \
+            .fit_transform(numpy.expand_dims(values[mask], 1))
     else:
         mask &= numpy.all(numpy.isfinite(values), axis=1)
         values = values[mask]
