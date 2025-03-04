@@ -12,19 +12,21 @@ import unittest
 
 import numpy
 import pandas
+import tempfile
 import tensorflow as tf
 
+import sincomp.datasets
 import sincomp.models
 
-from common import data_dir, setUpModule, tearDownModule, tmp_dir
+
+data_dir = os.path.join(os.path.dirname(__file__), 'data')
+tmp_dir = tempfile.TemporaryDirectory().name
 
 
 class TestProcessor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-
-        import sincomp.datasets
 
         cls.data = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')
@@ -74,8 +76,6 @@ class TestBilinearEncoder(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-
-        import sincomp.datasets
 
         data = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')

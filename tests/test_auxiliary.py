@@ -9,6 +9,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import unittest
 import numpy
+
 import sincomp.auxiliary
 
 
