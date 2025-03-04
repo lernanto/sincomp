@@ -12,7 +12,11 @@ import os
 import pandas
 import unittest
 
-from common import data_dir, setUpModule, tearDownModule
+import sincomp.align
+import sincomp.datasets
+
+
+data_dir = os.path.join(os.path.dirname(__file__), 'data')
 
 
 class TestAlign(unittest.TestCase):
@@ -20,7 +24,6 @@ class TestAlign(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        import sincomp.datasets
         cls.data1 = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')
         )
@@ -29,8 +32,6 @@ class TestAlign(unittest.TestCase):
         )
 
     def test_align(self):
-        import sincomp.align
-
         chars1, chars2 = sincomp.align.align((self.data1, None), (self.data2, None))
         self.assertEqual(chars1['label'].nunique(), chars1.shape[0])
         self.assertEqual(chars2['label'].nunique(), chars2.shape[0])
@@ -39,8 +40,6 @@ class TestAlign(unittest.TestCase):
             == chars2.set_index('label')['simplified'].reindex(cid)).all())
 
     def test_align_no_cid(self):
-        import sincomp.align
-
         chars1 = self.data1[['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 

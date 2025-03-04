@@ -9,18 +9,66 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import os
 import pandas
+import tempfile
 import unittest
 import unittest.mock
+import urllib
 
-from common import data_dir, setUpModule, tearDownModule
+import sincomp.datasets
+
+
+data_dir = os.path.join(os.path.dirname(__file__), 'data')
+tmp_dir = tempfile.TemporaryDirectory().name
+
+
+def mock_urlopen(url, *args, **kwargs):
+    if isinstance(url, urllib.request.Request):
+        url = url.full_url
+
+    return open(
+        os.path.join(
+            data_dir,
+            urllib.parse.urlparse(url).path.split('/')[-1]
+        ),
+        'rb'
+    )
+
+def setUpModule():
+    """为测试产生的文件创建临时目录，为数据集设置环境变量，使用模拟函数取代真正的网络请求"""
+
+    global env_patcher
+    global urlopen_patcher
+
+    env_patcher = unittest.mock.patch.dict(os.environ, {
+        'SINCOMP_CACHE': os.path.join(tmp_dir, 'cache'),
+        'ZHONGGUOYUYAN_HOME': os.path.join(data_dir, 'zhongguoyuyan')
+    })
+    urlopen_patcher = unittest.mock.patch.object(
+        urllib.request,
+        'urlopen',
+        mock_urlopen
+    )
+
+    env_patcher.start()
+    urlopen_patcher.start()
+
+    import importlib
+    import sincomp.datasets
+    importlib.reload(sincomp.datasets)
+
+def tearDownModule():
+    urlopen_patcher.stop()
+    env_patcher.stop()
+
+    import importlib
+    import sincomp.datasets
+    importlib.reload(sincomp.datasets)
 
 
 class TestDataset(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-
-        import sincomp.datasets
 
         data = []
         prefix = os.path.join(data_dir, 'custom_dataset1')
@@ -92,7 +140,6 @@ class TestFileDataset(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        import sincomp.datasets
         cls.dataset = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')
         )
@@ -152,8 +199,6 @@ class TestFileDataset(unittest.TestCase):
             self.assertIn(col, data.columns)
 
     def test_append(self):
-        import sincomp.datasets
-
         other = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset2')
         )
@@ -169,8 +214,6 @@ class TestFileDataset(unittest.TestCase):
 
 class TestCCRDataset(unittest.TestCase):
     def test_dialects(self):
-        import sincomp.datasets
-
         dialects = sincomp.datasets.get('CCR').dialects
         self.assertIsInstance(dialects, pandas.DataFrame)
         self.assertGreater(dialects.shape[0], 0)
@@ -194,16 +237,12 @@ class TestCCRDataset(unittest.TestCase):
         )
 
     def test_characters(self):
-        import sincomp.datasets
-
         chars = sincomp.datasets.get('CCR').characters
         self.assertIsInstance(chars, pandas.DataFrame)
         self.assertGreater(chars.shape[0], 0)
         self.assertIn('character', chars.columns)
 
     def test_load_data(self):
-        import sincomp.datasets
-
         _, data = sincomp.datasets.get('CCR').load_data('027')[0]
         self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 20)
@@ -212,8 +251,6 @@ class TestCCRDataset(unittest.TestCase):
 
 class TestMCPDictDataset(unittest.TestCase):
     def test_dialects(self):
-        import sincomp.datasets
-
         dialects = sincomp.datasets.get('MCPDict').dialects
         self.assertIsInstance(dialects, pandas.DataFrame)
         self.assertEqual(dialects.shape[0], 2)
@@ -237,16 +274,12 @@ class TestMCPDictDataset(unittest.TestCase):
         )
 
     def test_characters(self):
-        import sincomp.datasets
-
         chars = sincomp.datasets.get('MCPDict').characters
         self.assertIsInstance(chars, pandas.DataFrame)
         self.assertEqual(chars.shape[0], 0)
         self.assertIn('character', chars.columns)
 
     def test_data(self):
-        import sincomp.datasets
-
         data = sincomp.datasets.get('MCPDict').data
         self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 40)
@@ -254,14 +287,11 @@ class TestMCPDictDataset(unittest.TestCase):
             self.assertIn(col, data.columns)
 
     def test_refresh(self):
-        import sincomp.datasets
         sincomp.datasets.get('MCPDict').refresh()
 
 
 class TestZhongguoyuyanDataset(unittest.TestCase):
     def test_dialects(self):
-        import sincomp.datasets
-
         dialects = sincomp.datasets.get('zhongguoyuyan').dialects
         self.assertIsInstance(dialects, pandas.DataFrame)
         self.assertEqual(dialects.shape[0], 2)
@@ -285,16 +315,12 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
         )
 
     def test_characters(self):
-        import sincomp.datasets
-
         chars = sincomp.datasets.get('zhongguoyuyan').characters
         self.assertIsInstance(chars, pandas.DataFrame)
         self.assertGreater(chars.shape[0], 0)
         self.assertIn('character', chars.columns)
 
     def test_data(self):
-        import sincomp.datasets
-
         data = sincomp.datasets.get('zhongguoyuyan').data
         self.assertIsInstance(data, pandas.DataFrame)
         self.assertEqual(data.shape[0], 40)
@@ -302,14 +328,11 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
             self.assertIn(col, data.columns)
 
     def test_refresh(self):
-        import sincomp.datasets
         sincomp.datasets.get('zhongguoyuyan').refresh()
 
 
 class TestDatasets(unittest.TestCase):
     def test_get(self):
-        import sincomp.datasets
-
         for name in (
             'CCR',
             'ccr',

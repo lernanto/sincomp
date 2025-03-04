@@ -10,9 +10,12 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 import os
 import pandas
 import unittest
+
+import sincomp.datasets
 import sincomp.preprocess
 
-from common import data_dir, setUpModule, tearDownModule
+
+data_dir = os.path.join(os.path.dirname(__file__), 'data')
 
 
 class TestPreprocess(unittest.TestCase):
@@ -20,7 +23,6 @@ class TestPreprocess(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        import sincomp.datasets
         cls.data = sincomp.datasets.FileDataset(
             path=os.path.join(data_dir, 'custom_dataset1')
         )
