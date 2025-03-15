@@ -1183,31 +1183,6 @@ class CCRDataset(FileCacheDataset):
             inplace=True
         )
 
-        # 部分文白读的备注错误地合注在其中一个读音，重新分开备注到正确地读音
-        idx1 = numpy.nonzero(data['備註'].str.startswith('文,白', na=False) \
-            | data['備註'].str.startswith('白,文', na=False))[0]
-        idx1 = idx1[idx1 < data.shape[0] - 1]
-        idx2 = idx1 + 1
-        mask = data['字號'].values[idx1] == data['字號'].values[idx2]
-        idx1 = idx1[mask]
-        idx2 = idx2[mask]
-        if idx1.shape[0] > 0:
-            part = data.iloc[idx1]['備註'].str.partition(',').values
-            data['備註'].iloc[idx1] = part[:, 0]
-            data['備註'].iloc[idx2] = part[:, 2]
-
-        idx2 = numpy.nonzero(data['備註'].str.startswith('文,白', na=False) \
-            | data['備註'].str.startswith('白,文', na=False))[0]
-        idx2 = idx2[idx2 > 0]
-        idx1 = idx2 - 1
-        mask = data['字號'].values[idx1] == data['字號'].values[idx2]
-        idx1 = idx1[mask]
-        idx2 = idx2[mask]
-        if idx1.shape[0] > 0:
-            part = data.iloc[idx2]['備註'].str.partition(',').values
-            data['備註'].iloc[idx1] = part[:, 0]
-            data['備註'].iloc[idx2] = part[:, 2]
-
         # 清洗数据集特有的错误
         if id == '118':
             data['韻母'] = data['韻母'].str.translate({
