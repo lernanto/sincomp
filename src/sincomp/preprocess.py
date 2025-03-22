@@ -18,9 +18,7 @@ import pandas
 import re
 import sklearn.compose
 import sklearn.feature_extraction.text
-import sklearn.impute
 import sklearn.metrics
-import sklearn.pipeline
 
 try:
     from sklearn_crfsuite import CRF
@@ -949,10 +947,7 @@ def character_distances(
         binary=True
     )
     transformer = sklearn.compose.make_column_transformer(
-        *[(sklearn.pipeline.make_pipeline(
-            vectorizer,
-            sklearn.preprocessing.Normalizer('l2')
-        ), i) for i in range(data1.shape[1])],
+        *[(vectorizer, i) for i in range(data1.shape[1])],
         n_jobs=n_jobs
     )
 
@@ -1013,8 +1008,7 @@ def impute_dialect(
 def impute(
     data: numpy.ndarray[str],
     n_neighbors: int = 3,
-    n_jobs: int = 1,
-    inplace: bool = False
+    n_jobs: int = 1
 ) -> numpy.ndarray[str]:
     """
     填充方言读音中的缺失值
@@ -1031,9 +1025,9 @@ def impute(
     个最近的有值的字的读音权重最大的填充，权重和邻居的距离负相关。
     """
 
-    imputed = data if inplace else data.copy()
+    imputed = data.copy()
     if isinstance(data, pandas.DataFrame):
-        data = data.fillna('').values if isinstance(data, pandas.DataFrame) else data
+        data = data.fillna('').values
         output = imputed.values
 
     dist = character_distances(data)
