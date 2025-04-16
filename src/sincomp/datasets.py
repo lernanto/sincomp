@@ -32,6 +32,11 @@ from sklearn.neighbors import KNeighborsClassifier
 from . import preprocess
 
 
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logger.addHandler(logging.StreamHandler())
+
+
 def predict_group(
     features: pandas.DataFrame | numpy.ndarray,
     labels: pandas.Series | numpy.ndarray[str]
@@ -325,7 +330,7 @@ class FileDataset(Dataset):
         """
 
         output = pandas.concat(self, axis=0, ignore_index=True)
-        logging.debug(f'{output.shape[0]} records loaded.')
+        logger.debug(f'{output.shape[0]} records loaded.')
         return output
 
     @functools.cache
@@ -538,7 +543,7 @@ class FileCacheDataset(FileDataset):
             # 写入文件缓存
             for i, d in data_list:
                 if not os.path.isfile(path := self.get_data_path(i)):
-                    logging.info(f'create cache file {path}.')
+                    logger.info(f'create cache file {path}.')
                     os.makedirs(self._cache_dir, exist_ok=True)
                     d.to_csv(
                         path,
@@ -558,30 +563,30 @@ class FileCacheDataset(FileDataset):
         """
 
         for path in self._dialect_info_path, self._char_info_path:
-            logging.info(f'remove cache file {path}.')
+            logger.info(f'remove cache file {path}.')
             try:
                 os.remove(path)
             except FileNotFoundError:
                 ...
             except OSError as e:
-                logging.warning(e)
+                logger.warning(e)
            
         for did in self.dialect_ids:
             path = self.get_data_path(did)
-            logging.info(f'remove cache file {path}.')
+            logger.info(f'remove cache file {path}.')
             try:
                 os.remove(path)
             except FileNotFoundError:
                 ...
             except OSError as e:
-                logging.warning(e)
+                logger.warning(e)
 
         # 删除缓存目录
         try:
-            logging.info(f'remove cache directory {self._cache_dir}.')
+            logger.info(f'remove cache directory {self._cache_dir}.')
             os.rmdir(self._cache_dir)
         except OSError as e:
-            logging.warning(e)
+            logger.warning(e)
 
     def refresh(self):
         """
@@ -644,7 +649,7 @@ class MCPDictDataset(FileCacheDataset):
             url: 项目下载地址
         """
 
-        logging.info(f'downloading {url}...')
+        logger.info(f'downloading {url}...')
 
         with urllib.request.urlopen(url) as res:
             with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
@@ -652,19 +657,19 @@ class MCPDictDataset(FileCacheDataset):
                     os.path.join(output, 'tools', 'tables', 'output'),
                     exist_ok=True
                 )
-                logging.info(f'extracting files to {output}...')
+                logger.info(f'extracting files to {output}...')
 
                 for info in zf.infolist():
                     # 路径第一段是带版本号的项目名，需去除
                     path = info.filename.partition('/')[2]
                     # 把字音数据目录的所有文件解压到目标路径
                     if not info.is_dir() and path.startswith('tools/tables/output/'):
-                        logging.info(f'extracting {info.filename}...')
+                        logger.info(f'extracting {info.filename}...')
                         path = os.path.join(*[output] + path.split('/'))
                         with open(path, 'wb') as of:
                             of.write(zf.read(info))
 
-        logging.info('done.')
+        logger.info('done.')
 
     @functools.cache
     def load_dialect_info_raw(self) -> pandas.DataFrame:
@@ -677,7 +682,7 @@ class MCPDictDataset(FileCacheDataset):
 
         if not os.path.isdir(self._path):
             # 数据文件不存在，先从汉字音典项目页面下载数据
-            logging.info(
+            logger.info(
                 'run for the first time, download data from Web, '
                 'this may take a while.'
             )
@@ -714,7 +719,7 @@ class MCPDictDataset(FileCacheDataset):
         ]
 
         if info.shape[0] == 0:
-            logging.warning(f'no valid data in {self._path}.')
+            logger.warning(f'no valid data in {self._path}.')
             return
 
         # 使用简称作为方言 ID
@@ -862,7 +867,7 @@ class MCPDictDataset(FileCacheDataset):
         """
 
         path = os.path.join(self._path, did + '.tsv')
-        logging.info(f'load data from {path}.')
+        logger.info(f'load data from {path}.')
         data = self.load_raw(did, path).assign(did=did)
 
         # 把原始读音切分成声母、韵母、声调
@@ -1123,7 +1128,7 @@ class CCRDataset(FileCacheDataset):
             output: 保存下载解压文件的本地目录
         """
 
-        logging.info(f'downloading {url}...')
+        logger.info(f'downloading {url}...')
 
         # 设置 User-Agent，否则请求会被拒绝
         req = urllib.request.Request(
@@ -1132,7 +1137,7 @@ class CCRDataset(FileCacheDataset):
         )
         with urllib.request.urlopen(req) as res:
             with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
-                logging.info(f'extracting files to {output}...')
+                logger.info(f'extracting files to {output}...')
                 os.makedirs(output, exist_ok=True)
 
                 for info in zf.infolist():
@@ -1144,11 +1149,11 @@ class CCRDataset(FileCacheDataset):
                     # 改正文件名中的别字
                     fname = fname.replace('閔', '閩')
 
-                    logging.info(f'extracting {fname}...')
+                    logger.info(f'extracting {fname}...')
                     with open(os.path.join(output, fname), 'wb') as of:
                         of.write(zf.read(info))
 
-        logging.info('done.')
+        logger.info('done.')
 
     @classmethod
     def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
@@ -1224,7 +1229,7 @@ class CCRDataset(FileCacheDataset):
                 self._cache_dir
             )
 
-        logging.info(f'loading data from {path}...')
+        logger.info(f'loading data from {path}...')
         data = self.load_raw(did, path).assign(did=did)
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
@@ -1786,7 +1791,7 @@ _datasets = {
 try:
     path = os.environ['ZHONGGUOYUYAN_HOME']
 except KeyError:
-    logging.warning(
+    logger.warning(
         'Set environment variable ZHONGGUOYUYAN_HOME to zhongguoyuyan\'s home '
         'dirctory then reload this module to make use of the dataset.'
     )
@@ -1817,7 +1822,7 @@ def get(name: str) -> Dataset | None:
 
     except KeyError:
         # 不是预定义数据集，尝试把入参作为路径从本地加载
-        logging.info(f'{name} is not a predefined dataset, try loading data from files.')
+        logger.info(f'{name} is not a predefined dataset, try loading data from files.')
 
         if os.path.isdir(name):
             # name 是目录，使用目录下的数据创建数据集
@@ -1831,7 +1836,7 @@ def get(name: str) -> Dataset | None:
             )
 
         else:
-            logging.warning(f'{name} not found!')
+            logger.warning(f'{name} not found!')
 
 
 if __name__ == '__main__':
