@@ -22,7 +22,13 @@ import os
 import pandas
 import re
 import retry
+import selenium.common.exceptions
+import selenium.webdriver
+import selenium.webdriver.chrome.options
+import selenium.webdriver.common.by
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -1306,6 +1312,175 @@ class CCRDataset(FileCacheDataset):
         )
 
 
+class ZhongguoyuyanDownloader:
+    """
+    用于从中国语言资源保护工程采录展示平台网站下载方言数据的工具类
+    """
+
+    def __init__(
+        self,
+        url: str = 'https://zhongguoyuyan.cn',
+        timeout: float = 300,
+        delay: float = 10
+    ):
+        """
+        Parameters:
+            url: 中国语言资源保护工程采录展示平台的网址
+            timeout: 请求网页的超时时间
+            delay: 请求之间间隔的秒数，为减轻网站压力，早于间隔时间的请求会等够间隔时间才真正请求
+        """
+
+        self._url = url
+        self._timeout = timeout
+        self._delay = delay
+        self._lock = threading.Lock()
+        self._last_get_time = None
+        self._get_count = 0
+
+    def __del__(self) -> None:
+        # 关闭浏览器
+        logger.info('close browser.')
+        try:
+            self._driver.quit()
+        except (
+            AttributeError,
+            selenium.common.exceptions.InvalidSessionIdException
+        ):
+            ...
+
+    def get(
+        self,
+        path: str,
+        selector: str | None = None,
+        data_path: str | None = None
+    ) -> str:
+        """
+        使用外部浏览器从网站下载指定的数据
+
+        Parameters:
+            path: 数据对应的网页路径
+            selector: 使用 CSS 选择器指定元素，等待该元素就绪再取数据
+            data_path: 实际数据资源的路径，用于提取数据，为空时和 `path` 相同
+
+        通过调用浏览器请求数据所在的页面实现，如该页面要求登录访问，需在浏览器界面手工登录，
+        然后自动跳转到请求的页面
+        """
+
+        url = self._url + path
+        data_url = url if data_path is None else self._url + data_path
+
+        # 同一时间只允许一个线程操作浏览器
+        with self._lock:
+            if self._delay is not None and self._last_get_time is not None:
+                intv = time.time() - self._last_get_time
+                if intv < self._delay:
+                    # 请求间隔时间过短，等够间隔时间
+                    left = self._delay - intv
+                    logger.info(
+                        f'{intv:.0f}s < {self._delay:.0f}s since last request, '
+                        f'please wait another {left:.0f}s.'
+                    )
+                    time.sleep(left)
+
+            try:
+                self._driver.title
+            except (
+                AttributeError,
+                selenium.common.exceptions.InvalidSessionIdException
+            ):
+                # 未打开浏览器，或会话已过期，重新打开浏览器，开启日志以便跟踪请求到的数据
+                options = selenium.webdriver.chrome.options.Options()
+                options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+                logger.info(f'open Chrome with options = {options} .')
+                self._driver = selenium.webdriver.Chrome(options=options)
+                # 设置等待超时时间
+                self._driver.implicitly_wait(self._timeout)
+
+            # 调用浏览器请求指定数据，如需登录，需在浏览器界面手工登录，然后会自动跳转到请求的页面
+            logger.debug(f'get {url}')
+            self._last_get_time = time.time()
+            self._driver.get(url)
+            self._get_count += 1
+            if self._get_count % 100 == 0:
+                logger.warning(
+                    f'{self._get_count} requests reached, '
+                    'consider pause or your account may be BANNED!'
+                )
+
+            # 等待指定的网页元素加载完毕
+            if selector is not None:
+                logger.debug(f'wait for element {selector}')
+                self._driver.find_element(
+                    selenium.webdriver.common.by.By.CSS_SELECTOR,
+                    selector
+                )
+
+            # 从浏览器网络日志查找后台真正的数据资源信息
+            logger.debug(f'search for response of {data_url}')
+            request_id = None
+            for log in self._driver.get_log('performance'):
+                try:
+                    message = json.loads(log['message'])['message']
+                    if message['method'] == 'Network.responseReceived' \
+                        and message['params']['response']['url'] == data_url:
+                            request_id = message['params']['requestId']
+                            logger.debug(f'found {data_url}, requestId = {request_id}')
+
+                except (KeyError, TypeError) as e:
+                    logger.warning(e)
+
+            if request_id is None:
+                raise RuntimeError(f'no response received for {data_url} !')
+            else:
+                # 调用浏览器获取响应数据
+                rsp = self._driver.execute_cdp_cmd(
+                    'Network.getResponseBody',
+                    {'requestId': request_id}
+                )
+                return rsp.get('body')
+
+    def get_survey(self) -> str:
+        """
+        获取调查的所有方言点信息
+
+        Returns:
+            data: 从网站下载的方言点信息原始数据
+        """
+
+        return self.get(
+            '/index',
+            'span.number___n9qo2',
+            '/api/mongo/query/latestSurveyMongo'
+        )
+
+    def get_standard(self) -> str:
+        """
+        获取方言调查标准，包括字、词、句的列表
+
+        Returns:
+            data: 从网站下载的方言调查标准原始数据
+        """
+
+        return self.get('/api/api/media/standard')
+
+    def get_point(self, id: str) -> str:
+        """
+        获取指定的方言点数据
+
+        Parameters:
+            id: 方言 ID
+
+        Returns:
+            data: 从网站下载的方言点原始数据
+        """
+
+        return self.get(
+            '/point/' + id,
+            '[data-row-key="0001"]',
+            '/api/mongo/resource/normal'
+        )
+
+
 class ZhongguoyuyanDataset(FileCacheDataset):
     """
     中国语言资源保护工程采录展示平台的方言数据集
@@ -1313,32 +1488,74 @@ class ZhongguoyuyanDataset(FileCacheDataset):
     见：https://zhongguoyuyan.cn/。
     """
 
+
     def __init__(
         self,
         cache_dir: str,
-        path: str,
         superscript_tone: bool = False,
         na: str | None = None,
         empty: str | None = None,
         name: str = 'zhongguoyuyan',
+        downloader_kwargs: dict = {},
         **kwargs
     ):
         """
         Parameters:
             cache_dir: 缓存文件所在目录路径
-            path: 数据集所在的基础路径
             superscript_tone: 为真时，把声调中的普通数字转成上标数字
             na: 代表缺失数据的字符串，为 None 时保持原状
             empty: 代表零声母/零韵母/零声调的字符串，为 None 时保持原状
             name: 数据集名称
+            downloader_kwargs: 传给下载器的参数
             kwargs: 透传给 `FileCacheDataset`
         """
 
         super().__init__(cache_dir, name=name, **kwargs)
-        self._path = os.path.abspath(path)
         self._superscript_tone = superscript_tone
         self._na = na
         self._empty = empty
+        self._downloader = ZhongguoyuyanDownloader(**downloader_kwargs)
+
+    def load_or_download(self, name: str):
+        """
+        从本地缓存文件加载数据，如不存在本地缓存文件，先从网站下载
+        """
+
+        path = os.path.join(self._cache_dir, name + '.json')
+        try:
+            with open(path, encoding='utf-8') as f:
+                # 存在本地缓存文件，从本地加载
+                logger.debug(f'load cache file {path}')
+                return json.load(f)
+
+        except FileNotFoundError:
+            # 不存在本地缓存文件，从网站下载
+            logger.info(f'cache file {path} not existing, download from the Web.')
+            if name == 'survey':
+                # 所有调查的方言点信息
+                raw = self._downloader.get_survey()
+                data = json.loads(raw)
+
+            elif name == 'standard':
+                # 方言调查标准
+                raw = self._downloader.get_standard()
+                data = json.loads(raw)
+
+            else:
+                # 某个方言点的数据
+                raw = self._downloader.get_point(name)
+                data = json.loads(raw)
+                if data['code'] != 200:
+                    # 获取方言点数据失败，不写缓存
+                    raise RuntimeError(data['description'])
+
+            # 保存缓存文件
+            logger.debug(f'save cache file {path}')
+            os.makedirs(self._cache_dir, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(raw)
+
+            return data
 
     @staticmethod
     def clean_location(raw: pandas.Series) -> pandas.Series:
@@ -1551,62 +1768,33 @@ class ZhongguoyuyanDataset(FileCacheDataset):
         """
         读取方言点信息
 
-        使用规则归一化原始数据中的市县名称，以及方言大区、子区名称等信息。
-
         Returns:
             info: 方言点信息数据表
         """
 
-        info = pandas.read_csv(
-            os.path.join(self._path, 'csv', 'location.csv'),
-            index_col=0
+        survey = self.load_or_download('survey')
+        info = pandas.json_normalize(survey['dialectObj'], 'cityList')
+        info.set_index('_id', inplace=True)
+        info['city'] = info['city'].where(
+            ~info['city'].str.match(r'^[(（]无[)）]$', na=True)
         )
+        info['name'] = info['filepath'].str.extract(r'^[^/]+/([^#]+)#?需交文件电子版')
 
-        info[['city', 'county', 'village']] = info[['city', 'country', 'village']] \
-            .replace(['(无)', '(无）', '无', '（无)', '（无）'], pandas.NA)
-
-        # 清洗方言区、片、小片名称
-        info['group'] = self.get_group(info)
-        info['subgroup'] = self.get_subgroup(info)
-        info['cluster'] = self.get_cluster(info)
-        info['subcluster'] = self.get_subcluster(info)
-
-        # 个别官话方言点标注的大区和子区不一致，去除
-        info.loc[
-            (info['group'] == '官话') & ~info['subgroup'].str.endswith('官话', na=False),
-            ['group', 'subgroup']
-        ] = pandas.NA
-
-        # 以地市名加县区名为方言点名称，如地市名和县区名相同，只取其一
-        city = ZhongguoyuyanDataset.clean_location(info['city'])
-        county = ZhongguoyuyanDataset.clean_location(info['county'])
-        info['spot'] = city.where(
-            city == county,
-            city.fillna('') + county.fillna('')
-        )
-        info['spot'] = info['spot'].where(info['spot'] != '', info['province'])
-
-        # 个别方言点的经纬度有误，去除
-        info.loc[~info['latitude'].between(0, 55), 'latitude'] = numpy.nan
-        info.loc[~info['longitude'].between(70, 140), 'longitude'] = numpy.nan
-
-        return info.rename_axis('did') \
-            .assign(name=info['spot']) \
-            .reindex([
-                'name',
-                'province',
-                'city',
-                'county',
-                'town',
-                'village',
-                'group',
-                'subgroup',
-                'cluster',
-                'subcluster',
-                'spot',
-                'latitude',
-                'longitude'
-            ], axis=1)
+        return info.rename_axis('did').reindex([
+            'name',
+            'province',
+            'city',
+            'county',
+            'town',
+            'village',
+            'group',
+            'subgroup',
+            'cluster',
+            'subcluster',
+            'spot',
+            'latitude',
+            'longitude'
+        ], axis=1)
 
     def load_char_info(self) -> pandas.DataFrame:
         """
@@ -1616,34 +1804,30 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             info: 字信息数据表
         """
 
-        return pandas.read_csv(
-            os.path.join(self._path, 'csv', 'words.csv'),
-            dtype=str
-        ) \
-            .rename(columns={'item': 'character', 'memo': 'note'})
+        standard = self.load_or_download('standard')
+        return pandas.json_normalize(standard['words']) \
+            .rename(columns={'item': 'character', 'memo': 'note'}) \
+            [['cid', 'character', 'note']]
 
-    @classmethod
-    def load_raw(cls, id: str, path: str) -> pandas.DataFrame:
+    def load_raw(self, id: str) -> pandas.DataFrame:
         """
         加载指定方言读音数据
 
         Parameters:
             id: 要加载的方言的原始 ID（未加前缀）
-            path: 要加载的数据文件路径
 
         Returns:
             data: 加载的读音数据表
 
-        语保数据文件的编号由3部分组成：<方言 ID><发音人编号><内容编号>，其中：
-            - 方言 ID：5个字符
-            - 发音人编号：4个字符，代表老年男性、青年男性等
-            - 内容编号：2个字符，dz 代表单字音
+        语保数据文件包含了单字、词汇和语法，其中单字包含了老年男性和青年男性两个发音人的数据，
+        当前只取其中单字的老年男性数据。如果文件不存在，先从网站下载。
         """
 
-        data = pandas.read_csv(
-            path,
-            encoding='utf-8',
-            dtype=str
+        point = self.load_or_download(id)
+        data = pandas.json_normalize(
+            point['data']['resourceList'][0]['items'], 
+            'records',
+            ['iid', 'name']
         )
 
         # 清洗数据集特有的错误
@@ -1685,10 +1869,7 @@ class ZhongguoyuyanDataset(FileCacheDataset):
             data: 方言字音表
         """
 
-        data = self.load_raw(
-            did,
-            os.path.join(self._path, 'csv', 'dialect', did + 'mb01dz.csv')
-        ).assign(did=did)
+        data = self.load_raw(did).assign(did=did)
 
         # 清洗读音数据
         data['initial'] = preprocess.clean_initial(data['initial'])
@@ -1754,7 +1935,6 @@ class ZhongguoyuyanDataset(FileCacheDataset):
 
         return ZhongguoyuyanDataset(
             self._cache_dir,
-            self._path,
             self._superscript_tone,
             self._na,
             self._empty,
@@ -1780,28 +1960,16 @@ cache_dir = os.environ.get(
 
 ccr = CCRDataset(os.path.join(cache_dir, 'ccr'))
 mcpdict = MCPDictDataset(os.path.join(cache_dir, 'mcpdict'))
+zhongguoyuyan = ZhongguoyuyanDataset(os.path.join(cache_dir, 'zhongguoyuyan'))
 _datasets = {
     'CCR': ccr,
     'ccr': ccr,
     'xiaoxue': ccr,
     'MCPDict': mcpdict,
-    'mcpdict': mcpdict
+    'mcpdict': mcpdict,
+    'zhongguoyuyan': zhongguoyuyan,
+    'yubao': zhongguoyuyan
 }
-
-try:
-    path = os.environ['ZHONGGUOYUYAN_HOME']
-except KeyError:
-    logger.warning(
-        'Set environment variable ZHONGGUOYUYAN_HOME to zhongguoyuyan\'s home '
-        'dirctory then reload this module to make use of the dataset.'
-    )
-else:
-    zhongguoyuyan = ZhongguoyuyanDataset(
-        os.path.join(cache_dir, 'zhongguoyuyan'),
-        path
-    )
-    _datasets['zhongguoyuyan'] = zhongguoyuyan
-    _datasets['yubao'] = zhongguoyuyan
 
 
 def get(name: str) -> Dataset | None:
