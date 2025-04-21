@@ -26,7 +26,7 @@ class TestSimilarity(unittest.TestCase):
 
         cls.data = sincomp.preprocess.transform(
             sincomp.datasets.FileDataset(
-                path=os.path.join(data_dir, 'custom_dataset1')
+                data_dir=os.path.join(data_dir, 'custom_dataset1')
             ),
             index='cid',
             columns='did',
