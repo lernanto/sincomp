@@ -29,7 +29,7 @@ class TestProcessor(unittest.TestCase):
         super().setUpClass()
 
         cls.data = sincomp.datasets.FileDataset(
-            path=os.path.join(data_dir, 'custom_dataset1')
+            data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data
 
     def setUp(self):
@@ -78,7 +78,7 @@ class TestBilinearEncoder(unittest.TestCase):
         super().setUpClass()
 
         data = sincomp.datasets.FileDataset(
-            path=os.path.join(data_dir, 'custom_dataset1')
+            data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data
         cls.processor = sincomp.models.Processor(
             [data['did'].drop_duplicates()],

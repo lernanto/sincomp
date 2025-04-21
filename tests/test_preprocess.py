@@ -24,24 +24,24 @@ class TestPreprocess(unittest.TestCase):
         super().setUpClass()
 
         cls.data = sincomp.datasets.FileDataset(
-            path=os.path.join(data_dir, 'custom_dataset1')
+            data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
 
     def test_clean_ipa(self):
-        clean = sincomp.preprocess.clean_ipa(self.data['initial'])
-        self.assertEqual(clean.shape, self.data['initial'].shape)
+        clean = sincomp.preprocess.clean_ipa(self.data.loc[:, 'initial'])
+        self.assertEqual(clean.shape, self.data.loc[:, 'initial'].shape)
 
     def test_clean_initial(self):
-        clean = sincomp.preprocess.clean_initial(self.data['initial'])
-        self.assertEqual(clean.shape, self.data['initial'].shape)
+        clean = sincomp.preprocess.clean_initial(self.data.loc[:, 'initial'])
+        self.assertEqual(clean.shape, self.data.loc[:, 'initial'].shape)
 
     def test_clean_final(self):
-        clean = sincomp.preprocess.clean_final(self.data['final'])
-        self.assertEqual(clean.shape, self.data['final'].shape)
+        clean = sincomp.preprocess.clean_final(self.data.loc[:, 'final'])
+        self.assertEqual(clean.shape, self.data.loc[:, 'final'].shape)
 
     def test_clean_tone(self):
-        clean = sincomp.preprocess.clean_tone(self.data['tone'])
-        self.assertEqual(clean.shape, self.data['tone'].shape)
+        clean = sincomp.preprocess.clean_tone(self.data.loc[:, 'tone'])
+        self.assertEqual(clean.shape, self.data.loc[:, 'tone'].shape)
 
     def test_transform(self):
         output = sincomp.preprocess.transform(
@@ -51,7 +51,7 @@ class TestPreprocess(unittest.TestCase):
         )
         self.assertEqual(
             output.shape[0],
-            self.data['cid'].value_counts().shape[0]
+            self.data.loc[:, 'cid'].value_counts().shape[0]
         )
         self.assertTrue(output.notna().any(axis=0).all())
 

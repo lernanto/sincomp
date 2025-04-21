@@ -25,10 +25,10 @@ class TestAlign(unittest.TestCase):
         super().setUpClass()
 
         cls.data1 = sincomp.datasets.FileDataset(
-            path=os.path.join(data_dir, 'custom_dataset1')
+            data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
         cls.data2 = sincomp.datasets.FileDataset(
-            path=os.path.join(data_dir, 'custom_dataset2')
+            data_dir=os.path.join(data_dir, 'custom_dataset2')
         )
 
     def test_align(self):
@@ -40,7 +40,7 @@ class TestAlign(unittest.TestCase):
             == chars2.set_index('label')['simplified'].reindex(cid)).all())
 
     def test_align_no_cid(self):
-        chars1 = self.data1[['cid', 'character']].drop_duplicates() \
+        chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 
         result = sincomp.align.align_no_cid(
