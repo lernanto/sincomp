@@ -763,16 +763,29 @@ class CCRDataset(Dataset):
         """
         加载字信息
 
-        Returns:
-            chars: 字信息数据表
+        优先从缓存文件加载，如果文件不存在，会根据全部方言数据统计，这样会触发下载全部方言
         """
 
-        return pandas.read_csv(
-            os.path.join(os.path.dirname(__file__), 'ccr_char_info.csv'),
-            dtype=str
-        ) \
-            .rename(columns={'字號': 'cid', '字': 'character'}) \
-            .set_index('cid')[['character']]
+        try:
+            # 尝试从缓存文件加载字信息
+            path = os.path.join(self._cache_dir, '.characters')
+            logger.debug(f'load character information from {path}')
+            return pandas.read_csv(
+                path,
+                dtype=str,
+                encoding='utf-8'
+            ).set_index('cid')
+
+        except FileNotFoundError:
+            # 缓存文件不存在，从方言读音数据统计字信息
+            logger.info(f'{path} not found, get dialect information from data.')
+            characters = super().characters
+
+            # 保存到缓存文件
+            logger.debug(f'save dialect information to {path}')
+            characters.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+            return characters
 
 
 class MCPDictDataset(Dataset):
@@ -835,54 +848,6 @@ class MCPDictDataset(Dataset):
 
         logger.info('done.')
 
-    def load_dialects(self) -> pandas.DataFrame:
-        """
-        加载方言点信息
-
-        Returns:
-            dialects: 方言信息表
-        """
-
-        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
-        if not os.path.isdir(path):
-            # 数据文件不存在，先从汉字音典项目页面下载
-            self.download(self._cache_dir)
-
-        fname = os.path.join(path, '_詳情.json')
-        logger.debug(f'load dialect information from {fname}')
-        dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
-
-        # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
-        # 汉字音典数据包含历史拟音、域外方音和一些拼音方案，只取用国际音标注音的现代方言数据
-        dialects = dialects[
-            (dialects['文件格式'] != '漢典') \
-            & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
-            & (~dialects.index.str.match('^1[0-9]{3}') | dialects.index.isin([
-                '1935永明',
-                '1935南昌',
-                '1935醴陵',
-                '1935長沙',
-            ])) \
-            & (~dialects.index.isin([
-                '普通話',
-                '鄕音字類',
-                '淸末寧波',
-                '淸末溫州',
-                '訓詁諧音',
-                '湘音檢字',
-                '香港',
-                '臺灣'
-            ])) \
-            & ((path + os.sep + dialects.index + '.tsv').map(os.path.isfile))
-        ]
-
-        if dialects.shape[0] == 0:
-            logger.warning(f'no valid data in {path}.')
-            return
-
-        # 使用简称作为方言 ID
-        return dialects.set_index('簡稱', drop=False)
-
     @functools.cached_property
     def tone_map(self) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
         """
@@ -895,8 +860,16 @@ class MCPDictDataset(Dataset):
         如果文件不存在，先从项目页面下载。
         """
 
+        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
+        if not os.path.isdir(path):
+            # 数据文件不存在，先从汉字音典项目页面下载
+            self.download(self._cache_dir)
+
+        fname = os.path.join(path, '_詳情.json')
+        info = pandas.read_json(fname, orient='index', encoding='utf-8')
+
         tm = {}
-        for i, m in self.load_dialects()['聲調'].map(json.loads).items():
+        for i, m in info['聲調'].map(json.loads).items():
             tone = {}
             cat = {}
             for k, v in m.items():
@@ -992,7 +965,37 @@ class MCPDictDataset(Dataset):
         加载方言点信息并返回，如果文件不存在，先从项目页面下载。
         """
 
-        dialects = self.load_dialects()
+        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
+        if not os.path.isdir(path):
+            # 数据文件不存在，先从汉字音典项目页面下载
+            self.download(self._cache_dir)
+
+        fname = os.path.join(path, '_詳情.json')
+        logger.debug(f'load dialect information from {fname}')
+        dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
+
+        # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
+        # 汉字音典数据包含历史拟音、域外方音和一些拼音方案，只取用国际音标注音的现代方言数据
+        dialects = dialects[
+            (dialects['文件格式'] != '漢典') \
+            & (~dialects['地圖集二分區'].isin(['歷史音', '現代標準漢語', '民族語', '域外方音', '戲劇'])) \
+            & (~dialects.index.str.match('^1[0-9]{3}') | dialects.index.isin([
+                '1935永明',
+                '1935南昌',
+                '1935醴陵',
+                '1935長沙',
+            ])) \
+            & (~dialects.index.isin([
+                '鄕音字類',
+                '淸末寧波',
+                '淸末溫州',
+                '訓詁諧音',
+                '湘音檢字',
+                '香港',
+                '臺灣'
+            ])) \
+            & ((path + os.sep + dialects.index + '.tsv').map(os.path.isfile))
+        ]
 
         # 解析方言分类
         cat = dialects['地圖集二分區'].str.split('-')
@@ -1059,6 +1062,35 @@ class MCPDictDataset(Dataset):
             'latitude',
             'longitude'
         ], axis=1)
+
+    @functools.cached_property
+    def characters(self) -> pandas.DataFrame:
+        """
+        加载字信息
+
+        优先从缓存文件加载，如果文件不存在，会根据全部方言数据统计，这样会触发下载全部方言
+        """
+
+        try:
+            # 尝试从缓存文件加载字信息
+            path = os.path.join(self._cache_dir, '.characters')
+            logger.debug(f'load character information from {path}')
+            return pandas.read_csv(
+                path,
+                dtype=str,
+                encoding='utf-8'
+            ).set_index('cid')
+
+        except FileNotFoundError:
+            # 缓存文件不存在，从方言读音数据统计字信息
+            logger.info(f'{path} not found, get dialect information from data.')
+            characters = super().characters
+
+            # 保存到缓存文件
+            logger.debug(f'save dialect information to {path}')
+            characters.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+            return characters
 
 
 class ZhongguoyuyanDownloader:
