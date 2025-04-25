@@ -1534,6 +1534,109 @@ class ZhongguoyuyanDataset(Dataset):
 
         return subcluster
 
+    def get_dialects(self, refresh: bool = False) -> pandas.DataFrame:
+        """
+        从每个方言文件读取方言信息
+
+        Parameters:
+            refresh: 强制重新生成缓存文件
+
+        Returns:
+            dialects: 方言点信息数据表
+
+        从已下载的文件读取方言信息，不下载新文件。并生成缓存文件。当下载了新方言文件后，
+        需强制刷新才能得到新下载方言的信息。
+        """
+
+        path = os.path.join(self._cache_dir, '.dialects')
+        if os.path.isfile(path) and not refresh:
+            # 缓存文件已存在且不强制刷新，从缓存文件读取方言信息
+            logger.info(f'load dialect information from cache file {path} .')
+            dialects = pandas.read_csv(path, encoding='utf-8', dtype={'did': str}) \
+                .set_index('did')
+
+        else:
+            # 缓存文件不存在或强制刷新，从每个方言文件读取
+            dialects = []
+            for did in self.dialect_ids:
+                fname = os.path.join(self._cache_dir, did + '.json')
+                try:
+                    with open(fname, encoding='utf-8') as f:
+                        data = json.load(f)
+                        loc = data['data']['mapLocation']
+                        dialects.append({**loc['location'], **loc['point']})
+
+                except FileNotFoundError:
+                    logger.debug(
+                        f'{path} not found, dialect information absent for {did}'
+                    )
+
+            if len(dialects) == 0:
+                # 未下载任何方言文件，方言信息为空
+                dialects = pandas.DataFrame()
+
+            else:
+                dialects = pandas.DataFrame(dialects) \
+                    .rename(columns={'firstLevelid': 'did', 'country': 'county'}) \
+                    .set_index('did') \
+                    .replace(['', '(无)', '(无）', '无', '（无)', '（无）'], pandas.NA)
+
+                # 从文件名提取方言名称
+                dialects['name'] = dialects['filepath'].str.extract(r'/([^#]+)#?需交文件电子版')
+
+                # 以县区名为方言点名称，如县区名为空，依次上溯市名、省级行政区名
+                dialects['spot'] = dialects['county'].where(
+                    dialects['county'].notna(),
+                    dialects['city'].where(dialects['city'].notna(), dialects['province'])
+                )
+
+                # 清洗方言区、片、小片名称
+                dialects['group'] = self.get_group(dialects)
+                dialects['subgroup'] = self.get_subgroup(dialects)
+                dialects['cluster'] = self.get_cluster(dialects)
+                dialects['subcluster'] = self.get_subcluster(dialects)
+
+                # 个别官话方言点标注的大区和子区不一致，去除
+                dialects.loc[
+                    (dialects['group'] == '官话') \
+                        & ~dialects['subgroup'].str.endswith('官话', na=False),
+                    ['group', 'subgroup']
+                ] = pandas.NA
+
+                # 个别方言点的经纬度有误，去除
+                dialects.loc[~dialects['latitude'].between(0, 55), 'latitude'] = numpy.nan
+                dialects.loc[~dialects['longitude'].between(70, 140), 'longitude'] = numpy.nan
+
+            dialect_ids = self.dialect_ids
+            if dialects.shape[0] < len(dialect_ids):
+                logger.warning(
+                    f'generate cache for only {dialects.shape[0]}/{len(dialect_ids)} '
+                    'dialect(s), after you download new dialect files, '
+                    'call get_dialects(refresh=True) to refresh cache.'
+                )
+
+            dialects = dialects.reindex([
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            ], axis=1).reindex(dialect_ids)
+
+            # 保存到缓存文件
+            logger.info(f'save dialect information to cache file {path} .')
+            dialects.to_csv(path, encoding='utf-8', lineterminator='\n')
+
+        return dialects
+
     @functools.cache
     def get_data(self, did: str) -> pandas.DataFrame:
         """
@@ -1614,40 +1717,17 @@ class ZhongguoyuyanDataset(Dataset):
 
     @property
     def dialect_ids(self) -> list[str]:
-        return self.dialects.index.tolist()
-
-    @functools.cached_property
-    def dialects(self) -> pandas.DataFrame:
         """
-        读取方言点信息
-
-        Returns:
-            dialects: 方言点信息数据表
+        从方言调查点信息文件获取方言 ID 列表，如果文件不存在，先从网站下载
         """
 
         survey = self.load_or_download('survey')
-        dialects = pandas.json_normalize(survey['dialectObj'], 'cityList')
-        dialects.set_index('_id', inplace=True)
-        dialects['city'] = dialects['city'].where(
-            ~dialects['city'].str.match(r'^[(（]无[)）]$', na=True)
-        )
-        dialects['name'] = dialects['filepath'].str.extract(r'^[^/]+/([^#]+)#?需交文件电子版')
+        return pandas.json_normalize(survey['dialectObj'], 'cityList')['_id'] \
+            .tolist()
 
-        return dialects.rename_axis('did').reindex([
-            'name',
-            'province',
-            'city',
-            'county',
-            'town',
-            'village',
-            'group',
-            'subgroup',
-            'cluster',
-            'subcluster',
-            'spot',
-            'latitude',
-            'longitude'
-        ], axis=1)
+    @functools.cached_property
+    def dialects(self) -> pandas.DataFrame:
+        return self.get_dialects()
 
     @functools.cached_property
     def characters(self) -> pandas.DataFrame:
