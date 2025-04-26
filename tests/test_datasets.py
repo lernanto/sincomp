@@ -281,6 +281,86 @@ class TestDataset(unittest.TestCase):
         )
 
 
+class TestLinkDataset(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+
+        self.dataset = \
+            sincomp.datasets.FileDataset(
+                data_dir=os.path.join(data_dir, 'custom_dataset1')
+            ) \
+            + sincomp.datasets.FileDataset(
+                data_dir=os.path.join(data_dir, 'custom_dataset2')
+            )
+
+    def test_get_data(self):
+        data = self.dataset.get_data('08533')
+        self.assertIsInstance(data, pandas.DataFrame)
+        self.assertEqual(data.shape[0], 20)
+        self.assertListEqual(
+            data.columns.tolist(),
+            ['did', 'character', 'cid', 'initial', 'final', 'tone']
+        )
+
+    def test_dialect_ids(self):
+        self.assertListEqual(
+            self.dataset.dialect_ids,
+            ['08533', '23C57', '28E71', '35H18']
+        )
+
+    def test_dialects(self):
+        dialects = self.dataset.dialects
+        self.assertIsInstance(dialects, pandas.DataFrame)
+        self.assertListEqual(
+            dialects.index.tolist(),
+            ['08533', '23C57', '28E71', '35H18']
+        )
+
+    def test_characters(self):
+        chars = self.dataset.characters
+        self.assertIsInstance(chars, pandas.DataFrame)
+        self.assertGreater(chars.shape[0], 0)
+        self.assertIn('character', chars.columns)
+
+    def test_select(self):
+        other = self.dataset.select(['08533', '28E71'])
+        self.assertIsInstance(other, sincomp.datasets.LinkDataset)
+        self.assertListEqual(other.dialect_ids, ['08533', '28E71'])
+
+        data = other.data
+        self.assertEqual(
+            data.shape[0],
+            self.dataset.get_data('08533').shape[0] \
+                + self.dataset.get_data('28E71').shape[0]
+        )
+        self.assertListEqual(
+            data.columns.tolist(),
+            ['did', 'character', 'cid', 'initial', 'final', 'tone']
+        )
+
+    def test_data(self):
+        data = self.dataset.data
+        self.assertIsInstance(data, pandas.DataFrame)
+        self.assertEqual(data.shape[0], 89)
+        self.assertListEqual(
+            data.columns.tolist(),
+            ['did', 'character', 'cid', 'initial', 'final', 'tone']
+        )
+
+    def test_iterrows(self):
+        count = 0
+        for i, r in self.dataset.iterrows():
+            self.assertIsInstance(r, pandas.Series)
+            self.assertListEqual(
+                r.index.tolist(),
+                ['did', 'character', 'cid', 'initial', 'final', 'tone']
+            )
+
+            count += 1
+
+        self.assertEqual(count, self.dataset.data.shape[0])
+
+
 class TestFileDataset(unittest.TestCase):
     def setUp(self):
         super().setUp()
