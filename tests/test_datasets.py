@@ -494,6 +494,27 @@ class TestMCPDictDataset(unittest.TestCase):
         )
 
 
+class TestZhongguoyuyanDownloader(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.downloader = sincomp.datasets.ZhongguoyuyanDownloader(delay=None)
+
+    def test_get_survey(self):
+        data = self.downloader.get_survey()
+        self.assertIsInstance(data, str)
+        self.assertNotEqual(data, '')
+
+    def test_get_standard(self):
+        data = self.downloader.get_standard()
+        self.assertIsInstance(data, str)
+        self.assertNotEqual(data, '')
+
+    def test_get_point(self):
+        data = self.downloader.get_point('06K06')
+        self.assertIsInstance(data, str)
+        self.assertNotEqual(data, '')
+
+
 class TestZhongguoyuyanDataset(unittest.TestCase):
     def setUp(self):
         super().setUp()
