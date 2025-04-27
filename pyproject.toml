@@ -21,6 +21,7 @@ dependencies = [
     "retry",
     "scipy",
     "scikit-learn>=1.2",
+    "selenium>=4.6",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
