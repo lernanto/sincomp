@@ -77,7 +77,7 @@ def prepare(
 
     if chars is None:
         # 从 dataset 生成字表，默认为繁体字
-        chars = dataset[['cid', 'character']] \
+        chars = dataset.loc[:, ['cid', 'character']] \
             .dropna() \
             .sort_values(['cid', 'character']) \
             .drop_duplicates('cid') \
