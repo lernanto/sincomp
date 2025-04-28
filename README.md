@@ -12,42 +12,17 @@ pip install sincomp
 
 ## 使用简介
 
-本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，但针对小学堂和汉字音典，使用时自动从其网站下载数据，语保的数据需要使用者自行获取，并使用本库提供的工具整理成要求的格式。
+本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，使用时会自动从数据集所在的网站下载数据。
 
 ### 使用数据集
-
-首次使用数据集时会自动从网上下载数据集。安装成功之后在 Linux 终端/Windows 命令提示符运行如下命令会执行下载并刷新缓存文件。下载时间较久，请耐心等待运行结束。
-
-```shell
-python3 -O -m sincomp.datasets
-```
-
-运行成功后会创建如下目录及文件：
-
-| 目录 | 说明 |
-|:-|:-|
-| datasets/ccr/*.xlsx | 小学堂数据集 |
-| datasets/mcpdict/tools/tables/output/*.tsv | 汉字音典数据集 |
-
-创建上述目录的位置由如下条件决定：
-
-1. 如指定了 SINCOMP_CACHE 环境变量，则创建在该环境变量指向的路径。
-2. 否则如指定了 LOCALAPPDATA 环境变量，则创建在该环境变量下的 sincomp 目录，Windows 下 LOCALAPPDATA 默认为当前用户目录下的 AppData\Local。
-3. 否则创建在当前用户目录下的 sincomp 目录。
-
-如果由于网络或其他原因下载失败，可以手动到下文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
-
-> [!Note]
-> 注意小学堂数据文件名中“閩語”笔误为“閔語”，手工下载时需手工改正。
-
-之后即可在 Python 代码中使用上述数据集，如：
 
 ```python
 import sincomp.datasets
 
-# 采用延迟加载方式，在使用时才加载实际数据并缓存，数据集对外表现如同 pandas.DataFrame
-print(sincomp.datasets.get('CCR').dialects)
-print(sincomp.datasets.get('CCR').sample(1))
+ccr = sincomp.datasets.get('CCR')
+print(ccr.dialects)
+# 采用延迟加载方式，在使用时才下载实际数据并缓存到本地文件，数据集对外表现如同 pandas.DataFrame
+print(ccr.sample(1))
 ```
 
 ### 计算方言相似度
@@ -102,9 +77,9 @@ sim = sincomp.similarity.chi2(data)
 | plot | 提供制作方言统计图、方言地图等的工具函数 |
 
 其中部分功能的应用在如下几篇文章中有简要的介绍：
+- [基于矩阵分解的方言字音对齐](https://zhuanlan.zhihu.com/p/20230566259)
 - [基于方言之间的预测相似度进行方言聚类](https://zhuanlan.zhihu.com/p/464735745)
 - [什么是官话？——兼及方言分类的概率模型](https://zhuanlan.zhihu.com/p/629007299)
-- [基于自编码器的方言祖语音系嵌入](https://zhuanlan.zhihu.com/p/349689590)
 - [使用双线性编码建模多方言音系](https://zhuanlan.zhihu.com/p/659731592)
 
 更详细的使用方法见各模块代码注释。
@@ -141,26 +116,31 @@ sim = sincomp.similarity.chi2(data)
 
 详情见其[版权声明](https://zhongguoyuyan.cn/declaration)。
 
-为此，本库仅提供一套额外的工具，用于把从上述语保网站可以访问到的数据转为本工具集可以处理的格式。处理完成后设置环境变量指向该数据集的根目录，在 Linux 终端运行：
+使用语保数据集时，会自动调用本地浏览器访问语保网站，需用户自行在浏览器上登录，然后会遵循按正常流程访问方言数据。每次只获取指定的方言点数据，并把数据缓存到本地文件。当前只支持 Chrome 浏览器。
 
-```shell
-export ZHONGGUOYUYAN_HOME=$HOME/zhongguoyuan
-```
+> [!warning]
+> 必须严格控制访问语保网站的频率，短时间大量访问可能会导致账号被禁用！
 
-或在 Windows PowserShell 运行：
+### 缓存路径
 
-```powershell
-$env:ZHONGGUOYUYAN_HOME = $env:HOME\zhongguoyuyan
-```
+下载数据集保存在本地的目录由如下条件决定：
 
-其后使用该数据集的方式与小学堂相同。
+1. 如指定了 SINCOMP_CACHE 环境变量，则创建在该环境变量指向的目录。
+2. 否则如指定了 LOCALAPPDATA 环境变量，则创建在该环境变量下的 sincomp 目录，Windows 下 LOCALAPPDATA 默认为当前用户目录下的 AppData\Local。
+3. 否则创建在当前用户目录下的 sincomp 目录。
 
-```python
-import sincomp.datasets
+各数据集会下载到上述目录下的不同路径：
 
-print(sincomp.datasets.get('zhongguoyuyan').dialects)
-print(sincomp.datasets.get('zhongguoyuyan').sample(1))
-```
+| 数据集 | 目录 |
+|:-|:-|
+| 小学堂 | datasets/ccr/*.xlsx |
+| 汉字音典 | datasets/mcpdict/tools/tables/output/*.tsv |
+| 语保 | datasets/zhongguoyuyan/*.json |
+
+如果由于网络或其他原因下载失败，可以手动到上文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
+
+> [!Note]
+> 注意小学堂数据文件名中“閩語”笔误为“閔語”，手工下载时需手工改正。
 
 ### 数据格式
 
@@ -208,4 +188,3 @@ print(mydataset.sample(1))
 
 - [ ] 使用 CRF 切分汉语方言音节及切分声韵调
 - [ ] 为现有的算法和模型提供兼容 scikit-learn 的接口
-- [ ] 更新语保数据获取脚本
