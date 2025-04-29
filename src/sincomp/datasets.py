@@ -907,7 +907,7 @@ class MCPDictDataset(Dataset):
             header=None,
             names=['character', 'ipa', 'note'],
             dtype=str,
-            na_values={'漢字': '\u25a1'},   # 方框代表有音无字
+            na_values={'character': '\u25a1'},   # 方框代表有音无字
             comment='#',
             encoding='utf-8'
         )
