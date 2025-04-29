@@ -1,8 +1,6 @@
 name: Unit test
 
-on:
-  pull_request:
-    types: [opened, edited, reopened]
+on: [pull_request]
 
 jobs:
   build:
