@@ -1754,7 +1754,7 @@ cache_dir = os.getenv(
         'sincomp'
     )
 )
-dataset_dir = os.path.join(cache_dir, 'dataset')
+dataset_dir = os.path.join(cache_dir, 'datasets')
 
 ccr = CCRDataset(os.path.join(dataset_dir, 'ccr'))
 mcpdict = MCPDictDataset(os.path.join(dataset_dir, 'mcpdict'))
