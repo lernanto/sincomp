@@ -21,7 +21,6 @@ dependencies = [
     "retry",
     "scipy",
     "scikit-learn>=1.2",
-    "selenium>=4.6",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -34,6 +33,9 @@ Homepage = "https://github.com/lernanto/sincomp"
 Issues = "https://github.com/lernanto/sincomp/issues"
 
 [project.optional-dependencies]
+datasets = [
+    "selenium>=4.6",
+]
 models = [
     "tensorflow>=2.8",
 ]
@@ -49,7 +51,7 @@ plot = [
     "seaborn",
 ]
 test = [
-    "sincomp[models,parser,plot]"
+    "sincomp[datasets,models,parser,plot]"
 ]
 
 [tool.setuptools_scm]

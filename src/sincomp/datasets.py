@@ -23,10 +23,6 @@ import os
 import pandas
 import re
 import retry
-import selenium.common.exceptions
-import selenium.webdriver
-import selenium.webdriver.chrome.options
-import selenium.webdriver.common.by
 import sys
 import threading
 import time
@@ -42,6 +38,16 @@ from . import preprocess
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
+
+
+try:
+    import selenium.common.exceptions
+    import selenium.webdriver
+    import selenium.webdriver.chrome.options
+    import selenium.webdriver.common.by
+except ImportError:
+    logger.warning('''selenium not installed, to use full functionality, install it with
+        pip install selenium''')
 
 
 def predict_group(
@@ -1262,6 +1268,22 @@ class ZhongguoyuyanDownloader:
         )
 
 
+class DummyZhongguoyuyanDownloader:
+    """
+    未安装 selenium 时占位用的假类
+    """
+
+    def __init__(self, *args, **kwargs):
+        ...
+
+    def _noimp(self, *args, **kwargs):
+        raise NotImplementedError('selenium not installed.')
+
+    get_survey = _noimp
+    get_standard = _noimp
+    get_point = _noimp
+
+
 class ZhongguoyuyanDataset(Dataset):
     """
     中国语言资源保护工程采录展示平台的方言数据集
@@ -1284,7 +1306,16 @@ class ZhongguoyuyanDataset(Dataset):
 
         super().__init__(name=name)
         self._cache_dir = cache_dir
-        self._downloader = ZhongguoyuyanDownloader(**downloader_kwargs)
+
+        if 'selenium' in globals():
+            self._downloader = ZhongguoyuyanDownloader(**downloader_kwargs)
+        else:
+            logger.warning(
+                f'Cannot download {name} automatically without selenium, '
+                'make sure you have downloaded it manually '
+                f'from https://zhongguoyuyan.cn/ to {cache_dir} .'
+            )
+            self._downloader = DummyZhongguoyuyanDownloader(**downloader_kwargs)
 
     def load_or_download(self, name: str):
         """
