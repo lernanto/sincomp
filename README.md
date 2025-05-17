@@ -4,10 +4,18 @@ SinComp 是一个自动化处理汉语方言读音数据的工具集，包含了
 
 ## 安装
 
-在 Linux 终端/Windows 命令提示符下运行：
+推荐从 PyPI 安装，在 Linux 终端或 Windows 命令提示符下运行如下命令安装完整功能：
 
 ```shell
-pip install sincomp
+pip install sincomp[datasets,models,parser,plot]
+```
+
+其中括号中的扩展是可选的，建议至少包含 datasets 以使用所有的数据集。
+
+由于本工具集还在开发中，如果想从最新的代码安装，运行：
+
+```
+pip install 'sincomp[datasets,models,parser,plot] @ git+https://github.com/lernanto/sincomp.git'
 ```
 
 ## 使用简介
