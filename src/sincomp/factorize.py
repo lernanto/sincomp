@@ -31,7 +31,8 @@ def _update_char_embs(
 
     Parameters:
         char_embs: 字向量列表，原地更新此参数的内容
-        phone_embs: 读音向量列表
+        phone_embs: 读音向量列表，可以包含多于需要的方言，此时只使用其中部分方言的读音向量，
+            使用的向量由 limits 指定
         limits: 方言读音向量的边界，长度为方言数 + 1，记录了每个方言的读音向量在
             phone_embs 中的起始位置和结束位置
         cooc: 字和方言共现矩阵，形状为 (字数, 方言数)，值为 0 或 1
@@ -84,7 +85,8 @@ def _update_phone_embs(
 
     Parameters:
         char_embs: 字向量列表
-        phone_embs: 读音向量列表，原地更新此参数的内容
+        phone_embs: 读音向量列表，原地更新此参数的内容，可以包含多于更新的方言，
+            此时只更新其中部分方言的读音向量，更新的向量由 limits 指定
         limits: 方言读音向量的边界，长度为方言数 + 1，记录了每个方言的读音向量在
             phone_embs 中的起始位置和结束位置
         cooc: 字和方言共现矩阵，形状为 (字数, 方言数)，值为 0 或 1
@@ -127,6 +129,10 @@ def factorize(
     embedding_size: int = 128,
     max_iter: int = 10,
     tol: float = 0.0001,
+    min_dialect_coverage: float | int = 0.2,
+    min_character_coverage: float | int = 0.2,
+    min_dialects: float| int = 10,
+    min_characters: float | int = 100,
     l2: float = 0.0001
 ) -> tuple[pandas.DataFrame, pandas.DataFrame]:
     """
@@ -137,6 +143,10 @@ def factorize(
         embedding_size: 字向量和读音向量的维数
         max_iter: 最大迭代轮数
         tol: 停止阈值，误差下降小于该值时停止训练
+        min_dialect_coverage: 方言最小覆盖率，方言中至少覆盖该比例或数量的字才参与训练
+        min_character_coverage: 字最小覆盖率，字中至少覆盖该比例或数量的方言才参与训练
+        min_dialects: 最少方言数，参与训练的方言数必须大于该值
+        min_characters: 最少字数，参与训练的字数必须大于该值
         l2: L2 正则化系数，0 表示不使用正则化
 
     Returns:
@@ -159,9 +169,50 @@ def factorize(
     dialect_num = dialects.shape[0]
     char_num = chars.shape[0]
 
+    if isinstance(min_dialects, float):
+        min_dialects = int(dialect_num * min_dialects)
+    if isinstance(min_characters, float):
+        min_characters = int(char_num * min_characters)
+
+    if min_dialects < dialect_num and min_dialect_coverage > 0:
+        # 把方言 ID 按出现频次排序，并找到满足最小覆盖率的边界
+        if isinstance(min_dialect_coverage, float):
+            min_dialect_coverage = int(char_num * min_dialect_coverage)
+
+        aug = -dialects.values
+        idx = numpy.argsort(aug)
+        dialects = dialects.index[idx]
+        dialect_pos1 = numpy.clip(
+            numpy.searchsorted(aug[idx], -min_dialect_coverage, side='right'),
+            min_dialects,
+            dialect_num
+        )
+    else:
+        dialects = dialects.index
+        dialect_pos1 = dialect_num
+
+    if min_characters < char_num and min_character_coverage > 0:
+        # 把字 ID 按出现频次排序，并找到满足最小覆盖率的边界
+        if isinstance(min_character_coverage, float):
+            min_character_coverage = int(dialect_num * min_character_coverage)
+
+        aug = -chars.values
+        idx = numpy.argsort(aug)
+        chars = chars.index[idx]
+        char_pos1 = numpy.clip(
+            numpy.searchsorted(aug[idx], -min_character_coverage, side='right'),
+            min_characters,
+            char_num
+        )
+    else:
+        chars = chars.index
+        char_pos1 = char_num
+
     # 对字 ID 和方言 ID 编码
-    encoder = sklearn.preprocessing.OrdinalEncoder(dtype=numpy.int32) \
-        .fit(data[['cid', 'did']])
+    encoder = sklearn.preprocessing.OrdinalEncoder(
+        categories=[chars, dialects],
+        dtype=numpy.int32
+    ).fit(data.iloc[:1][['cid', 'did']])
 
     # 生成临时变量，加快训练速度
     categories = [None] * dialect_num
@@ -201,10 +252,12 @@ def factorize(
     phone_num = limits[-1]
 
     dialect_codes = []
-    for j, c in enumerate(codes):
-        dialect_codes.append(c.copy())
-        c[:, 2:] += limits[j]
+    for j in range(dialect_pos1):
+        c = codes[j]
+        dialect_codes.append(c[c[:, 0] < char_pos1])
 
+    for j, c in enumerate(codes):
+        c[:, 2:] += limits[j]
     codes = numpy.concatenate(codes, axis=0)
 
     # 字和方言点共现矩阵
@@ -213,7 +266,10 @@ def factorize(
 
     phone_indeces = []
     for i in range(char_num):
-        phone_indeces.append(numpy.ravel(codes[codes[:, 0] == i, 2:]))
+        idx = numpy.ravel(codes[codes[:, 0] == i, 2:])
+        if dialect_pos1 < dialect_num:
+            idx = idx[idx < limits[dialect_pos1]]
+        phone_indeces.append(idx)
 
     logger.debug(f'done prepairing {char_num} characters and {dialect_num} dialects.')
 
@@ -224,28 +280,47 @@ def factorize(
         .astype(numpy.float32)
 
     logger.debug(
-        f'training with {char_num} characters and {dialect_num} dialects, '
+        f'training with {char_pos1} characters and {dialect_pos1} dialects, '
         f'embedding size = {embedding_size}, maximum iteration = {max_iter}, '
         f'tol = {tol}, L2 = {l2} ...'
     )
 
+    char_embs1 = char_embs[:char_pos1]
+    cooc1 = cooc[:char_pos1, :dialect_pos1]
+    limits1 = limits[:dialect_pos1 + 1]
+    phone_indeces1 = phone_indeces[:char_pos1]
+
+    if char_pos1 < char_num:
+        # 第一阶段只训练部分字和方言，因此字索引必须限制在这个子集
+        char_indeces1 = []
+        for j in range(dialect_pos1):
+            indeces = []
+            for idx in char_indeces[j]:
+                idx.sort()
+                pos = numpy.searchsorted(idx, char_pos1)
+                indeces.append(idx[:pos])
+            char_indeces1.append(indeces)
+
+    else:
+        char_indeces1 = char_indeces
+
     prev_rmse = numpy.inf
     for it in range(max_iter):
         _update_char_embs(
-            char_embs,
+            char_embs1,
             phone_embs,
-            cooc,
-            limits,
-            phone_indeces,
+            cooc1,
+            limits1,
+            phone_indeces1,
             l2=l2
         )
 
         _update_phone_embs(
-            char_embs,
+            char_embs1,
             phone_embs,
-            cooc,
-            limits,
-            char_indeces,
+            cooc1,
+            limits1,
+            char_indeces1,
             l2=l2
         )
 
@@ -276,6 +351,31 @@ def factorize(
         logger.warning(f'maximum iteration {max_iter} reached, training not converged.')
 
     logger.debug('done.')
+
+    # 计算剩余的字向量和读音向量
+    if char_pos1 < char_num:
+        logger.debug(f'updating rest {char_num - char_pos1} characters ...')
+        _update_char_embs(
+            char_embs[char_pos1:],
+            phone_embs,
+            cooc[char_pos1:, :dialect_pos1],
+            limits1,
+            phone_indeces[char_pos1:],
+            l2=l2
+        )
+        logger.debug('done.')
+
+    if dialect_pos1 < dialect_num:
+        logger.debug(f'updating rest {dialect_num - dialect_pos1} dialects ...')
+        _update_phone_embs(
+            char_embs,
+            phone_embs,
+            cooc[:, dialect_pos1:],
+            limits[dialect_pos1:],
+            char_indeces[dialect_pos1:],
+            l2=l2
+        )
+        logger.debug('done.')
 
     # 根据方言 ID、方言特征生成读音向量索引
     aug = pandas.concat(
