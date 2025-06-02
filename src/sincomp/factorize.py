@@ -18,41 +18,38 @@ if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
 
 
-def _update_char_embs(
-    char_embs: numpy.ndarray[float],
-    phone_embs: numpy.ndarray[float],
+def _solve_char_embs(
     cooc: numpy.ndarray[int],
+    phone_embs: numpy.ndarray[float],
     limits: numpy.ndarray[int],
     phone_indeces,
     l2: float = 0.0
-) -> None:
+) -> numpy.ndarray[float]:
     """
-    更新字向量
+    根据字和方言共现矩阵及读音向量求解字向量
 
     Parameters:
-        char_embs: 字向量列表，原地更新此参数的内容
+        cooc: 字和方言共现矩阵，形状为 (字数, 方言数)，值为 0 或 1
         phone_embs: 读音向量列表，可以包含多于需要的方言，此时只使用其中部分方言的读音向量，
             使用的向量由 limits 指定
         limits: 方言读音向量的边界，长度为方言数 + 1，记录了每个方言的读音向量在
             phone_embs 中的起始位置和结束位置
-        cooc: 字和方言共现矩阵，形状为 (字数, 方言数)，值为 0 或 1
         phone_indeces: 每个字对应的读音向量索引，长度等于字数，
             每个元素记录了该字对应 phone_embs 中的索引
         l2: L2 正则化系数，0 表示不使用正则化
 
+    Returns:
+        char_embs: 字向量列表，形状为 (字数, 向量维度)
+
     某个字的向量只与它在每个方言中的读音有关，使用最小二乘法分别求解每个字向量。
     """
 
-    assert char_embs.shape[0] == cooc.shape[0], \
-        f'{char_embs.shape[0]} != {cooc.shape[0]}'
-    assert char_embs.shape[1] == phone_embs.shape[1], \
-        f'{char_embs.shape[1]} != {phone_embs.shape[1]}'
-    assert limits.shape[0] - 1 == cooc.shape[1], \
-        f'{limits.shape[0] - 1} != {cooc.shape[1]}'
-    assert char_embs.shape[0] == len(phone_indeces), \
-        f'{char_embs.shape[0]} != {len(phone_indeces)}'
+    assert cooc.shape[1] == limits.shape[0] - 1, \
+        f'{cooc.shape[1]} != {limits.shape[0] - 1}'
+    assert cooc.shape[0] == len(phone_indeces), \
+        f'{cooc.shape[0]} != {len(phone_indeces)}'
 
-    embedding_size = char_embs.shape[1]
+    embedding_size = phone_embs.shape[1]
 
     prods = numpy.empty(
         (limits.shape[0] - 1, embedding_size, embedding_size),
@@ -66,45 +63,40 @@ def _update_char_embs(
     if l2 > 0:
         a += (numpy.eye(a.shape[1], dtype=a.dtype) * l2)[None, :, :]
 
-    b = numpy.empty((char_embs.shape[0], embedding_size, 1), dtype=numpy.float32)
+    b = numpy.empty((cooc.shape[0], embedding_size, 1), dtype=numpy.float32)
     for i, indeces in enumerate(phone_indeces):
         numpy.sum(phone_embs[indeces], axis=0, out=b[i, :, 0])
 
-    char_embs[:] = numpy.linalg.solve(a, b)[..., 0]
+    return numpy.linalg.solve(a, b)[..., 0]
 
-def _update_phone_embs(
-    char_embs: numpy.ndarray[float],
-    phone_embs: numpy.ndarray[float],
+def _solve_phone_embs(
     cooc: numpy.ndarray[int],
-    limits: numpy.ndarray[float],
+    char_embs: numpy.ndarray[float],
     char_indeces,
     l2: float = 0.0
-) -> None:
+) -> numpy.ndarray[float]:
     """
-    更新读音向量
+    根据字和方言共现矩阵及字向量求解读音向量
 
     Parameters:
-        char_embs: 字向量列表
-        phone_embs: 读音向量列表，原地更新此参数的内容，可以包含多于更新的方言，
-            此时只更新其中部分方言的读音向量，更新的向量由 limits 指定
-        limits: 方言读音向量的边界，长度为方言数 + 1，记录了每个方言的读音向量在
-            phone_embs 中的起始位置和结束位置
         cooc: 字和方言共现矩阵，形状为 (字数, 方言数)，值为 0 或 1
-        char_indeces: 字索引列表，为方言、特征的二维数组，每个元素记录了该方言该特征
+        char_embs: 字向量列表
+        char_indeces: 字索引列表，为方言、读音的二维数组，每个元素记录了该方言该读音
             对应的字在 char_embs 中的索引
         l2: L2 正则化系数，0 表示不使用正则化
+
+    Returns:
+        phone_embs: 读音向量列表，形状为 (读音数, 向量维度)
 
     某个读音向量只与它和每个字的共现关系相关，使用最小二乘法分别求解每个方言的每个读音向量。
     """
 
-    assert char_embs.shape[0] == cooc.shape[0], \
-        f'{char_embs.shape[0]} != {cooc.shape[0]}'
-    assert char_embs.shape[1] == phone_embs.shape[1], \
-        f'{char_embs.shape[1]} != {phone_embs.shape[1]}'
-    assert limits.shape[0] -1 == cooc.shape[1], \
-        f'{limits.shape[0] - 1} != {cooc.shape[1]}'
+    assert cooc.shape[0] == len(char_embs), \
+        f'{cooc.shape[0]} != {len(char_embs)}'
     assert cooc.shape[1] == len(char_indeces), \
         f'{cooc.shape[1]} != {len(char_indeces)}'
+
+    embedding_size = char_embs.shape[1]
 
     a = numpy.tensordot(
         cooc,
@@ -114,15 +106,16 @@ def _update_phone_embs(
     if l2 > 0:
         a += (numpy.eye(a.shape[1], dtype=a.dtype) * l2)[None, :, :]
 
+    limits = numpy.cumsum([0] + [len(i) for i in char_indeces], dtype=numpy.int32)
+    phone_embs = numpy.empty((limits[-1], embedding_size), dtype=char_embs.dtype)
     for j, indeces in enumerate(char_indeces):
-        b = numpy.empty(
-            (len(indeces), phone_embs.shape[1]),
-            dtype=numpy.float32
-        )
+        b = numpy.empty((len(indeces), embedding_size), dtype=numpy.float32)
         for k, idx in enumerate(indeces):
             numpy.sum(char_embs[idx], axis=0, out=b[k])
 
         phone_embs[limits[j]:limits[j + 1]] = numpy.linalg.solve(a[j], b.T).T
+
+    return phone_embs
 
 def factorize(
     data: pandas.DataFrame,
@@ -152,7 +145,7 @@ def factorize(
     Returns:
         character_embeddings: 字向量，索引为字 ID
         phone_embeddings: 读音向量，每个方言的声韵调的每个取值均占一行，
-            索引为方言 ID、特征名（如声母）、取值的多级索引
+            索引为方言 ID、读音名（如声母）、取值的多级索引
 
     把方言读音独热编码的稀疏矩阵看成字向量和读音向量的乘积。交替固定读音向量或字向量，
     对另一向量实施线性回归求最小二乘解，迭代直到误差不再下降。求解时只考虑读音矩阵中有值的元素，
@@ -285,7 +278,6 @@ def factorize(
         f'tol = {tol}, L2 = {l2} ...'
     )
 
-    char_embs1 = char_embs[:char_pos1]
     cooc1 = cooc[:char_pos1, :dialect_pos1]
     limits1 = limits[:dialect_pos1 + 1]
     phone_indeces1 = phone_indeces[:char_pos1]
@@ -306,20 +298,17 @@ def factorize(
 
     prev_rmse = numpy.inf
     for it in range(max_iter):
-        _update_char_embs(
-            char_embs1,
-            phone_embs,
+        new_char_embs = _solve_char_embs(
             cooc1,
+            phone_embs,
             limits1,
             phone_indeces1,
             l2=l2
         )
 
-        _update_phone_embs(
-            char_embs1,
-            phone_embs,
+        new_phone_embs = _solve_phone_embs(
             cooc1,
-            limits1,
+            new_char_embs,
             char_indeces1,
             l2=l2
         )
@@ -340,9 +329,16 @@ def factorize(
 
         rmse = numpy.sqrt(numpy.sum(square_errors) / numpy.sum(counts))
         logger.debug(f'iteration {it + 1}: RMSE = {rmse}')
-        if (diff := prev_rmse - rmse) < tol:
+
+        improve = prev_rmse - rmse
+        if improve > 0:
+            # 仅当 RMSE 下降时更新向量
+            char_embs[:char_pos1] = new_char_embs
+            phone_embs[:limits[dialect_pos1]] = new_phone_embs
+
+        if improve < tol:
             # 本轮迭代 RMSE 比上轮下降小于指定阈值，认为已收敛，退出训练
-            logger.debug(f'{diff} < tol = {tol}, stop training.')
+            logger.debug(f'{improve} < tol = {tol}, stop training.')
             break
         else:
             prev_rmse = rmse
@@ -355,10 +351,9 @@ def factorize(
     # 计算剩余的字向量和读音向量
     if char_pos1 < char_num:
         logger.debug(f'updating rest {char_num - char_pos1} characters ...')
-        _update_char_embs(
-            char_embs[char_pos1:],
-            phone_embs,
+        char_embs[char_pos1:] = _solve_char_embs(
             cooc[char_pos1:, :dialect_pos1],
+            phone_embs,
             limits1,
             phone_indeces[char_pos1:],
             l2=l2
@@ -367,17 +362,15 @@ def factorize(
 
     if dialect_pos1 < dialect_num:
         logger.debug(f'updating rest {dialect_num - dialect_pos1} dialects ...')
-        _update_phone_embs(
-            char_embs,
-            phone_embs,
+        phone_embs[limits[dialect_pos1]:] = _solve_phone_embs(
             cooc[:, dialect_pos1:],
-            limits[dialect_pos1:],
+            char_embs,
             char_indeces[dialect_pos1:],
             l2=l2
         )
         logger.debug('done.')
 
-    # 根据方言 ID、方言特征生成读音向量索引
+    # 根据方言 ID、方言读音生成读音向量索引
     aug = pandas.concat(
         [pandas.concat(
             [pandas.DataFrame(index=c) for c in cat],
