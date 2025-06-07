@@ -294,7 +294,7 @@ def factorize(
             char_indeces1.append(indeces)
 
     else:
-        char_indeces1 = char_indeces
+        char_indeces1 = char_indeces[:dialect_pos1]
 
     prev_rmse = numpy.inf
     for it in range(max_iter):
