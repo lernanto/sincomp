@@ -9,7 +9,6 @@ __author__ = '黄艺华 <lernanto@foxmial.com>'
 
 import logging
 import numpy
-import pandas
 import sklearn.preprocessing
 
 
@@ -72,7 +71,7 @@ def _solve_char_embs(
 def _solve_phone_embs(
     cooc: numpy.ndarray[int],
     char_embs: numpy.ndarray[float],
-    char_indeces,
+    char_indeces: list[list[int]],
     l2: float = 0.0
 ) -> numpy.ndarray[float]:
     """
@@ -118,7 +117,7 @@ def _solve_phone_embs(
     return phone_embs
 
 def factorize(
-    data: pandas.DataFrame,
+    data: numpy.ndarray[str],
     embedding_size: int = 128,
     max_iter: int = 10,
     tol: float = 0.0001,
@@ -127,12 +126,18 @@ def factorize(
     min_dialects: float| int = 10,
     min_characters: float | int = 100,
     l2: float = 0.0001
-) -> tuple[pandas.DataFrame, pandas.DataFrame]:
+) -> tuple[
+    numpy.ndarray[float],
+    numpy.ndarray[float],
+    numpy.ndarray[str],
+    numpy.ndarray[str],
+    list[list[numpy.ndarray[str]]]
+]:
     """
     对方言字音矩阵实施矩阵分解，得到字向量和读音向量
 
     Parameters:
-        data: 方言字音数据长表，必须包含 did 列作为方言 ID、cid 列作为字 ID，其余列作为读音
+        data: 方言字音数据长表，第一列为方言 ID，第二列为字 ID，其余列为读音
         embedding_size: 字向量和读音向量的维数
         max_iter: 最大迭代轮数
         tol: 停止阈值，误差下降小于该值时停止训练
@@ -143,9 +148,12 @@ def factorize(
         l2: L2 正则化系数，0 表示不使用正则化
 
     Returns:
-        character_embeddings: 字向量，索引为字 ID
-        phone_embeddings: 读音向量，每个方言的声韵调的每个取值均占一行，
-            索引为方言 ID、读音名（如声母）、取值的多级索引
+        character_embeddings: 字向量
+        phone_embeddings: 读音向量，每个方言的声韵调的每个取值均占一行
+        characters: 字 ID 列表，顺序和 `character_embeddings` 相同
+        dialects: 方言 ID 列表，顺序和 `phones` 相同
+        phones: 读音取值列表，长度为方言数，每个元素又是读音的列表，长度为输入的读音列数，
+            每个元素是该读音的取值列表
 
     把方言读音独热编码的稀疏矩阵看成字向量和读音向量的乘积。交替固定读音向量或字向量，
     对另一向量实施线性回归求最小二乘解，迭代直到误差不再下降。求解时只考虑读音矩阵中有值的元素，
@@ -153,12 +161,14 @@ def factorize(
     为提高训练速度，第一阶段只训练满足最小覆盖率的字和方言，第二阶段再更新剩余的字和方言。
     """
 
-    phone_names = data.columns.drop(['did', 'cid'])
+    data = numpy.asarray(data, dtype=str)
 
     logger.debug('prepairing data for factorization ...')
 
-    dialects = data.groupby('did')['cid'].nunique()
-    chars = data.groupby('cid')['did'].nunique()
+    # 统计方言和字的出现频次
+    # TODO: 因为一个方言中一个字可能出现多次，这种情况下算出来的覆盖率会比实际高
+    dialects, dialect_counts = numpy.unique(data[:, 0], return_counts=True)
+    chars, char_counts = numpy.unique(data[:, 1], return_counts=True)
     dialect_num = dialects.shape[0]
     char_num = chars.shape[0]
 
@@ -172,16 +182,15 @@ def factorize(
         if isinstance(min_dialect_coverage, float):
             min_dialect_coverage = int(char_num * min_dialect_coverage)
 
-        aug = -dialects.values
+        aug = -dialect_counts
         idx = numpy.argsort(aug)
-        dialects = dialects.index[idx]
+        dialects = dialects[idx]
         dialect_pos1 = numpy.clip(
             numpy.searchsorted(aug[idx], -min_dialect_coverage, side='right'),
             min_dialects,
             dialect_num
         )
     else:
-        dialects = dialects.index
         dialect_pos1 = dialect_num
 
     if min_characters < char_num and min_character_coverage > 0:
@@ -189,47 +198,55 @@ def factorize(
         if isinstance(min_character_coverage, float):
             min_character_coverage = int(dialect_num * min_character_coverage)
 
-        aug = -chars.values
+        aug = -char_counts
         idx = numpy.argsort(aug)
-        chars = chars.index[idx]
+        chars = chars[idx]
         char_pos1 = numpy.clip(
             numpy.searchsorted(aug[idx], -min_character_coverage, side='right'),
             min_characters,
             char_num
         )
     else:
-        chars = chars.index
         char_pos1 = char_num
 
     # 对字 ID 和方言 ID 编码
     encoder = sklearn.preprocessing.OrdinalEncoder(
-        categories=[chars, dialects],
+        categories=[dialects, chars],
         dtype=numpy.int32
-    ).fit(data.iloc[:1][['cid', 'did']])
+    ).fit(data[:1, :2])
 
     # 生成临时变量，加快训练速度
-    categories = [None] * dialect_num
+    phones = [None] * dialect_num
     codes = [None] * dialect_num
     char_indeces = [None] * dialect_num
     limits = numpy.zeros(dialect_num + 1, dtype=numpy.int32)
 
-    for _, d in data.groupby('did'):
+    # 根据方言 ID 排序，每次处理一个方言
+    data = data[numpy.argsort(data[:, 0])]
+    begin = 0
+    while begin < data.shape[0]:
+        end = begin + numpy.searchsorted(
+            data[begin:, 0],
+            data[begin, 0],
+            side='right'
+        )
+
         phone_encoder = sklearn.preprocessing.OrdinalEncoder(dtype=numpy.int32)
         c = numpy.concatenate(
             [
-                encoder.transform(d[['cid', 'did']]),
-                phone_encoder.fit_transform(d[phone_names])
+                encoder.transform(data[begin:end, :2]),
+                phone_encoder.fit_transform(data[begin:end, 2:])
             ],
             axis=1
         )
-        j = c[0, 1]
-        categories[j] = phone_encoder.categories_
+        j = c[0, 0]
+        phones[j] = phone_encoder.categories_
         codes[j] = c
 
         indeces = []
         for k, cat in enumerate(phone_encoder.categories_):
             for l in range(cat.shape[0]):
-                indeces.append(c[c[:, 2 + k] == l, 0])
+                indeces.append(c[c[:, 2 + k] == l, 1])
         char_indeces[j] = indeces
 
         bases = numpy.cumsum(
@@ -241,13 +258,15 @@ def factorize(
         c[:, 2:] += bases[None, :]
         limits[j + 1] = sum([c.shape[0] for c in phone_encoder.categories_])
 
+        begin = end
+
     numpy.cumsum(limits, out=limits)
     phone_num = limits[-1]
 
     dialect_codes = []
     for j in range(dialect_pos1):
         c = codes[j]
-        dialect_codes.append(c[c[:, 0] < char_pos1])
+        dialect_codes.append(c[c[:, 1] < char_pos1])
 
     for j, c in enumerate(codes):
         c[:, 2:] += limits[j]
@@ -255,11 +274,11 @@ def factorize(
 
     # 字和方言点共现矩阵
     cooc = numpy.zeros((char_num, dialect_num), dtype=numpy.int8)
-    cooc[codes[:, 0], codes[:, 1]] = 1
+    cooc[codes[:, 1], codes[:, 0]] = 1
 
     phone_indeces = []
     for i in range(char_num):
-        idx = numpy.ravel(codes[codes[:, 0] == i, 2:])
+        idx = numpy.ravel(codes[codes[:, 1] == i, 2:])
         if dialect_pos1 < dialect_num:
             idx = idx[idx < limits[dialect_pos1]]
         phone_indeces.append(idx)
@@ -317,7 +336,7 @@ def factorize(
         square_errors = []
         counts = []
         for j, c in enumerate(dialect_codes):
-            error = char_embs[c[:, 0]] @ phone_embs[limits[j]:limits[j + 1]].T
+            error = char_embs[c[:, 1]] @ phone_embs[limits[j]:limits[j + 1]].T
             numpy.put_along_axis(
                 error,
                 c[:, 2:],
@@ -370,17 +389,4 @@ def factorize(
         )
         logger.debug('done.')
 
-    # 根据方言 ID、方言读音生成读音向量索引
-    aug = pandas.concat(
-        [pandas.concat(
-            [pandas.DataFrame(index=c) for c in cat],
-            axis=0,
-            keys=phone_names
-        ) for cat in categories],
-        axis=0,
-        keys=encoder.categories_[1]
-    ).rename_axis(['cid', 'phone', 'value'], axis=0)
-    return (
-        pandas.DataFrame(char_embs, index=encoder.categories_[0]),
-        pandas.DataFrame(phone_embs, index=aug.index)
-    )
+    return char_embs, phone_embs, chars, dialects, phones
