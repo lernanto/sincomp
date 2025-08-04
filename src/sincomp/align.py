@@ -180,8 +180,8 @@ def polyphone_distance(
     chars: numpy.ndarray[str],
     indices: numpy.ndarray[int],
     *matrices,
-    emb_size: int = 10,
-    metric: typing.Callable = sklearn.metrics.pairwise.paired_cosine_distances
+    emb_size: int = 32,
+    metric: typing.Callable = sklearn.metrics.pairwise.paired_euclidean_distances
 ) -> tuple[
     numpy.ndarray[int],
     numpy.ndarray[int],
@@ -278,8 +278,7 @@ def cluster(
     char_index2: numpy.ndarray[int],
     chars: numpy.ndarray[str],
     distances: numpy.ndarray[float],
-    max_distance: float = 10,
-    distance_threshold: float = 0.3,
+    distance_threshold: float = 10
 ) -> tuple[
     numpy.ndarray[int],
     numpy.ndarray[int],
@@ -293,7 +292,6 @@ def cluster(
         char_index1, char_index2: 指明后面的距离为数据集中各自哪个位置的字
         chars: 上述位置的字形
         distances: 上述位置的字在对应方言之间的距离
-        max_distance: 代表非常大的距离，使两个字不可能合为一类，应设置成远大于距离函数的最大值
         distance_threshold: 距离均值小于该值的两组字会合为一类
 
     Returns:
@@ -328,7 +326,8 @@ def cluster(
         idx = dist.index.union(dist.columns)
         dist = dist.reindex(idx).reindex(idx, axis=1)
         # 同个数据集的不同读音之间应设置非常大的距离，使算法不会把它们合并为一类
-        dist = dist.where(dist.notna(), dist.transpose()).fillna(max_distance)
+        dist = dist.where(dist.notna(), dist.transpose()) \
+            .fillna(numpy.finfo(numpy.float32).max)
 
         # 根据距离聚类
         cls = sklearn.cluster.AgglomerativeClustering(
@@ -353,7 +352,7 @@ def align(
         pandas.DataFrame,
         pandas.Series | numpy.ndarray[str] | None
     ]],
-    emb_size: int = 10
+    emb_size: int = 32
 ) -> list[pandas.DataFrame]:
     """
     根据读音对齐多个方言数据集中的多音字
@@ -496,7 +495,7 @@ def align_no_cid(
     traditional: numpy.ndarray[str] | pandas.Series | None,
     *datasets: list,
     na_threshold: float = 0.5,
-    emb_size: int = 10
+    emb_size: int = 32
 ) -> list[list[tuple[numpy.ndarray, numpy.ndarray[str], numpy.ndarray[str]]]]:
     """
     把没有字 ID 的数据集中的多音字对齐到基础数据集的字 ID
@@ -766,37 +765,50 @@ def evaluate(args: argparse.Namespace) -> None:
 
     logger.info(f'evaluating alignment accuracy of polyphones for {dataset.name} ...')
 
-    # 把数据集按方言点随机分成两份
-    dids1, dids2 = sklearn.model_selection.train_test_split(
-        dataset.dialect_ids,
-        test_size=0.5
-    )
-    data1, data2 = dataset.filter(dids1), dataset.filter(dids2)
+    rs = numpy.random.RandomState(30918341)
+    accuracies = []
 
-    chars = dataset.characters['character']
-    chars1, chars2 = align((data1, chars), (data2, chars))
+    for _ in range(5):
+        # 把数据集按方言点随机分成两份
+        dids1, dids2 = sklearn.model_selection.train_test_split(
+            dataset.dialect_ids,
+            test_size=0.5,
+            random_state=rs
+        )
+        data1, data2 = dataset.select(dids1), dataset.select(dids2)
 
-    # 统计对齐准确率
-    cids = chars[chars.duplicated(False)].index \
-        .intersection(chars1.index) \
-        .intersection(chars2.index)
-    labels1 = chars1.loc[cids, 'label']
-    labels2 = chars2.loc[cids, 'label']
-    acc = labels1 == labels2
+        chars = dataset.characters['character']
+        chars1 = chars.loc[data1.loc[:, 'cid'].dropna().unique()]
+        chars2 = chars.loc[data2.loc[:, 'cid'].dropna().unique()]
+        chars1, chars2 = align(
+            (data1, chars1),
+            (data2, chars2),
+            embedding_size=args.embedding_size
+        )
 
-    if not acc.all():
-        for i, r in dataset.characters.loc[cids[~acc.values]] \
-            .assign(label1=labels1, label2=labels2) \
-            .sort_values('character') \
-            .iterrows():
-            logger.info(
-                f'bad case: {i}: {r["character"]}, '
-                f'label1 = {r["label1"]}, label2 = {r["label2"]}'
-            )
+        # 统计对齐准确率
+        cids = chars[chars.duplicated(False)].index \
+            .intersection(chars1.index) \
+            .intersection(chars2.index)
+        labels1 = chars1.loc[cids, 'label']
+        labels2 = chars2.loc[cids, 'label']
+        acc = labels1 == labels2
 
-    acc = acc.astype(int)
-    print(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
+        if not acc.all():
+            for i, r in dataset.characters.loc[cids[~acc.values]] \
+                .assign(label1=labels1, label2=labels2) \
+                .sort_values('character') \
+                .iterrows():
+                logger.info(
+                    f'bad case: {i}: {r["character"]}, '
+                    f'label1 = {r["label1"]}, label2 = {r["label2"]}'
+                )
 
+        acc = acc.astype(int)
+        logger.info(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
+        accuracies.append(acc.mean())
+
+    print(f'accuracy = {numpy.mean(accuracies)}±{numpy.std(accuracies)}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('对齐指定的数据集生成新的汇总数据集')
@@ -812,7 +824,7 @@ if __name__ == '__main__':
         '-n',
         '--embedding-size',
         type=int,
-        default=10,
+        default=32,
         help='用于对齐多音字的字向量长度'
     )
     parser.add_argument(
