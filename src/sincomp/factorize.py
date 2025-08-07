@@ -9,7 +9,14 @@ __author__ = '黄艺华 <lernanto@foxmial.com>'
 
 import logging
 import numpy
+import pandas
+import sklearn.compose
+import sklearn.decomposition
+import sklearn.feature_extraction.text
+import sklearn.pipeline
 import sklearn.preprocessing
+
+from . import preprocess
 
 
 logger = logging.getLogger(__name__)
@@ -388,5 +395,89 @@ def factorize(
             l2=l2
         )
         logger.debug('done.')
+
+    return char_embs, phone_embs, chars, dialects, phones
+
+def factorize_svd(
+    data: numpy.ndarray[str],
+    embedding_size: int = 128,
+    min_dialect_coverage: float | int = 0.1
+) -> tuple[
+    numpy.ndarray[float],
+    numpy.ndarray[float],
+    numpy.ndarray[str],
+    numpy.ndarray[str],
+    list[list[numpy.ndarray[str]]]
+]:
+    """
+    使用 SVD 对方言字音矩阵分解
+
+    Parameters:
+        data: 方言字音数据长表，第一列为方言 ID，第二列为字 ID，其余列为读音
+        embedding_size: 字向量和读音向量的维数
+        min_dialect_coverage: 方言最小覆盖率，方言中至少覆盖该比例或数量的字才参与训练
+
+    Returns:
+        character_embeddings: 字向量
+        phone_embeddings: 读音向量，每个方言的声韵调的每个取值均占一行
+        characters: 字 ID 列表，顺序和 `character_embeddings` 相同
+        dialects: 方言 ID 列表，顺序和 `phones` 相同
+        phones: 读音取值列表，长度为方言数，每个元素又是读音的列表，长度为输入的读音列数，
+            每个元素是该读音的取值列表
+    """
+
+    data = numpy.asarray(data, dtype=str)
+    phone_num = data.shape[1] - 2
+    data = pandas.DataFrame(data, columns=['did', 'cid'] + list(range(phone_num)))
+
+    data = preprocess.transform(
+        data,
+        index='cid',
+        columns='did',
+        aggfunc=lambda x: ' '.join(x.dropna())
+    )
+
+    if isinstance(min_dialect_coverage, float):
+        min_coverage = data.shape[1] * min_dialect_coverage
+    else:
+        min_coverage = min_dialect_coverage * phone_num
+
+    mask = data.count(axis=1) >= min_coverage
+    data = data.loc[:, data[mask].count(axis=0) > 0].fillna('')
+
+    vectorizer = sklearn.feature_extraction.text.CountVectorizer(
+        lowercase=False,
+        tokenizer=str.split,
+        token_pattern=None,
+        stop_words=None,
+        binary=True,
+        dtype=numpy.int32
+    )
+    pipeline = sklearn.pipeline.make_pipeline(
+        sklearn.compose.make_column_transformer(
+            *[(vectorizer, i) for i in range(data.shape[1])]
+        ),
+        sklearn.decomposition.TruncatedSVD(embedding_size)
+    )
+    char_embs = pipeline.fit_transform(data[mask])
+    remainder = data[~mask]
+    if remainder.shape[0] > 0:
+        char_embs = numpy.concatenate(
+            [char_embs, pipeline.transform(remainder)],
+            axis=0
+        )
+
+    phone_embs = pipeline.steps[1][1].components_.T
+    chars = numpy.concatenate([data.index[mask].values, data.index[~mask].values])
+    dialects = data.columns.get_level_values(0).unique().values
+    phones = pandas.Series(
+        [t[1].get_feature_names_out() for t in pipeline.steps[0][1].transformers_],
+        index=data.columns
+    )
+    empty = numpy.empty(0, dtype=str)
+    phones = phones.unstack(fill_value=empty) \
+        .loc[dialects] \
+        .reindex(range(phone_num), axis=1, fill_value=empty) \
+        .apply(pandas.Series.to_list, axis=1).to_list()
 
     return char_embs, phone_embs, chars, dialects, phones
