@@ -31,13 +31,24 @@ class TestAlign(unittest.TestCase):
             data_dir=os.path.join(data_dir, 'custom_dataset2')
         )
 
-    def test_align(self):
-        chars1, chars2 = sincomp.align.align((self.data1, None), (self.data2, None))
-        self.assertEqual(chars1['label'].nunique(), chars1.shape[0])
-        self.assertEqual(chars2['label'].nunique(), chars2.shape[0])
-        cid = pandas.Index(chars1['label']).intersection(chars2['label'])
-        self.assertTrue((chars1.set_index('label')['simplified'].reindex(cid)
-            == chars2.set_index('label')['simplified'].reindex(cid)).all())
+    def test_align_svd(self):
+        chars, (charmap1, charmap2) = sincomp.align.align(
+            (self.data1, None),
+            (self.data2, None),
+            encoder='svd',
+            embedding_size=10
+        )
+        self.assertEqual(charmap1.nunique(), charmap1.shape[0])
+        self.assertEqual(charmap2.nunique(), charmap2.shape[0])
+
+    def test_align_fm(self):
+        chars, (charmap1, charmap2) = sincomp.align.align(
+            (self.data1, None),
+            (self.data2, None),
+            encoder='fm'
+        )
+        self.assertEqual(charmap1.nunique(), charmap1.shape[0])
+        self.assertEqual(charmap2.nunique(), charmap2.shape[0])
 
     def test_align_no_cid(self):
         chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
@@ -62,3 +73,7 @@ class TestAlign(unittest.TestCase):
         self.assertTrue(
             numpy.all(chars1.loc[labels][labels != None] == chars2[labels != None])
         )
+
+
+if __name__ == '__main__':
+    unittest.main()
