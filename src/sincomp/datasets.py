@@ -149,7 +149,8 @@ class Dataset:
                 .groupby('cid', sort=True, dropna=True).first()
         else:
             # 没有字 ID，按出现顺序编码
-            return data['character'].drop_duplicates().dropna().reset_index()
+            return data[['character']].dropna() \
+                .drop_duplicates(ignore_index=True)
 
     @property
     def data(self) -> pandas.DataFrame:
@@ -1085,7 +1086,7 @@ class MCPDictDataset(Dataset):
                 path,
                 dtype=str,
                 encoding='utf-8'
-            ).set_index('cid')
+            )
 
         except FileNotFoundError:
             # 缓存文件不存在，从方言读音数据统计字信息
@@ -1094,7 +1095,12 @@ class MCPDictDataset(Dataset):
 
             # 保存到缓存文件
             logger.debug(f'save dialect information to {path}')
-            characters.to_csv(path, encoding='utf-8', lineterminator='\n')
+            characters.to_csv(
+                path,
+                index=False,
+                encoding='utf-8',
+                lineterminator='\n'
+            )
 
             return characters
 
