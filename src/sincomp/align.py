@@ -22,7 +22,6 @@ import scipy.sparse
 import scipy.sparse.linalg
 import sklearn.cluster
 import sklearn.compose
-import sklearn.decomposition
 import sklearn.feature_extraction.text
 import sklearn.linear_model
 import sklearn.metrics
@@ -424,25 +423,26 @@ def annotate(
     return labels
 
 def align_no_cid(
-    base: scipy.sparse.csr_matrix | pandas.DataFrame,
+    base: pandas.DataFrame,
     simplified: numpy.ndarray[str] | pandas.Series,
     traditional: numpy.ndarray[str] | pandas.Series | None,
     *datasets: list,
-    na_threshold: float = 0.5,
-    emb_size: int = 32
+    encoder: str = 'svd',
+    embedding_size: int = 32
 ) -> list[list[tuple[numpy.ndarray, numpy.ndarray[str], numpy.ndarray[str]]]]:
     """
     把没有字 ID 的数据集中的多音字对齐到基础数据集的字 ID
 
     Parameters:
-        base: 基础数据集，每行代表一个字，多音字占多行
+        base: 基础数据集，为方言读音数据集长表，必须包含字段 did, cid, initial, final, tone
         simplified: base 中对应字的简体，多音字会出现多次。如类型为 pandas.Series，则索引为字 ID
         traditional: base 中对应字的繁体，为空的情况下只支持根据简体对齐
         datasets: 待对齐的无字 ID 数据集列表，每个元素为一个数据集，
             必须包含 did, initial, final, tone 字段
-        na_threshold: base 中有读音的比例超过该值的字才会用于训练向量编码器。
-            仅当 base 类型为 pandas.DataFrame 时有效，且无论是否参与训练编码器，最后所有字都会编码成字向量
-        emb_size: 指定编码字向量的大小
+        encoder: 求字向量算法：
+            - svd: SVD 矩阵分解
+            - mf: 带缺失值的矩阵分解
+        embedding_size: 指定编码字向量的大小
 
     Returns:
         result: 标注结果列表，长度和 dataset 相同，每个元素又是一个列表，长度为对应数据集的方言数。
@@ -455,22 +455,18 @@ def align_no_cid(
     先把基础数据集降维编码成字向量，在对每个数据集中每个方言应用 annotate 标注多音字。
     """
 
+    assert simplified is not None
+
     # 把基础数据集编码成字向量
-    mask = (base.isna().mean(axis=1) < na_threshold).values
-    matrix = sklearn.compose.make_column_transformer(*[(
-        sklearn.pipeline.make_pipeline(
-            sklearn.feature_extraction.text.CountVectorizer(
-                lowercase=False,
-                tokenizer=str.split,
-                token_pattern=None,
-                stop_words=None,
-                binary=True
-            ),
-            sklearn.preprocessing.Normalizer('l2')
-        ), i) for i in range(base.shape[1])]).fit_transform(base.fillna(''))
-    logger.debug(f'fit base dialect embeddings with {matrix[mask].shape} data.')
-    emb = sklearn.decomposition.TruncatedSVD(emb_size).fit(matrix[mask]) \
-        .transform(matrix)
+    fac = factorize.factorize_svd if encoder == 'svd' else factorize.factorize
+    char_embs, _, cids, _, _ = fac(
+        base.loc[:, ['did', 'cid', 'initial', 'final', 'tone']],
+        embedding_size=embedding_size
+    )
+
+    simplified = simplified.reindex(cids)
+    if traditional is not None:
+        traditional = traditional.reindex(cids)
 
     # 针对每个数据集中的每个方言标注多音字
     t2s = opencc.OpenCC('t2s')
@@ -498,9 +494,10 @@ def align_no_cid(
                     data_chars = trad
 
             l = annotate(
-                emb,
+                char_embs,
                 chars,
-                data[['initial', 'final', 'tone']].fillna(''),
+                data[['initial', 'final', 'tone']].dropna(axis=1, how='all') \
+                    .fillna(''),
                 data_chars.fillna('')
             )
             # 输入字表含有字 ID，把位置转成字 ID
@@ -542,6 +539,10 @@ def main(args: argparse.Namespace) -> None:
     dialects = pandas.concat(dialects, axis=0, keys=names) \
         .reset_index(names=['dataset', 'old_did'])
     dialects.set_index(dialects.index.astype(str).rename('did'), inplace=True)
+    dialect_map = pandas.Series(
+        dialects.index,
+        index=pandas.MultiIndex.from_frame(dialects[['dataset', 'old_did']])
+    )
 
     # 对齐多音字，生成旧字 ID 到新字 ID 的映射表
     names = [d.name for d, _ in withcid]
@@ -560,21 +561,20 @@ def main(args: argparse.Namespace) -> None:
         f'annotate datasets without characer ID: '
         f'{", ".join([d.name for d in nocid])} ...'
     )
+
+    # 把已对齐的数据集新的方言 ID 和字 ID，合并成一个数据集，作为基础数据集
     base = pandas.concat(
-        [preprocess.transform(
-            d.assign(cid=m.reindex(d.loc[:, 'cid']).values) \
-                .dropna(subset=['cid', 'did']),
-            index='cid',
-            columns='did',
-            values=['initial', 'final', 'tone'],
-            aggfunc=lambda x: ' '.join(x.dropna()) if x.count() > 0 else pandas.NA
-        ) for (d, _), m in zip(withcid, charmaps)],
-        axis=1
-    ).reindex(chars.index)
+        [d.loc[:, ['initial', 'final', 'tone']].assign(
+            did=dialect_map[n][d.loc[:, 'did']].values,
+            cid=charmap[n].reindex(d.loc[:, 'cid']).values
+        ) for (d, _), n in zip(withcid, names)],
+        axis=0,
+        ignore_index=True
+    ).dropna(subset=['did', 'cid', 'initial', 'final', 'tone'])
     label_list = align_no_cid(
         base,
         chars['simplified'],
-        chars['traditional'],
+        chars['traditional'] if chars['traditional'].notna().all() else None,
         *nocid
     )
 
@@ -594,10 +594,15 @@ def main(args: argparse.Namespace) -> None:
         ] \
             .dropna() \
             .sort_values(['simplified', 'traditional']) \
-            .drop_duplicates() \
-            .reset_index(drop=True) \
-            .rename_axis('cid')
-        unknown.index += chars.shape[0]
+            .drop_duplicates()
+        unknown.set_index(
+            pandas.Index(
+                range(chars.shape[0], chars.shape[0] + unknown.shape[0]),
+                dtype=str,
+                name='cid'
+            ),
+            inplace=True
+        )
         chars = pandas.concat([chars, unknown], axis=0)
 
         # 根据生成的字 ID 对原来缺失的字赋值
@@ -630,9 +635,6 @@ def main(args: argparse.Namespace) -> None:
     dialects.to_csv(path, encoding='utf-8', lineterminator='\n')
 
     # 把所有数据集中的所有有效数据映射到新方言 ID 和字 ID
-    dialect_map = dialects[['dataset', 'old_did']].reset_index() \
-        .set_index(['dataset', 'old_did'])['did']
-
     for (dataset, _), m in zip(withcid, charmaps):
         for did, data in dataset.items():
             did = dialect_map[(dataset.name, did)]

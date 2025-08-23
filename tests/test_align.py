@@ -50,21 +50,35 @@ class TestAlign(unittest.TestCase):
         self.assertEqual(charmap1.nunique(), charmap1.shape[0])
         self.assertEqual(charmap2.nunique(), charmap2.shape[0])
 
-    def test_align_no_cid(self):
+    def test_align_no_cid_svd(self):
         chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 
         result = sincomp.align.align_no_cid(
-            pandas.pivot_table(
-                self.data1.data,
-                values=['initial', 'final', 'tone'],
-                index='cid',
-                columns='did',
-                aggfunc='first'
-            ),
+            self.data1,
             chars1,
             None,
-            self.data2
+            self.data2,
+            encoder='svd'
+        )
+        self.assertEqual(len(result), 1)
+
+        labels, chars2, _ = result[0][0]
+        self.assertEqual(labels.shape[0], chars2.shape[0])
+        self.assertTrue(
+            numpy.all(chars1.loc[labels][labels != None] == chars2[labels != None])
+        )
+
+    def test_align_no_cid_fm(self):
+        chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
+            .dropna(subset='cid').set_index('cid')['character']
+
+        result = sincomp.align.align_no_cid(
+            self.data1,
+            chars1,
+            None,
+            self.data2,
+            encoder='fm'
         )
         self.assertEqual(len(result), 1)
 
