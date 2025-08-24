@@ -529,8 +529,8 @@ def main(args: argparse.Namespace) -> None:
         dialects.append(data.dialects)
 
         # 区分含有字 ID 的数据集和不含字 ID 的数据集
-        if (chars := data.characters).shape[0] > 0:
-            withcid.append((data, chars['character']))
+        if 'cid' in data.select(data.dialect_ids[:1]).columns:
+            withcid.append((data, data.characters['character']))
         else:
             nocid.append(data)
 
@@ -540,28 +540,21 @@ def main(args: argparse.Namespace) -> None:
     )
 
     dialects = pandas.concat(dialects, axis=0, keys=names) \
-        .reset_index(names=['dataset', 'original_did']) \
-        .rename_axis('did')
+        .reset_index(names=['dataset', 'old_did'])
+    dialects.set_index(dialects.index.astype(str).rename('did'), inplace=True)
 
     # 对齐多音字，生成旧字 ID 到新字 ID 的映射表
     names = [d.name for d, _ in withcid]
     logger.info(f'align datasets {", ".join(names)}...')
-    char_lists = align(*withcid, embedding_size=args.embedding_size)
+    chars, charmaps = align(*withcid, embedding_size=args.embedding_size)
 
+    chars = chars.set_index(chars.index.astype(str).rename('cid')) \
+        .rename(columns=dict(enumerate(names)))
     # 整合成一个总的新旧字 ID 映射表
-    charmap = pandas.concat(char_lists, axis=0, keys=names) \
-        .rename_axis(['dataset', 'cid'])
-
-    chars = pandas.pivot_table(
-        charmap.reset_index(names=['dataset', 'old_cid']),
-        values='old_cid',
-        index='label',
-        columns='dataset',
-        aggfunc='first'
-    ).reindex(names, axis=1)
-    chars.loc[:, ['simplified', 'traditional']] = charmap.sort_index() \
-        .groupby('label')[['simplified', 'traditional']].first()
-    chars.rename_axis('cid', inplace=True)
+    charmap = pandas.concat(charmaps, axis=0, keys=names) \
+        .astype(str) \
+        .rename_axis(['dataset', 'old_cid']) \
+        .rename('cid')
 
     logger.info(
         f'annotate datasets without characer ID: '
@@ -569,12 +562,13 @@ def main(args: argparse.Namespace) -> None:
     )
     base = pandas.concat(
         [preprocess.transform(
-            d.dropna(subset=['cid', 'did']).replace({'cid': c['label']}),
+            d.assign(cid=m.reindex(d.loc[:, 'cid']).values) \
+                .dropna(subset=['cid', 'did']),
             index='cid',
             columns='did',
             values=['initial', 'final', 'tone'],
             aggfunc=lambda x: ' '.join(x.dropna()) if x.count() > 0 else pandas.NA
-        ) for (d, _), c in zip(withcid, char_lists)],
+        ) for (d, _), m in zip(withcid, charmaps)],
         axis=1
     ).reindex(chars.index)
     label_list = align_no_cid(
@@ -636,13 +630,13 @@ def main(args: argparse.Namespace) -> None:
     dialects.to_csv(path, encoding='utf-8', lineterminator='\n')
 
     # 把所有数据集中的所有有效数据映射到新方言 ID 和字 ID
-    dialect_map = dialects[['dataset', 'original_did']].reset_index() \
-        .set_index(['dataset', 'original_did'])['did']
+    dialect_map = dialects[['dataset', 'old_did']].reset_index() \
+        .set_index(['dataset', 'old_did'])['did']
 
-    for (dataset, _), c in zip(withcid, char_lists):
+    for (dataset, _), m in zip(withcid, charmaps):
         for did, data in dataset.items():
             did = dialect_map[(dataset.name, did)]
-            data = data.assign(did=did, cid=data['cid'].map(c['label'])) \
+            data = data.assign(did=did, cid=data['cid'].map(m)) \
                 .reindex([
                     'did',
                     'cid',
@@ -712,25 +706,23 @@ def evaluate(args: argparse.Namespace) -> None:
         data1, data2 = dataset.select(dids1), dataset.select(dids2)
 
         chars = dataset.characters['character']
-        chars1 = chars.loc[data1.loc[:, 'cid'].dropna().unique()]
-        chars2 = chars.loc[data2.loc[:, 'cid'].dropna().unique()]
-        chars1, chars2 = align(
+        chars1 = chars.reindex(data1.loc[:, 'cid'].dropna().unique()).dropna()
+        chars2 = chars.reindex(data2.loc[:, 'cid'].dropna().unique()).dropna()
+        _, (chars1, chars2) = align(
             (data1, chars1),
             (data2, chars2),
             embedding_size=args.embedding_size
         )
 
         # 统计对齐准确率
-        cids = chars[chars.duplicated(False)].index \
-            .intersection(chars1.index) \
-            .intersection(chars2.index)
-        labels1 = chars1.loc[cids, 'label']
-        labels2 = chars2.loc[cids, 'label']
-        acc = labels1 == labels2
+        index = chars[chars.duplicated(False)].index
+        label1 = chars1.reindex(index, fill_value=-1)
+        label2 = chars2.reindex(index, fill_value=-1)
+        acc = ((label1 >= 0) & (label2 >= 0) & (label1 == label2))
 
         if not acc.all():
-            for i, r in dataset.characters.loc[cids[~acc.values]] \
-                .assign(label1=labels1, label2=labels2) \
+            for i, r in dataset.characters.loc[index[~acc.values]] \
+                .assign(label1=label1, label2=label2) \
                 .sort_values('character') \
                 .iterrows():
                 logger.info(
@@ -742,7 +734,7 @@ def evaluate(args: argparse.Namespace) -> None:
         logger.info(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
         accuracies.append(acc.mean())
 
-    print(f'accuracy = {numpy.mean(accuracies)}±{numpy.std(accuracies)}')
+    print(f'accuracy = {numpy.mean(accuracies):.4f}±{numpy.std(accuracies):.4f}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('对齐指定的数据集生成新的汇总数据集')
