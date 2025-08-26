@@ -26,7 +26,6 @@ import sklearn.feature_extraction.text
 import sklearn.linear_model
 import sklearn.metrics
 import sklearn.model_selection
-import sklearn.preprocessing
 import sklearn.pipeline
 import typing
 
@@ -383,20 +382,17 @@ def annotate(
 
     # 待标注数据编码为稀疏矩阵
     matrix = sklearn.compose.make_column_transformer(
-        *[(sklearn.pipeline.make_pipeline(
-            sklearn.feature_extraction.text.CountVectorizer(
-                lowercase=False,
-                tokenizer=str.split,
-                token_pattern=None,
-                stop_words=None,
-                binary=True
-            ),
-            sklearn.preprocessing.Normalizer('l2')
+        *[(sklearn.feature_extraction.text.CountVectorizer(
+            lowercase=False,
+            tokenizer=str.split,
+            token_pattern=None,
+            stop_words=None,
+            binary=True
         ), i) for i in range(data.shape[1])]
     ).fit_transform(data)
 
     # 标注基础数据集中的单音字及其位置
-    idx = chars[chars.groupby(chars).transform('count') == 1]
+    idx = chars[~chars.duplicated(False)]
     idx = pandas.Series(idx.index, index=idx).reindex(data_chars)
 
     # 单音字只有一个 ID，直接标注
@@ -445,7 +441,7 @@ def align_no_cid(
         embedding_size: 指定编码字向量的大小
 
     Returns:
-        result: 标注结果列表，长度和 dataset 相同，每个元素又是一个列表，长度为对应数据集的方言数。
+        results: 标注结果列表，长度和 datasets 相同，每个元素又是一个列表，长度为对应数据集的方言数。
             每个元素为如下三元组：
             - labels: 标注的字 ID 列表，长度等于该方言的记录数。内容为该数据集的每条记录对应 chars 中字的位置，
                 如 chars 为 pandas.Series，则为字 ID，如在 chars 中不存在该字形，则为 -1 或 None
@@ -471,7 +467,7 @@ def align_no_cid(
     # 针对每个数据集中的每个方言标注多音字
     t2s = opencc.OpenCC('t2s')
     s2t = opencc.OpenCC('s2t')
-    result = []
+    results = []
     for dataset in datasets:
         labels = []
         for data in dataset:
@@ -505,9 +501,9 @@ def align_no_cid(
                 l = numpy.where(l >= 0, chars.index[l].values, None)
             labels.append((l, sim.values, trad.values))
 
-        result.append(labels)
+        results.append(labels)
 
-    return result
+    return results
 
 
 def main(args: argparse.Namespace) -> None:
