@@ -692,6 +692,8 @@ def evaluate(args: argparse.Namespace) -> None:
     logger.info(f'evaluating alignment accuracy of polyphones for {dataset.name} ...')
 
     rs = numpy.random.RandomState(30918341)
+    chars = dataset.characters['character']
+    index = chars[chars.duplicated(False)].index
     accuracies = []
 
     for _ in range(5):
@@ -703,7 +705,6 @@ def evaluate(args: argparse.Namespace) -> None:
         )
         data1, data2 = dataset.select(dids1), dataset.select(dids2)
 
-        chars = dataset.characters['character']
         chars1 = chars.reindex(data1.loc[:, 'cid'].dropna().unique()).dropna()
         chars2 = chars.reindex(data2.loc[:, 'cid'].dropna().unique()).dropna()
         _, (chars1, chars2) = align(
@@ -713,7 +714,6 @@ def evaluate(args: argparse.Namespace) -> None:
         )
 
         # 统计对齐准确率
-        index = chars[chars.duplicated(False)].index
         label1 = chars1.reindex(index, fill_value=-1)
         label2 = chars2.reindex(index, fill_value=-1)
         acc = ((label1 >= 0) & (label2 >= 0) & (label1 == label2))
@@ -733,6 +733,37 @@ def evaluate(args: argparse.Namespace) -> None:
         accuracies.append(acc.mean())
 
     print(f'accuracy = {numpy.mean(accuracies):.4f}±{numpy.std(accuracies):.4f}')
+
+    accuracies = []
+
+    for _ in range(5):
+        # 把数据集按方言点随机分成两份
+        dids1, dids2 = sklearn.model_selection.train_test_split(
+            dataset.dialect_ids,
+            test_size=0.5,
+            random_state=rs
+        )
+        data1, data2 = dataset.select(dids1), dataset.select(dids2)
+
+        chars1 = chars.reindex(data1.loc[:, 'cid'].dropna().unique()).dropna()
+        results, = align_no_cid(data1, chars1, None, data2)
+        labels = numpy.concatenate([l for l, _, _ in results], axis=0)
+        data2 = data2.assign(label=labels)[data2.loc[:, 'cid'].isin(index)]
+        acc = data2['cid'] == data2['label']
+
+        if not acc.all():
+            for _, r in data2[~acc].sort_values(['did', 'character']).iterrows():
+                logger.info(
+                    f'bad case: {r["did"]} {r["character"]}, '
+                    f'cid = {r["cid"]}, label = {r["label"]}'
+                )
+
+        acc = acc.astype(int)
+        logger.info(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
+        accuracies.append(acc.mean())
+
+    print(f'accuracy = {numpy.mean(accuracies):.4f}±{numpy.std(accuracies):.4f}')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('对齐指定的数据集生成新的汇总数据集')
