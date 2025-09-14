@@ -746,7 +746,13 @@ def evaluate(args: argparse.Namespace) -> None:
         data1, data2 = dataset.select(dids1), dataset.select(dids2)
 
         chars1 = chars.reindex(data1.loc[:, 'cid'].dropna().unique()).dropna()
-        results, = align_no_cid(data1, chars1, None, data2)
+        results, = align_no_cid(
+            data1,
+            chars1,
+            None,
+            data2,
+            embedding_size=args.embedding_size
+        )
         labels = numpy.concatenate([l for l, _, _ in results], axis=0)
         data2 = data2.assign(label=labels)[data2.loc[:, 'cid'].isin(index)]
         acc = data2['cid'] == data2['label']
