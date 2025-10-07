@@ -3,6 +3,7 @@
 """
 预处理方言读音数据的功能函数
 
+- 基于线性分类器检测拉丁化转写类型
 - 基于正则表达式或 CRF 模型切分汉语音节声母、韵母、声调
 - 使用 KNN 算法填充读音缺失值
 """
@@ -15,15 +16,20 @@ import joblib
 import logging
 import numpy
 import pandas
+import os
 import re
 import sklearn.compose
 import sklearn.feature_extraction.text
 import sklearn.metrics
 
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logger.addHandler(logging.StreamHandler())
+
 try:
     from sklearn_crfsuite import CRF
 except ImportError:
-    logging.warning('''sklearn_crfsuite not found, CRF based parser is disabled. Run following command to install sklearn_crfsuite:
+    logger.warning('''sklearn_crfsuite not found, CRF based parser is disabled. Run following command to install sklearn_crfsuite:
         pip install sklearn-crfsuite''')
 
 from . import datasets
@@ -721,6 +727,68 @@ def transform(
         )
 
     return output
+
+
+class RomanizationClassifier:
+    """
+    拉丁化转写的读音的分类器
+
+    加载一个模型文件，该文件包含用于分类的词汇表、分类列表和权重
+    """
+
+    def __init__(self, path: str):
+        logger.debug(f'load romanization classifier model from {path}')
+        self.model = pandas.read_csv(path, index_col=0).astype(numpy.float32)
+        self.transfomer = sklearn.feature_extraction.text.CountVectorizer(
+            lowercase=False,
+            analyzer='char',
+            vocabulary=self.model.index,
+            dtype=numpy.float32
+        ).fit([''])
+
+    def predict(self, romanization: numpy.ndarray[str]) -> numpy.ndarray[str]:
+        """
+        对批量拉丁化转写的读音进行分类
+
+        Parameters:
+            romanization: 待分类的拉丁化转写读音列表
+
+        Returns:
+            labels: 分类结果列表，和 `romanization` 长度相同
+        """
+
+        features = self.transfomer.transform(romanization).todense()
+        return (features @ self.model).idxmax(axis=1).values
+
+    def __call__(
+        self,
+        romanization: str | numpy.ndarray[str]
+    ) -> str | numpy.ndarray[str]:
+        """
+        对单个或批量拉丁化转写的读音进行分类
+
+        Parameters:
+            romanization: 待分类的拉丁化转写读音，或读音列表
+
+        Returns:
+            labels: 分类结果，或分类结果列表，和 `romanization` 长度相
+        """
+
+        return self.predict([romanization])[0] if isinstance(romanization, str) \
+            else self.predict(romanization)
+
+# 自带模型支持输出如下分类：
+#   - IPA 国际音标
+#   - pinyin 汉语拼音转写的汉语
+#   - jyutping 粤拼转写的粤语
+#   - beh-oe-ji 白话字转写的闽南语
+#   - romaji 日语罗马字转写的日语
+#   - romaja 韩语罗马字转写的韩语
+#   - quoc ngu 国语字转写的越南语
+#   - other 其他
+get_romanization_type = RomanizationClassifier(
+    os.path.join(os.path.dirname(__file__), 'romanization_classifier.csv')
+)
 
 
 def str2fea(s: str) -> dict[str, str]:
