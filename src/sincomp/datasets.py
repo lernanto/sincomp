@@ -982,27 +982,36 @@ class MCPDictDataset(Dataset):
         dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
 
         # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
-        # 汉字音典数据包含历史拟音、域外方音和一些拼音方案，只取用国际音标注音的现代方言数据
+        # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据
         dialects = dialects[
             (dialects['文件格式'] != '漢典') \
-            & (~dialects['地圖集二分區'].isin(['歷史音', '現代標準漢語', '民族語', '域外方音', '戲劇'])) \
-            & (~dialects.index.str.match('^1[0-9]{3}') | dialects.index.isin([
-                '1935永明',
-                '1935南昌',
-                '1935醴陵',
-                '1935長沙',
-            ])) \
-            & (~dialects.index.isin([
-                '鄕音字類',
-                '淸末寧波',
-                '淸末溫州',
-                '訓詁諧音',
-                '湘音檢字',
-                '香港',
-                '臺灣'
-            ])) \
+            & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
             & ((path + os.sep + dialects.index + '.tsv').map(os.path.isfile))
         ]
+
+        # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
+        types = []
+        for did in dialects.index:
+            data = pandas.read_csv(
+                os.path.join(path, did + '.tsv'),
+                sep='\t',
+                usecols=[1],
+                dtype=str,
+                encoding='utf-8'
+            )
+
+            romanization = ''.join(
+                data.iloc[:, 0].str.extract(
+                    r'([^0-9]*)(?:[0-9][0-9a-z]*)?',
+                    expand=False
+                ).dropna()
+            )
+            rt = preprocess.get_romanization_type(romanization)
+            types.append(rt)
+            if rt != 'IPA':
+                logger.warning(f'skip {did} with romanization type {rt}')
+
+        dialects = dialects[numpy.asarray(types) == 'IPA']
 
         # 解析方言分类
         cat = dialects['地圖集二分區'].str.split('-')
