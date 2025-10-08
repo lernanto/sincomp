@@ -887,6 +887,141 @@ class MCPDictDataset(Dataset):
 
         return tm
 
+    def get_dialects(self, refresh: bool = False) -> pandas.DataFrame:
+        """
+        加载方言点信息并生成缓存文件
+
+        Parameters:
+            refresh: 强制重新生成缓存文件
+
+        Returns:
+            dialects: 方言点信息数据表
+
+        如果存在缓存文件且 `refresh` 为 False，从缓存文件读取方言点信息。
+        否则根据原始文件生成方言点信息，如果原始文件不存在，先从项目页面下载。
+        """
+
+        cache_path = os.path.join(self._cache_dir, '.dialects')
+        if os.path.isfile(cache_path) and not refresh:
+            # 缓存文件已存在且不强制刷新，从缓存文件读取方言信息
+            logger.info(f'load dialect information from cache file {cache_path} .')
+            dialects = pandas.read_csv(cache_path, encoding='utf-8', dtype={'did': str}) \
+                .set_index('did')
+
+        else:
+            prefix = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
+            if not os.path.isdir(prefix):
+                # 数据文件不存在，先从汉字音典项目页面下载
+                self.download(self._cache_dir)
+
+            fname = os.path.join(prefix, '_詳情.json')
+            logger.debug(f'load dialect information from {fname}')
+            dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
+
+            # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
+            # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据
+            dialects = dialects[
+                (dialects['文件格式'] != '漢典') \
+                & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
+                & ((prefix + os.sep + dialects.index + '.tsv').map(os.path.isfile))
+            ]
+
+            # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
+            types = []
+            for did in dialects.index:
+                data = pandas.read_csv(
+                    os.path.join(prefix, did + '.tsv'),
+                    sep='\t',
+                    usecols=[1],
+                    dtype=str,
+                    encoding='utf-8'
+                )
+
+                romanization = ''.join(
+                    data.iloc[:, 0].str.extract(
+                        r'([^0-9]*)(?:[0-9][0-9a-z]*)?',
+                        expand=False
+                    ).dropna()
+                )
+                rt = preprocess.get_romanization_type(romanization)
+                types.append(rt)
+                if rt != 'IPA':
+                    logger.warning(f'skip {did} with romanization type {rt}')
+
+            dialects = dialects[numpy.asarray(types) == 'IPA']
+
+            # 解析方言分类
+            cat = dialects['地圖集二分區'].str.split('-')
+            # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
+            dialects = dialects.assign(
+                group=cat.str[0].replace('鄕話', '鄉話'),
+                cluster=cat.str[1],
+                subcluster=cat.str[2]
+            )
+
+            mask = dialects['group'].str.endswith('官話') \
+                | dialects['group'].str.endswith('官话')
+            dialects.loc[mask, 'subgroup'] = dialects.loc[mask, 'group']
+            dialects.loc[mask, 'group'] = '官話'
+
+            # 原始分区不分平话和土话，根据子分区信息尽量分开
+            mask = dialects['group'] == '平話和土話'
+            dialects.loc[mask, 'group'] = numpy.where(
+                dialects.loc[mask, 'cluster'].isin(['桂南片', '桂北片']),
+                '平話',
+                '土話'
+            )
+
+            # 解析经纬度
+            dialects[['latitude', 'longitude']] = dialects['經緯度'].str.partition(',') \
+                .iloc[:, [2, 0]].astype(float, errors='ignore')
+
+            dialects = dialects.rename_axis('did').rename(columns={
+                '語言': 'name',
+                '簡稱': 'spot',
+                '省': 'province',
+                '市': 'city',
+                '縣': 'county',
+                '鎮': 'town',
+                '村': 'village',
+            })
+
+            # 把方言信息转换成简体中文
+            dialects.update(dialects[[
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot'
+            ]].map(opencc.OpenCC('t2s').convert, na_action='ignore'))
+
+            dialects = dialects.reindex([
+                'name',
+                'province',
+                'city',
+                'county',
+                'town',
+                'village',
+                'group',
+                'subgroup',
+                'cluster',
+                'subcluster',
+                'spot',
+                'latitude',
+                'longitude'
+            ], axis=1)
+
+            # 保存到缓存文件
+            logger.info(f'save dialect information to cache file {cache_path} .')
+            dialects.to_csv(cache_path, encoding='utf-8', lineterminator='\n')
+
+        return dialects
+
     @functools.cache
     def get_data(self, did: str) -> pandas.DataFrame:
         """
@@ -968,116 +1103,7 @@ class MCPDictDataset(Dataset):
 
     @functools.cached_property
     def dialects(self) -> pandas.DataFrame:
-        """
-        加载方言点信息并返回，如果文件不存在，先从项目页面下载。
-        """
-
-        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
-        if not os.path.isdir(path):
-            # 数据文件不存在，先从汉字音典项目页面下载
-            self.download(self._cache_dir)
-
-        fname = os.path.join(path, '_詳情.json')
-        logger.debug(f'load dialect information from {fname}')
-        dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
-
-        # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
-        # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据
-        dialects = dialects[
-            (dialects['文件格式'] != '漢典') \
-            & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
-            & ((path + os.sep + dialects.index + '.tsv').map(os.path.isfile))
-        ]
-
-        # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
-        types = []
-        for did in dialects.index:
-            data = pandas.read_csv(
-                os.path.join(path, did + '.tsv'),
-                sep='\t',
-                usecols=[1],
-                dtype=str,
-                encoding='utf-8'
-            )
-
-            romanization = ''.join(
-                data.iloc[:, 0].str.extract(
-                    r'([^0-9]*)(?:[0-9][0-9a-z]*)?',
-                    expand=False
-                ).dropna()
-            )
-            rt = preprocess.get_romanization_type(romanization)
-            types.append(rt)
-            if rt != 'IPA':
-                logger.warning(f'skip {did} with romanization type {rt}')
-
-        dialects = dialects[numpy.asarray(types) == 'IPA']
-
-        # 解析方言分类
-        cat = dialects['地圖集二分區'].str.split('-')
-        # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
-        dialects = dialects.assign(
-            group=cat.str[0].replace('鄕話', '鄉話'),
-            cluster=cat.str[1],
-            subcluster=cat.str[2]
-        )
-
-        mask = dialects['group'].str.endswith('官話') \
-            | dialects['group'].str.endswith('官话')
-        dialects.loc[mask, 'subgroup'] = dialects.loc[mask, 'group']
-        dialects.loc[mask, 'group'] = '官話'
-
-        # 原始分区不分平话和土话，根据子分区信息尽量分开
-        mask = dialects['group'] == '平話和土話'
-        dialects.loc[mask, 'group'] = numpy.where(
-            dialects.loc[mask, 'cluster'].isin(['桂南片', '桂北片']),
-            '平話',
-            '土話'
-        )
-
-        # 解析经纬度
-        dialects[['latitude', 'longitude']] = dialects['經緯度'].str.partition(',') \
-            .iloc[:, [2, 0]].astype(float, errors='ignore')
-
-        dialects = dialects.rename_axis('did').rename(columns={
-            '語言': 'name',
-            '簡稱': 'spot',
-            '省': 'province',
-            '市': 'city',
-            '縣': 'county',
-            '鎮': 'town',
-            '村': 'village',
-        })
-
-        # 把方言信息转换成简体中文
-        dialects.update(dialects[[
-            'province',
-            'city',
-            'county',
-            'town',
-            'village',
-            'group',
-            'subgroup',
-            'cluster',
-            'subcluster',
-            'spot'
-        ]].map(opencc.OpenCC('t2s').convert, na_action='ignore'))
-
-        return dialects.reindex([
-            'name',
-            'province',
-            'city',
-            'county',
-            'town',
-            'village',
-            'group',
-            'subgroup',
-            'cluster',
-            'subcluster',
-            'spot',
-            'latitude',
-            'longitude'
-        ], axis=1)
+        return self.get_dialects()
 
     @functools.cached_property
     def characters(self) -> pandas.DataFrame:
