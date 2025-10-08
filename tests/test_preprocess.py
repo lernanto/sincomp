@@ -7,6 +7,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import numpy
 import os
 import pandas
 import unittest
@@ -54,6 +55,43 @@ class TestPreprocess(unittest.TestCase):
             self.data.loc[:, 'cid'].value_counts().shape[0]
         )
         self.assertTrue(output.notna().any(axis=0).all())
+
+    def test_get_romanization_type(self):
+        self.assertIn(
+            sincomp.preprocess.get_romanization_type(
+                ''.join(
+                    self.data.loc[:, ['initial', 'final']].fillna('') \
+                        .apply(''.join, axis=1)
+                )
+            ),
+            (
+                'IPA',
+                'pinyin',
+                'jyutping',
+                'beh-oe-ji',
+                'romaji',
+                'romaja',
+                'quoc ngu',
+                'other'
+            )
+        )
+
+    def test_parse_str(self):
+        initial, final, tone = sincomp.preprocess.parse('xu533')
+        self.assertEqual(initial, 'x')
+        self.assertEqual(final, 'u')
+        self.assertEqual(tone, '533')
+
+    def test_parse_array(self):
+        segments = sincomp.preprocess.parse(['xu533', 'pu533'])
+        self.assertIsInstance(segments, numpy.ndarray)
+        self.assertListEqual(
+            segments.tolist(),
+            [
+                ['x', 'u', '533'],
+                ['p', 'u', '533']
+            ]
+        )
 
     def test_impute(self):
         data = sincomp.preprocess.transform(
