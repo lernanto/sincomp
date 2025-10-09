@@ -21,7 +21,6 @@ import opencc
 import operator
 import os
 import pandas
-import re
 import retry
 import sys
 import threading
@@ -856,13 +855,13 @@ class MCPDictDataset(Dataset):
         logger.info('done.')
 
     @functools.cached_property
-    def tone_map(self) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
+    def tone_map(self) -> pandas.DataFrame:
         """
         从方言详情提取声调调值和调类的映射表
 
         Returns:
-            tone_map: 方言 ID 到声调映射表的映射表，其值又是映射表的二元组，
-                前者为调号到调值的映射表，后者为调号到调类的映射表
+            tone_map: 方言 ID 到声调映射表的映射表，索引为方言 ID 和调号数字，
+                包含 tone 和 tone_category 两列
 
         如果文件不存在，先从项目页面下载。
         """
@@ -875,15 +874,20 @@ class MCPDictDataset(Dataset):
         fname = os.path.join(path, '_詳情.json')
         info = pandas.read_json(fname, orient='index', encoding='utf-8')
 
-        tm = {}
-        for i, m in info['聲調'].map(json.loads).items():
-            tone = {}
-            cat = {}
-            for k, v in m.items():
-                # 少数连读声调有特殊符号，暂时去除
-                tone[k] = re.sub(f'[^{"".join(preprocess._TONES)}]', '', v[0])
-                cat[k] = v[3]
-            tm[i] = tone, cat
+        tm = []
+        for t in info['聲調'].map(json.loads):
+            tm.append(
+                pandas.DataFrame(t, index=['tone', '', '', 'tone_category', '']) \
+                    .T[['tone', 'tone_category']]
+            )
+
+        tm = pandas.concat(tm, axis=0, keys=info.index)
+        # 少数连读声调有特殊符号，暂时去除
+        tm['tone'] = tm['tone'].str.replace(
+            f'[^{"".join(preprocess._TONES)}]',
+            '',
+            regex=True
+        )
 
         return tm
 
@@ -919,16 +923,18 @@ class MCPDictDataset(Dataset):
             dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
 
             # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
-            # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据
+            # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据，且必须有声调数据
             dialects = dialects[
                 (dialects['文件格式'] != '漢典') \
                 & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
+                & ((self.tone_map.groupby(level=0)['tone'].nunique() > 1) \
+                    .reindex(dialects.index, fill_value=False)) \
                 & ((prefix + os.sep + dialects.index + '.tsv').map(os.path.isfile))
             ]
 
-            # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
-            types = []
-            for did in dialects.index:
+            # 部分方言数据不适合批量处理，根据读音数据进一步过滤
+            keep = numpy.zeros(dialects.shape[0], dtype=bool)
+            for i, did in enumerate(dialects.index):
                 data = pandas.read_csv(
                     os.path.join(prefix, did + '.tsv'),
                     sep='\t',
@@ -936,19 +942,25 @@ class MCPDictDataset(Dataset):
                     dtype=str,
                     encoding='utf-8'
                 )
-
-                romanization = ''.join(
-                    data.iloc[:, 0].str.extract(
-                        r'([^0-9]*)(?:[0-9][0-9a-z]*)?',
-                        expand=False
-                    ).dropna()
+                segments = data.iloc[:, 0].str.extract(
+                    r'([^0-9]*)([0-9][0-9a-z]*)?',
+                    expand=False
                 )
-                rt = preprocess.get_romanization_type(romanization)
-                types.append(rt)
-                if rt != 'IPA':
+
+                # 只保留有声调的方言
+                if segments.iloc[:, 1].isna().all():
+                    logger.warning(f'skip {did} with no tone')
+
+                # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
+                elif (rt := preprocess.get_romanization_type(
+                    ''.join(segments.iloc[:, 0].dropna())
+                )) != 'IPA':
                     logger.warning(f'skip {did} with romanization type {rt}')
 
-            dialects = dialects[numpy.asarray(types) == 'IPA']
+                else:
+                    keep[i] = True
+
+            dialects = dialects[keep]
 
             # 解析方言分类
             cat = dialects['地圖集二分區'].str.split('-')
@@ -1067,9 +1079,8 @@ class MCPDictDataset(Dataset):
         ).iloc[:, :2]
 
         # 汉字音典的原始读音标注的是调号，根据方言详情映射成调值和调类
-        tone, cat = self.tone_map[did]
-        data['tone'] = seg.iloc[:, 1].map(tone)
-        data['tone_category'] = seg.iloc[:, 1].map(cat)
+        data[['tone', 'tone_category']] = self.tone_map.loc[did] \
+            .reindex(seg.iloc[:, 1]).values
 
         # 删除声韵调均为空的记录
         data.dropna(
