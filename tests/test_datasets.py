@@ -502,10 +502,9 @@ class TestMCPDictDataset(unittest.TestCase):
 
     def test_tone_map(self):
         tone_map = self.dataset.tone_map
-        self.assertIsInstance(tone_map, dict)
-        self.assertSetEqual(set(tone_map.keys()), {'無極', '趙縣'})
-        self.assertEqual(len(tone_map['無極']), 2)
-        self.assertIsInstance(tone_map['無極'][0], dict)
+        self.assertIsInstance(tone_map, pandas.DataFrame)
+        self.assertListEqual(tone_map.index.levels[0].tolist(), ['無極', '趙縣'])
+        self.assertTupleEqual(tone_map.loc['無極'].shape, (5, 2))
 
     def test_get_data(self):
         data = self.dataset.get_data('無極')
