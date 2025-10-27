@@ -164,8 +164,13 @@ if __name__ == '__main__':
     encoder = sklearn.preprocessing.LabelEncoder()
     rules['feature_id'] = encoder.fit_transform(rules['feature'])
 
+    data = dataset.data
+    if 'cid' not in data.columns:
+        # 没有字 ID 的数据集使用字形作为 ID
+        data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
+
     data = preprocess.transform(
-        dataset.data,
+        data,
         index='cid',
         columns='did',
         values=encoder.classes_,
