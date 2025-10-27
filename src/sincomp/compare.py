@@ -180,6 +180,10 @@ if __name__ == '__main__':
     rules['feature_id'] = encoder.fit_transform(rules['feature'])
 
     data = dataset.data
+    if 'cid' not in data.columns:
+        # 没有字 ID 的数据集使用字形作为 ID
+        data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
+
     if args.min_coverage > 0:
         # 删除方言覆盖率小于阈值的字
         data = data[data.groupby('cid')['did'].transform('nunique') \
