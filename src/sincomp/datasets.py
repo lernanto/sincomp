@@ -925,8 +925,7 @@ class MCPDictDataset(Dataset):
             # 汉典的方言数据实际来自小学堂，已收录在小学堂数据集，此处剔除
             # 汉字音典数据包含历史拟音、域外方音等，只取用现代方言数据，且必须有声调数据
             dialects = dialects[
-                (dialects['文件格式'] != '漢典') \
-                & (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
+                (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
                 & ((self.tone_map.groupby(level=0)['tone'].nunique() > 1) \
                     .reindex(dialects.index, fill_value=False)) \
                 & ((prefix + os.sep + dialects.index + '.tsv').map(os.path.isfile))
@@ -1078,9 +1077,14 @@ class MCPDictDataset(Dataset):
             preprocess.clean_ipa(seg.iloc[:, 0], force=True)
         ).iloc[:, :2]
 
-        # 汉字音典的原始读音标注的是调号，根据方言详情映射成调值和调类
-        data[['tone', 'tone_category']] = self.tone_map.loc[did] \
-            .reindex(seg.iloc[:, 1]).values
+        if did == '郎溪':
+            # 该方言数据直接标注调值而非调号，特殊处理
+            data['tone'] = seg.iloc[:, 1]
+            data['tone_category'] = pandas.NA
+        else:
+            # 汉字音典的原始读音标注的是调号，根据方言详情映射成调值和调类
+            data[['tone', 'tone_category']] = \
+                self.tone_map.loc[did].reindex(seg.iloc[:, 1]).values
 
         # 删除声韵调均为空的记录
         data.dropna(
