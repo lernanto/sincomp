@@ -483,7 +483,8 @@ class FileDataset(Dataset):
         if self._character_file is None:
             return super().characters
         else:
-            return pandas.read_csv(self._character_file, dtype=str)
+            return pandas.read_csv(self._character_file, dtype=str) \
+                .set_index('cid')
 
 
 class CCRDataset(Dataset):
