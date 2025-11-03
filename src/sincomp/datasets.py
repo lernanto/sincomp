@@ -963,7 +963,7 @@ class MCPDictDataset(Dataset):
             dialects = dialects[keep]
 
             # 解析方言分类
-            cat = dialects['地圖集二分區'].str.split('-')
+            cat = dialects['地圖集二分區'].str.split('－')
             # 乡话使用了异体字，OpenCC 无法转成简体，特殊处理
             dialects = dialects.assign(
                 group=cat.str[0].replace('鄕話', '鄉話'),
