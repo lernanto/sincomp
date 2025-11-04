@@ -14,10 +14,10 @@ from cartopy.io.shapereader import Reader
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 
 import sincomp.datasets
-import sincomp.compare
 import sincomp.plot
 
 
@@ -139,33 +139,21 @@ if __name__ == '__main__':
         type=float_array,
         help='绘制范围的经纬度，为半角逗号分隔的4个实数'
     )
-    parser.add_argument('-o', '--output-prefix', help='输出路径前缀')
+    parser.add_argument('-o', '--output-prefix', default='', help='输出路径前缀')
     parser.add_argument('-f', '--format', default='png', help='保存的图片格式')
-    parser.add_argument('data', help='规则符合度数据文件')
-    parser.add_argument('rule_file', nargs='?', help='语音规则文件')
-    parser.add_argument(
-        'dataset',
-        nargs='?',
-        default='zhongguoyuyan',
-        help='计算规则符合度使用的数据集'
-    )
+    parser.add_argument('-r', '--rule-file', help='语音规则文件')
+    parser.add_argument('data', nargs='+', help='前面为数据集列表，后面为对应的规则符合度文件列表')
     args = parser.parse_args()
 
-    output_prefix = args.dataset + '_' if args.output_prefix is None \
-        else args.output_prefix
+    output_prefix = os.path.join(os.getcwd(), args.output_prefix)
     logging.info(
-        f'create isogloss, data = {args.data}, dataset = {args.dataset}, '
-        f'rules = {args.rule_file}, output prefix = {output_prefix}.'
+        f'create isogloss, rules = {args.rule_file}, '
+        f'output prefix = {output_prefix}.'
     )
 
     bg = None if args.background is None else plt.imread(args.background)
     geo = None if args.geography is None \
         else tuple(Reader(args.geography).geometries())
-    dialects = sincomp.datasets.get(args.dataset).dialects
-
-    logging.info(f'loading data from {args.data} ...')
-    data = pd.read_csv(args.data, dtype={'did': str}).set_index('did')
-    logging.info(f'done. loaded {data.shape[0]} dialects x {data.shape[1]} rules.')
 
     if args.rule_file is not None:
         rules = pd.read_json(args.rule_file, orient='records', encoding='utf-8')
@@ -173,15 +161,28 @@ if __name__ == '__main__':
             rules.set_index('id', inplace=True)
         rules.set_index(rules.index.astype(str), inplace=True)
 
+    n = len(args.data) // 2
+    datasets = [sincomp.datasets.get(d) for d in args.data[:n]]
+    names = [d.name for d in datasets]
+    dialects = pd.concat([d.dialects for d in datasets], axis=0, keys=names)
+    data = pd.concat(
+        [pd.read_csv(f, dtype={'did': str}).set_index('did') for f in args.data[n:]],
+        axis=0,
+        keys=names
+    )
+    logging.info(f'loaded {data.shape[0]} dialects x {data.shape[1]} rules.')
+
+    os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
+
     columns = data.columns
     data[['latitude', 'longitude']] = dialects[['latitude', 'longitude']]
 
     for c in columns:
         if args.rule_file is None:
-            fname = f'{output_prefix}{c}.{args.format}'
+            path = f'{output_prefix}{c}.{args.format}'
         else:
-            fname = f'{output_prefix}{c}_{rules.at[c, "name"]}.{args.format}'
-        logging.info(f'creating {fname} ...')
+            path = f'{output_prefix}{c}_{rules.at[c, "name"]}.{args.format}'
+        logging.info(f'creating {path} ...')
 
         fig = plt.figure(figsize=args.size)
         isogloss(
@@ -193,7 +194,7 @@ if __name__ == '__main__':
             geo=geo,
             extent=args.extent
         )
-        fig.savefig(fname, format=args.format, bbox_inches='tight')
+        fig.savefig(path, format=args.format, bbox_inches='tight')
         plt.close()
 
     logging.info(f'done. totally {len(columns)} isoglosses created.')
