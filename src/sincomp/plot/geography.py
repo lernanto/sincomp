@@ -292,7 +292,7 @@ def _isogloss(
 
     if clip is not None:
         # 根据传入的图形裁剪等值线图
-        clip_paths(cs.collections, clip, extent=extent)
+        clip_paths(cs, clip, extent=extent)
 
     return ax, cs
 
