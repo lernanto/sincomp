@@ -1803,7 +1803,7 @@ class ZhongguoyuyanDataset(Dataset):
             'note'
         ]]
 
-    @property
+    @functools.cached_property
     def dialect_ids(self) -> list[str]:
         """
         从方言调查点信息文件获取方言 ID 列表，如果文件不存在，先从网站下载
