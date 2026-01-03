@@ -92,12 +92,10 @@ def compliance(
         code1 = numpy.empty((rule.shape[0], code.shape[1]), dtype=dtype)
         code2 = numpy.empty((rule.shape[0], code.shape[1]), dtype=dtype)
         for i, (_, r) in enumerate(rule.iterrows()):
-            code1[i] = numpy.asarray(
-                code[data.index.get_indexer(r['cid1'])].sum(axis=0)
-            )[0]
-            code2[i] = numpy.asarray(
-                code[data.index.get_indexer(r['cid2'])].sum(axis=0)
-            )[0]
+            idx1 = data.index.get_indexer(r['cid1'])
+            code1[i] = numpy.asarray(code[idx1[idx1 >= 0]].sum(axis=0))[0]
+            idx2 = data.index.get_indexer(r['cid2'])
+            code2[i] = numpy.asarray(code[idx2[idx2 >= 0]].sum(axis=0))[0]
 
         # 计算读音分布相似度，对读音向量分别归一化后内积
         sim = numpy.empty((feature_data.shape[1], rule.shape[0]), dtype=dtype)
