@@ -19,7 +19,7 @@ if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
 
 
-def load_rule(fname, characters=None):
+def load_rules(fname, characters=None):
     """
     加载语音规则.
 
@@ -28,22 +28,16 @@ def load_rule(fname, characters=None):
         characters (`pandas.Series`): 字 ID 到字的映射表，用于显示
 
     Returns:
-        rules (`pandas.DataFrame`): 语音规则表，每行对应一对同音字集
+        rules (`pandas.DataFrame`): JSON 格式的语音规则表
     """
 
-    rules = pandas.read_csv(
-        fname,
-        converters={'cid1': str.split, 'cid2': str.split},
-        comment='#'
-    )
+    rules = pandas.read_json(fname, orient='records', encoding='utf-8')
+    rules['id'] = rules.get('id')
+    rules['id'] = rules['id'].fillna(rules.index.to_series()).astype(str)
+    rules.set_index('id', inplace=True)
+    logger.debug(f'loaded {len(rules)} rules from {fname} .')
 
-    if characters is None:
-        rules['name'] = rules['feature'] + ':' \
-            + rules['cid1'].str[0].astype(str) + '=' \
-            + rules['cid2'].str[0].astype(str)
-    else:
-        rules['name'] = characters[rules['cid1'].str[0]].values \
-            + '=' + characters[rules['cid2'].str[0]].values
+    if characters is not None:
         rules['char1'] = rules['cid1'].apply(lambda x: ''.join(characters[x]))
         rules['char2'] = rules['cid2'].apply(lambda x: ''.join(characters[x]))
 
@@ -160,12 +154,7 @@ if __name__ == '__main__':
         f'norm = {args.norm}, output = {output}'
     )
 
-    rules = pandas.read_json(args.rule_file, orient='records', encoding='utf-8')
-    logger.info(f'loaded {len(rules)} rules from {args.rule_file} .')
-
-    if 'id' in rules.columns:
-        rules.set_index('id', inplace=True)
-
+    rules = load_rules(args.rule_file)
     encoder = sklearn.preprocessing.LabelEncoder()
     rules['feature_id'] = encoder.fit_transform(rules['feature'])
 
