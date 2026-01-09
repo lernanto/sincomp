@@ -18,7 +18,7 @@ import sincomp.datasets
 import sincomp.preprocess
 from sklearn.compose import make_column_transformer
 from sklearn.impute import KNNImputer
-from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.pipeline import Pipeline, make_pipeline
@@ -64,65 +64,58 @@ def train_classifier(
     compliances = []
     indeces = []
     for d, a in annotations.groupby('dataset', sort=False):
-        dataset = sincomp.datasets.get(d).select(a['did'])
+        data = sincomp.datasets.get(d).select(a['did']).data
 
-        d = dataset.data
-        if 'cid' not in d.columns:
-            d = d.rename(columns={'character': 'cid'}).dropna(subset='cid')
+        if 'cid' not in data.columns:
+            data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
 
         indeces.extend(a.index)
-        data = [d]
+        new_data = [data]
 
         if resample > 0:
             # 对方言字音重采样，作为样本增强，增加模型稳定性
             indeces.extend(a.index.repeat(resample))
-            for did, d in dataset.items():
-                if 'cid' not in d.columns:
-                    d = d.rename(columns={'character': 'cid'}).dropna(subset='cid')
-
-                n = int(np.clip(samples, min_rate * d.shape[0], max_rate * d.shape[0]))
+            for did, d in data.groupby('did', sort=False):
+                n = int(np.clip(
+                    samples,
+                    min_rate * d.shape[0],
+                    max_rate * d.shape[0]
+                ))
                 for i in range(resample):
-                    data.append(d.sample(n).assign(did=f'{did}_{i}'))
+                    new_data.append(d.sample(n).assign(did=f'{did}_{i}'))
 
-        data = sincomp.preprocess.transform(
-            pd.concat(data, axis=0, ignore_index=True),
+        new_data = sincomp.preprocess.transform(
+            pd.concat(new_data, axis=0, ignore_index=True),
             index='cid',
             columns='did',
             values=feature_names,
             aggfunc=lambda x: ' '.join(x.dropna())
         )
-        compliances.append(sincomp.compare.compliance(data, rules))
+        compliances.append(sincomp.compare.compliance(new_data, rules))
 
     compliances = pd.concat(compliances, axis=0)
     annotations = annotations.loc[indeces]
 
     clf = make_pipeline(
+        make_column_transformer(('passthrough', compliances.columns)),
+        # 使用 KNN 算法填充特征中的缺失值
         KNNImputer(),
+        # 训练线性分类模型，使用交叉验证来搜索最优超参
         LogisticRegressionCV(
             Cs=np.power(2.0, np.arange(-4, 5, 0.5)),
             fit_intercept=False,
-            cv=StratifiedGroupKFold().split(
+            cv=list(StratifiedGroupKFold().split(
                 compliances,
                 annotations['stratefy'],
                 annotations['group']
-            ),
+            )),
             penalty='l1',
-            solver='saga',
-            refit=False
-        )
-    ).fit(compliances, annotations['label'])
-    logger.debug(f'best C = {clf.steps[-1][1].C_[0]:.4f}')
-
-    return make_pipeline(
-        make_column_transformer(('passthrough', compliances.columns)),
-        KNNImputer(),
-        LogisticRegression(
-            penalty='l1',
-            C=clf.steps[-1][1].C_[0],
-            fit_intercept=False,
             solver='saga'
         )
     ).fit(compliances, annotations['label'])
+
+    logger.debug(f'best C = {clf.steps[-1][1].C_[0]:.4f}')
+    return clf
 
 def train(args: argparse.Namespace) -> None:
     """
