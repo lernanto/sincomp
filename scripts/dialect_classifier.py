@@ -216,45 +216,54 @@ def predict(args: argparse.Namespace) -> None:
     """
 
     logger.debug(
-        f'predict dialect class, model file = {args.model.name}, '
-        f'rule file = {args.rule_file.name}, input file = {args.input.name}, '
+        f'predict dialect class, model file = {args.model_file}, '
+        f'rule file = {args.rule_file}, input file = {args.input.name}, '
         f'output file = {args.output.name}'
     )
 
-    clf = joblib.load(args.model)
-    rules = sincomp.compare.load_rules(args.rule_file)
-    inputs = pd.read_csv(
-        args.input,
-        dtype=str,
-        comment='#',
-        encoding='utf-8'
-    )
+    clf = joblib.load(args.model_file)
+    if args.precomputed:
+        # 从预计算的文件加载方言对规则的符合度
+        compliances = pd.read_csv(args.input, dtype={'dataset': str, 'did': str})
+        samples = compliances.pop('did').to_frame()
+        if 'dataset' in compliances.columns:
+            samples.insert(0, 'dataset', compliances.pop('dataset'))
 
-    feature_names = rules['feature'].unique().tolist()
-    compliances = []
-    indeces = []
-    for d, i in inputs.groupby('dataset', sort=False):
-        data = sincomp.datasets.get(d).select(i['did']).data
-        if 'cid' not in data.columns:
-            data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
-
-        data = sincomp.preprocess.transform(
-            data,
-            index='cid',
-            columns='did',
-            values=feature_names,
-            aggfunc=lambda x: ' '.join(x.dropna())
+    else:
+        # 根据规则计算方言对规则符合度
+        rules = sincomp.compare.load_rules(args.rule_file)
+        samples = pd.read_csv(
+            args.input,
+            dtype=str,
+            comment='#',
+            encoding='utf-8'
         )
-        compliances.append(sincomp.compare.compliance(data, rules))
-        indeces.extend(i.index)
 
-    compliances = pd.concat(compliances, axis=0)
+        feature_names = rules['feature'].unique().tolist()
+        compliances = []
+        for d, i in samples.groupby('dataset', sort=False):
+            data = sincomp.datasets.get(d).select(i['did']).data
+            if 'cid' not in data.columns:
+                data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
+
+            data = sincomp.preprocess.transform(
+                data,
+                index='cid',
+                columns='did',
+                values=feature_names,
+                aggfunc=lambda x: ' '.join(x.dropna())
+            )
+            compliances.append(
+                sincomp.compare.compliance(data, rules).set_index(i.index)
+            )
+
+        compliances = pd.concat(compliances, axis=0).loc[samples.index]
+
     probs = pd.DataFrame(
         clf.predict_proba(compliances),
-        index=indeces,
         columns=clf.steps[-1][1].classes_
     )
-    pd.concat([inputs, probs], axis=1).to_csv(args.output, index=False)
+    pd.concat([samples, probs], axis=1).to_csv(args.output, index=False)
 
 
 if __name__ == '__main__':
@@ -266,7 +275,10 @@ if __name__ == '__main__':
     )
     subparsers = parser.add_subparsers()
 
-    train_parser = subparsers.add_parser('train', help=train.__doc__)
+    train_parser = subparsers.add_parser(
+        'train', help=train.__doc__,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     train_parser.add_argument(
         '--resample',
         type=int,
@@ -302,7 +314,10 @@ if __name__ == '__main__':
     )
     train_parser.set_defaults(func=train)
 
-    validate_parser = subparsers.add_parser('validate', help=validate.__doc__)
+    validate_parser = subparsers.add_parser(
+        'validate', help=validate.__doc__,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     validate_parser.add_argument(
         '--resample',
         type=int,
@@ -332,34 +347,32 @@ if __name__ == '__main__':
     )
     validate_parser.set_defaults(func=validate)
 
-    predict_parser = subparsers.add_parser('predict', help=predict.__doc__)
+    predict_parser = subparsers.add_parser(
+        'predict', help=predict.__doc__,
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    predict_parser.add_argument(
+        '-p',
+        '--precomputed',
+        action='store_true',
+        default=False,
+        help='输入文件为预先计算的规则符合度，CSV 格式，每行为一个方言，每列为一条规则'
+    )
     predict_parser.add_argument(
         '-m',
-        '--model',
+        '--model-file',
         default='dialect_classifier.bz2',
-        type=argparse.FileType('rb'),
         help='模型文件'
     )
     predict_parser.add_argument(
         '-r',
-        '--rule_file',
-        type=argparse.FileType('r', encoding='utf-8'),
+        '--rule-file',
         help='''
         用于训练的规则文件，为 JSON 格式，为规则的数组，每条规则包含如下字段：
             - id 可选，规则 ID，缺失时以序号为 ID
             - name 可选，规则名
             - cid1 用于对比的字集1，为字 ID 的数组
             - cid2 用于对比的字集2，为字 ID 的数组
-        '''
-    )
-    predict_parser.add_argument(
-        '-o',
-        '--output',
-        default='-',
-        type=argparse.FileType('w'),
-        help='''
-        输出文件，为 CSV 格式，每行对应输入文件的一行，除包含输入文件的所有字段外，
-        还新增若干字段，每个字段对应一个方言分类，为方言属于该分类的概率
         '''
     )
     predict_parser.add_argument(
@@ -371,6 +384,16 @@ if __name__ == '__main__':
         待分类方言输入文件，为 CSV 格式，每行为一个方言样本，包含如下字段：
             - dataset 样本所属数据集
             - did 方言 ID
+        '''
+    )
+    predict_parser.add_argument(
+        'output',
+        nargs='?',
+        default='-',
+        type=argparse.FileType('w'),
+        help='''
+        输出文件，为 CSV 格式，每行对应输入文件的一行，除包含输入文件的所有字段外，
+        还新增若干字段，每个字段对应一个方言分类，为方言属于该分类的概率
         '''
     )
     predict_parser.set_defaults(func=predict)
