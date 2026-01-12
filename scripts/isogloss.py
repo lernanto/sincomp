@@ -17,8 +17,12 @@ import numpy as np
 import os
 import pandas as pd
 
+import sincomp.compare
 import sincomp.datasets
 import sincomp.plot
+
+
+logger = logging.getLogger(__name__)
 
 
 def isogloss(
@@ -120,10 +124,14 @@ def isogloss(
 def float_array(s):
     return [float(i) for i in s.split(',')]
 
-if __name__ == '__main__':
-    logging.getLogger().setLevel(logging.INFO)
 
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(globals().get('__doc__'))
+    parser.add_argument(
+        '--log-level',
+        default='WARNING',
+        help='输出日志级别'
+    )
     parser.add_argument(
         '-s',
         '--size',
@@ -141,13 +149,31 @@ if __name__ == '__main__':
     )
     parser.add_argument('-o', '--output-prefix', default='', help='输出路径前缀')
     parser.add_argument('-f', '--format', default='png', help='保存的图片格式')
-    parser.add_argument('-r', '--rule-file', help='语音规则文件')
-    parser.add_argument('data', nargs='+', help='前面为数据集列表，后面为对应的规则符合度文件列表')
+    parser.add_argument(
+        '-r',
+        '--rule-file',
+        help='语音规则文件，为 JSON 格式，为规则的列表'
+    )
+    parser.add_argument(
+        'input_file',
+        nargs='?',
+        type=argparse.FileType('r', encoding='utf-8'),
+        default='-',
+        help='''
+        输入文件，为 CSV 格式，每行为一个方言，包含如下字段：
+            - datasets 方言所在数据集
+            - did 方言 ID
+            - value1, value2, ... 余下每列用于绘制一组同言线
+        '''
+    )
     args = parser.parse_args()
+
+    logger.setLevel(getattr(logging, args.log_level.upper()))
 
     output_prefix = os.path.join(os.getcwd(), args.output_prefix)
     logging.info(
         f'create isogloss, rules = {args.rule_file}, '
+        f'input file = {args.input_file.name}, '
         f'output prefix = {output_prefix}.'
     )
 
@@ -156,26 +182,18 @@ if __name__ == '__main__':
         else tuple(Reader(args.geography).geometries())
 
     if args.rule_file is not None:
-        rules = pd.read_json(args.rule_file, orient='records', encoding='utf-8')
-        if 'id' in rules.columns:
-            rules.set_index('id', inplace=True)
-        rules.set_index(rules.index.astype(str), inplace=True)
+        rules = sincomp.compare.load_rules(args.rule_file)
 
-    n = len(args.data) // 2
-    datasets = [sincomp.datasets.get(d) for d in args.data[:n]]
-    names = [d.name for d in datasets]
-    dialects = pd.concat([d.dialects for d in datasets], axis=0, keys=names)
-    data = pd.concat(
-        [pd.read_csv(f, dtype={'did': str}).set_index('did') for f in args.data[n:]],
-        axis=0,
-        keys=names
-    )
-    logging.info(f'loaded {data.shape[0]} dialects x {data.shape[1]} rules.')
+    data = pd.read_csv(args.input_file, dtype={'dataset': str, 'did': str})
+    columns = data.columns.drop(['dataset', 'did'])
+    logging.info(f'loaded {data.shape[0]} dialects x {columns.shape[0]} rules.')
+
+    for dataset, d in data.groupby('dataset', sort=False):
+        data.loc[d.index, ['latitude', 'longitude']] = \
+            sincomp.datasets.get(dataset).dialects[['latitude', 'longitude']] \
+            .reindex(d['did']).values
 
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
-
-    columns = data.columns
-    data[['latitude', 'longitude']] = dialects[['latitude', 'longitude']]
 
     for c in columns:
         if args.rule_file is None:
