@@ -137,8 +137,8 @@ if __name__ == '__main__':
         default=2,
         help='把规则符合度归一化到 [0, 1]'
     )
-    parser.add_argument('-o', '--output', help='输出文件名')
     parser.add_argument('dataset', help='指定输入方言数据集')
+    parser.add_argument('output', nargs='?', help='输出文件名')
     args = parser.parse_args()
 
     logger.setLevel(getattr(logging, args.log_level.upper()))
@@ -170,4 +170,6 @@ if __name__ == '__main__':
     )
 
     comp = compliance(data, rules, norm=args.norm if args.norm > 0 else None)
-    comp.to_csv(output, encoding='utf-8', lineterminator='\n')
+    comp.insert(0, 'dataset', dataset.name)
+    comp.insert(1, 'did', comp.index)
+    comp.to_csv(output, index=False, encoding='utf-8', lineterminator='\n')
