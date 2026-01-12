@@ -1,0 +1,204 @@
+#!/bin/bash
+################################################################################
+# 根据指定的规则和标注文件预测方言分类，並生成方言同言线图及方言分区图
+#
+# author: 黄艺华 <lernanto@foxmail.com>
+#
+################################################################################
+
+function usage() {
+    echo "Usage: $0"
+    echo "Predict dialect classification based on pre-defined rules and annotations,"
+    echo "and generate isogloss maps and dialect partition maps."
+    echo "-h, --help show this help message and exit"
+    echo "-D, --debug enable debug log"
+    echo "--precomputed input is a precomputed compliace file, otherwise, input is a list of datasets to be processed"
+    echo "--rule-file RULE_FILE rule file in JSON format"
+    echo "--annotation-file ANNOTATION_FILE annotation file in CSV format"
+    echo "--background-file BACKGROUD_FILE background raster image file"
+    echo "--geography-file GEOGRAPHY_FILE geography file in GeoJSON/Shapefile format"
+    echo "--extent MIN_LONGITUDE,MAX_LONGITUDE,MIN_LATITUDE,MAX_LATITUDE | COVERAGE extent of output maps, or coverage of dialect points"
+    echo "--size WIDTH,HEIGHT output image size"
+    echo "--output-dir OUTPUT_DIR output directory"
+    echo "[INPUT, ...]" >&2
+}
+
+OPTS=$(getopt -o h,D,p,r:,a:,b:,g:,e:,s:,o: -l help,debug,precomputed,rule-file:,annotation-file:,background-file:,geography-file:,extent:,size:,output-dir: -- "$@")
+if [[ $? -ne 0 ]]; then
+    usage
+    exit 1
+fi
+eval set -- "$OPTS"
+
+BASE_DIR=$(dirname $(realpath "$0"))
+log_level=WARNING
+rule_file=rules.json
+annotation_file=annotations.csv
+background_file="$BASE_DIR/HYP_50M_SR_W/HYP_50M_SR_W.tif"
+geography_file="$BASE_DIR/ne_50m_land/ne_50m_land.shp"
+output_dir="$PWD"
+
+while true; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -D|--debug)
+            log_level=DEBUG
+            shift
+            ;;
+        -p|--precomputed)
+            precomputed=true
+            shift
+            ;;
+        -r|--rule-file)
+           rule_file="$2"
+           shift 2
+           ;;
+        -a|--annotation-file)
+            annotation_file="$2"
+            shift 2
+            ;;
+        -b|--background-file)
+            background_file="$2"
+            shift 2
+            ;;
+        -g|--geography-file)
+            geography_file="$2"
+            shift 2
+            ;;
+        -e|--extent)
+            extent="$2"
+            shift 2
+            ;;
+        -s|--size)
+            size="$2"
+            shift 2
+            ;;
+        -o|--output-dir)
+           output_dir="$2"
+           shift 2
+           ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Invalid option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+model_file="$output_dir/dialect_classifier.bz2"
+prediction_file="$output_dir/predictions.csv"
+
+echo "Generate dialect maps, rule file = $rule_file, annotation file = $annotation_file,"
+echo "output directory = $output_dir, model file = $model_file,"
+echo "prediction file = $prediction_file."
+
+if [[ ! -d "$output_dir" ]]; then
+    mkdir -p "$output_dir" || exit 1
+fi
+
+echo "Training dialect classifier with rule file $rule_file,"
+echo "annotation file $annotation_file..."
+python3 -O "$BASE_DIR/dialect_classifier.py" \
+    --log-level="$log_level" \
+    train "$rule_file" "$annotation_file" "$model_file" || exit 1
+echo "Done. saved model to $model_file."
+
+if [[ $precomputed ]]; then
+    if [[ $# -gt 0 ]]; then
+        compliance_file="$1"
+    else
+        compliance_file=compliances.csv
+    fi
+
+    echo "Using precomputed compliance file $compliance_file."
+
+else
+    compliance_file="$output_dir/compliances.csv"
+
+    if [[ $# -gt 0 ]]; then
+        datasets="$@"
+    else
+        datasets=(CCR)
+    fi
+
+    for dataset in $datasets; do
+        echo "Computing rule compliances for dataset $dataset. This may take a while..."
+        cf=$(mktemp)
+        python3 -O -m sincomp.compare \
+            --rule-file="$rule_file" \
+            "$dataset" \
+            "$cf" || exit 1
+        compliance_files+=("$cf")
+        echo 'Done.'
+    done
+
+    awk 'ARGIND == 1 || FNR > 1 { print }' \
+        "${compliance_files[@]}" > "$compliance_file" || exit 1
+fi
+
+echo "Predicting dialects classes for $compliance_file..."
+python3 -O "$BASE_DIR/dialect_classifier.py" \
+    --log-level="$log_level" \
+    predict \
+    --precomputed \
+    --model="$model_file" \
+    "$compliance_file" \
+    "$prediction_file" || exit 1
+echo "Done. saved predictions to $prediction_file."
+
+if [[ "$background_file" == "$BASE_DIR/HYP_50M_SR_W/HYP_50M_SR_W.tif" && ! -f "$background_file" ]]; then
+    echo "Downloading $background_file from Natural Earth..."
+    of=$(mktemp)
+    curl -o "$of" 'https://naciscdn.org/naturalearth/50m/raster/HYP_50M_SR_W.zip' || exit 1
+    unzip -d "$BASE_DIR/HYP_50M_SR_W" "$of" || exit 1
+    echo 'Done.'
+fi
+
+if [[ "$geography_file" == "$BASE_DIR/ne_50m_land/ne_50m_land.shp" && ! -f "$geography_file" ]]; then
+    echo "Downloading $geography_file from Natural Earth..."
+    of=$(mktemp)
+    curl -o "$of" 'https://naciscdn.org/naturalearth/50m/physical/ne_50m_land.zip' || exit 1
+    unzip -d "$BASE_DIR/ne_50m_land" "$of" || exit 1
+    echo 'Done.'
+fi
+
+echo 'Generating dialect isoglosses for rule compliances. This may take a while...'
+
+if [[ "$background_file" != '' ]]; then
+    extra_opts+=(--background="$background_file")
+fi
+if [[ "$geography_file" != '' ]]; then
+    extra_opts+=(--geography="$geography_file")
+fi
+if [[ "$extent" != '' ]]; then
+    extra_opts+=(--extent="$extent")
+fi
+if [[ "$size" != '' ]]; then
+    extra_opts+=(--size="$size")
+fi
+
+python3 -O "$BASE_DIR/isogloss.py" \
+    --log-level="$log_level" \
+    --rule-file="$rule_file" \
+    --output-prefix="$output_dir/" \
+    "${extra_opts[@]}" \
+    "$compliance_file" || exit 1
+
+echo 'Done.'
+
+echo 'Generating dialect partition maps for predicted classes...'
+python3 -O "$BASE_DIR/isogloss.py" \
+    --log-level="$log_level" \
+    --output-prefix="$output_dir/" \
+    "${extra_opts[@]}" \
+    "$prediction_file" || exit 1
+echo 'Done.'
+
+exit 0
