@@ -14,7 +14,6 @@ import scipy.interpolate
 from sklearn.preprocessing import OneHotEncoder
 import geopandas
 import matplotlib
-import matplotlib.pyplot
 import shapely
 import cartopy
 import cartopy.crs
@@ -66,26 +65,31 @@ def make_clip_path(polygons, extent=None):
         *cartopy.mpl.patch.geos_to_path(polygons)
     )
 
-def clip_paths(paths, polygons, extent=None):
+def clip_paths(
+    paths: matplotlib.collections.PathCollection |
+        list[matplotlib.collections.PathCollection],
+    polygons: shapely.geometry.MultiPolygon
+) -> None:
     """
     根据绘制范围及指定的多边形裁剪 matplotlib 绘制的图形.
 
     Parameters:
-        paths (`matplotlib.PathCollection` or list of `matplotlib.PathCollection`):
-            待裁剪的图形
-        polygons (`shapely.geometry.multipolygon.MultiPolygon`):
-            裁剪的范围，只保留该范围内的图形
-        extent: 绘制的范围 (左, 右, 下, 上)
+        paths: 待裁剪的图形
+        polygons: 裁剪的范围，只保留该范围内的图形
     """
 
-    path = make_clip_path(polygons, extent=extent)
+    path = make_clip_path(polygons)
     if path is not None:
         # 裁剪图形
+        transform = cartopy.crs.PlateCarree()._as_mpl_transform(paths.axes)
+        bbox = paths.axes.get_window_extent()
         if hasattr(paths, '__iter__'):
             for c in paths:
-                c.set_clip_path(path, transform=c.axes.transData)
+                c.set_clip_path(path, transform=transform)
+                c.set_clip_box(bbox)
         else:
-            paths.set_clip_path(path, transform=paths.axes.transData)
+            paths.set_clip_path(path, transform=transform)
+            paths.set_clip_box(bbox)
 
 def scatter(
     latitudes,
@@ -127,16 +131,18 @@ def scatter(
     if ax is None:
         ax = matplotlib.pyplot.axes(projection=proj)
 
+    ax.set_extent(extent, crs=proj)
+
     # 根据传入的图形裁剪点集
     pc = ax.scatter(
         longitudes,
         latitudes,
         c=values,
         clip_path=(make_clip_path(clip, extent=extent), ax.transData),
+        transform=proj,
         **kwargs
     )
 
-    ax.set_extent(extent, crs=proj)
     return ax, extent, pc
 
 def area(
@@ -224,6 +230,8 @@ def area(
     if ax is None:
         ax = matplotlib.pyplot.axes(projection=proj)
 
+    ax.set_extent(extent, crs=proj)
+
     # 根据插值结果绘制方言分区图，根据传入的图形裁剪
     qm = ax.pcolormesh(
         lon,
@@ -234,7 +242,6 @@ def area(
         **kwargs
     )
 
-    ax.set_extent(extent, crs=proj)
     return ax, extent, qm
 
 def _isogloss(
@@ -292,17 +299,16 @@ def _isogloss(
         ax = matplotlib.pyplot.axes(projection=proj)
 
     # 根据插值结果绘制等值线图
-    extent = (lon0, lon1, lat0, lat1)
     cs = (ax.contourf if fill else ax.contour)(
         val,
-        extent=extent,
+        extent=(lon0, lon1, lat0, lat1),
         transform=proj,
         **kwargs
     )
 
     if clip is not None:
         # 根据传入的图形裁剪等值线图
-        clip_paths(cs, clip, extent=extent)
+        clip_paths(cs, clip)
 
     if isinstance(label, str):
         ax.clabel(cs, inline=True, fmt=f'{label} = %s')
@@ -373,10 +379,12 @@ def isoglosses(
     longitudes,
     values,
     extent,
+    resolution=100,
     names=None,
     ax=None,
     proj=cartopy.crs.PlateCarree(),
     background=None,
+    background_extent=None,
     geo=None,
     levels=[0.5],
     cmap='tab10',
@@ -385,21 +393,25 @@ def isoglosses(
     if ax is None:
         ax = matplotlib.pyplot.axes(projection=proj)
 
+    ax.set_extent(extent, crs=proj)
+
     # 绘制背景图政区边界
+    pc = cartopy.crs.PlateCarree()
     if background is not None:
-        ax.imshow(
-            background,
-            transform=proj,
-            extent=[-180, 180, -90, 90]
-        )
+        ax.imshow(background, transform=pc, extent=background_extent)
 
     if geo is not None:
-        geo = tuple(geo)
-        ax.add_geometries(geo, proj, edgecolor='gray', facecolor='none')
+        ax.add_geometries(
+            geo,
+            cartopy.crs.CRS(geo.crs) if hasattr(geo, 'crs') else pc,
+            edgecolor='gray',
+            facecolor='none'
+        )
 
     if isinstance(cmap, str):
         cmap = matplotlib.pyplot.colormaps[cmap]
 
+    # 投影变换后绘制范围可能会超出指定经纬度，绘制同言线时预留更大的范围
     for i, val in enumerate(values):
         isogloss(
             data[latitudes],
@@ -410,7 +422,13 @@ def isoglosses(
             cmap=None,
             vmin=0,
             vmax=1,
-            extent=extent,
+            extent=(
+                1.5 * extent[0] - 0.5 * extent[1],
+                1.5 * extent[1] - 0.5 * extent[0],
+                1.5 * extent[2] - 0.5 * extent[3],
+                1.5 * extent[3] - 0.5 * extent[2]
+            ),
+            resolution=resolution * 2,
             clip=geo,
             levels=levels,
             colors=[cmap(i)]
@@ -435,7 +453,6 @@ def isoglosses(
         ].iterrows():
             ax.annotate(r[names], xy=(r[longitudes], r[latitudes]))
 
-    ax.set_extent(extent, crs=proj)
     return ax
 
 def interactive_scatter(
