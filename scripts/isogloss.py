@@ -10,13 +10,15 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import argparse
 import cartopy.crs as ccrs
-from cartopy.io.shapereader import Reader
+import geopandas as gpd
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pandas as pd
+import rasterio
 
+import sincomp.auxiliary
 import sincomp.compare
 import sincomp.datasets
 import sincomp.plot
@@ -34,11 +36,13 @@ def isogloss(
     ax=None,
     proj=ccrs.PlateCarree(),
     background=None,
+    background_extent=None,
     geo=None,
     fill=True,
     cmap=None,
     color=None,
     extent=None,
+    resolution=100,
     levels=np.linspace(0, 1, 11),
     alpha=None,
     title=None,
@@ -51,17 +55,23 @@ def isogloss(
     if ax is None:
         ax = plt.axes(projection=proj)
 
+    if extent is None:
+        extent = sincomp.auxiliary.extent(data.loc[:, lon], data.loc[:, lat])
+
+    ax.set_extent(extent)
+
     # 绘制背景图政区边界
+    pc = ccrs.PlateCarree()
     if background is not None:
-        ax.imshow(
-            background,
-            transform=proj,
-            extent=[-180, 180, -90, 90]
-        )
+        ax.imshow(background, transform=pc, extent=background_extent)
 
     if geo is not None:
-        geo = tuple(geo)
-        ax.add_geometries(geo, proj, edgecolor='gray', facecolor='none')
+        ax.add_geometries(
+            geo,
+            ccrs.CRS(geo.crs) if hasattr(geo, 'crs') else pc,
+            edgecolor='gray',
+            facecolor='none'
+        )
 
     if cmap is None and color is None:
         cmap = 'coolwarm'
@@ -70,7 +80,8 @@ def isogloss(
     if alpha is None:
         alpha = 0.7 if fill else 1
 
-    _, extent, _ = sincomp.plot.geography.isogloss(
+    # 投影变换后绘制范围可能会超出指定经纬度，绘制同言线时预留更大的范围
+    sincomp.plot.geography.isogloss(
         data.loc[:, lat],
         data.loc[:, lon],
         values=data.loc[:, val],
@@ -80,7 +91,13 @@ def isogloss(
         colors=color,
         vmin=0,
         vmax=1,
-        extent=extent,
+        extent=(
+            1.5 * extent[0] - 0.5 * extent[1],
+            1.5 * extent[1] - 0.5 * extent[0],
+            1.5 * extent[2] - 0.5 * extent[3],
+            1.5 * extent[3] - 0.5 * extent[2]
+        ),
+        resolution=resolution * 2,
         clip=geo,
         levels=levels,
         alpha=alpha,
@@ -94,7 +111,6 @@ def isogloss(
         values=None if cmap is None else data.loc[:, val],
         ax=ax,
         extent=extent,
-        clip=geo,
         vmin=0,
         vmax=1,
         marker='.',
@@ -110,11 +126,7 @@ def isogloss(
             ax.annotate(r[name], xy=(r[lon], r[lat]))
 
     # 添加经纬度
-    gl = ax.gridlines(crs=proj, draw_labels=True)
-    gl.xlines = False
-    gl.ylines = False
-
-    ax.set_extent(extent, crs=proj)
+    ax.gridlines(draw_labels=True)
 
     if title is not None:
         ax.set_title(title)
@@ -177,9 +189,18 @@ if __name__ == '__main__':
         f'output prefix = {output_prefix}.'
     )
 
-    bg = None if args.background is None else plt.imread(args.background)
-    geo = None if args.geography is None \
-        else tuple(Reader(args.geography).geometries())
+    if args.background is None:
+        background = None
+        background_extent = None
+    else:
+        background = rasterio.open(args.background)
+        lon0, lat0, lon1, lat1 = background.bounds
+        background = np.transpose(background.read([1, 2, 3]), (1, 2, 0)) \
+            if background.count >= 3 \
+            else background.read(1)
+        background_extent = (lon0, lon1, lat0, lat1)
+
+    geo = None if args.geography is None else gpd.read_file(args.geography)
 
     if args.rule_file is not None:
         rules = sincomp.compare.load_rules(args.rule_file)
@@ -195,6 +216,19 @@ if __name__ == '__main__':
 
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
+    if args.extent is None:
+        extent = sincomp.auxiliary.extent(
+            data.loc[:, 'longitude'],
+            data.loc[:, 'latitude']
+        )
+    else:
+        extent = args.extent
+
+    proj = ccrs.LambertConformal(
+        0.5 * (extent[0] + extent[1]),
+        0.5 * (extent[2] + extent[3]),
+    )
+
     for c in columns:
         if args.rule_file is None:
             path = f'{output_prefix}{c}.{args.format}'
@@ -208,9 +242,11 @@ if __name__ == '__main__':
             'latitude',
             'longitude',
             c,
-            background=bg,
-            geo=geo,
-            extent=args.extent
+            proj=proj,
+            background=background,
+            background_extent=background_extent,
+            geo=geo['geometry'],
+            extent=extent
         )
         fig.savefig(path, format=args.format, bbox_inches='tight')
         plt.close()
