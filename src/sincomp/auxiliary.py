@@ -260,44 +260,46 @@ def pc2color(pc):
 
     return numpy.clip(rgb, 0, 1)
 
-def extent(latitudes, longitudes, scale=0, margin=0.01):
+def extent(
+    longitudes: numpy.ndarray[float],
+    latitudes: numpy.ndarray[float],
+    coverage: float = 1,
+    margin: float = 0.01
+) -> tuple[float, float, float, float]:
     """
     根据样本点坐标计算合适的绘制范围.
 
     Parameters:
-        latitudes (array-like): 样本点纬度
-        longitudes (array-like): 样本点经度
-        scale (float): 指定绘制范围为样本点的几倍标准差，如不大于0，覆盖所有样本点
-        margin (float): 当覆盖所有样本点时，四边的留白
+        longitudes, latitudes: 样本点经纬度
+        coverage: 指定绘制范围对样本的覆盖率，大于等于1表示覆盖所有样本点
+        margin: 当覆盖所有样本点时，四边留白的比例
 
     Returns:
-        lat0, lat1, lon0, lon1: 匹配的绘制范围四角坐标
+        lon0, lon1, lat0, lat1: 匹配的绘制范围四角坐标
     """
 
     mask = numpy.logical_and(
-        numpy.isfinite(latitudes),
-        numpy.isfinite(longitudes)
+        numpy.isfinite(longitudes),
+        numpy.isfinite(latitudes)
     )
-    latitudes = latitudes[mask]
     longitudes = longitudes[mask]
+    latitudes = latitudes[mask]
 
-    # 覆盖所有样本点的最小范围
-    ext = numpy.asarray([
-        [numpy.min(latitudes), numpy.max(latitudes)],
-        [numpy.min(longitudes), numpy.max(longitudes)]
-    ])
+    if coverage >= 1:
+        # 覆盖所有样本点的最小范围
+        ext = numpy.asarray([
+            [numpy.min(longitudes), numpy.max(longitudes)],
+            [numpy.min(latitudes), numpy.max(latitudes)]
+        ])
+        # 四边添加留白
+        ext += (ext[:, 1:2] - ext[:, 0:1]) * numpy.asarray([-margin, margin])
 
-    if scale > 0:
-        # 根据样本点的中心和标准差计算绘制范围
-        mean = numpy.asarray([numpy.mean(latitudes), numpy.mean(longitudes)])
-        std = numpy.asarray([numpy.std(latitudes), numpy.std(longitudes)])
-        # 如果边界超出所有样本点，裁剪
-        ext = numpy.clip(
-            mean[:, None] + std[:, None] * numpy.asarray([-scale, scale]),
-            ext[:, 0:1],
-            ext[:, 1:2]
+    else:
+        # 覆盖指定百分比样本点的范围
+        p = [(1 - coverage) * 50, (1 + coverage) * 50]
+        ext = numpy.stack(
+            [numpy.percentile(longitudes, p), numpy.percentile(latitudes, p)],
+            axis=0
         )
 
-    # 四边添加留白
-    ext += (ext[:, 1:2] - ext[:, 0:1]) * numpy.asarray([-margin, margin])
     return ext.flatten()
