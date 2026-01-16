@@ -97,7 +97,7 @@ def scatter(
     values=None,
     ax=None,
     extent=None,
-    scale=0,
+    coverage: float = 1,
     clip=None,
     **kwargs
 ):
@@ -111,7 +111,7 @@ def scatter(
         ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象，
             如果为空，创建一个新对象
         extent: 绘制的范围 (左, 右, 下, 上)
-        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
+        coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
         clip (`shapely.geometry.multipolygon.MultiPolygon`):
             裁剪的范围，只绘制该范围内的方言点，为空绘制所有方言点
         kwargs: 透传给 `matplotlib.pyplot.Axes.scatter`
@@ -124,8 +124,7 @@ def scatter(
 
     if extent is None:
         # 根据样本点确定绘制边界
-        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
-        extent = (lon0, lon1, lat0, lat1)
+        extent = auxiliary.extent(longitudes, latitudes, coverage)
 
     proj = cartopy.crs.PlateCarree()
     if ax is None:
@@ -151,7 +150,7 @@ def area(
     values: numpy.ndarray | pandas.Series,
     ax: matplotlib.axes.Axes | None = None,
     extent: tuple[float, float, float, float] | None = None,
-    scale: float = 0,
+    coverage: float = 1,
     clip=None,
     resolution: int = 100,
     **kwargs
@@ -169,7 +168,7 @@ def area(
         values: 当为1维数组时，表示样本点的分类，当为2维数组时，表示样本点属于各分类的概率
         ax: 作图使用的 Axes 对象，如果为空，创建一个新 `cartopy.mpl.geoaxes.GeoAxes` 对象
         extent: 绘制的范围
-        scale: 当未指定绘制范围时，用于根据样本点计算范围的系数
+        coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
         clip(shapely.geometry.multipolygon.MultiPolygon):
             裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
         resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，
@@ -204,10 +203,7 @@ def area(
 
     if extent is None:
         # 根据样本点确定绘制边界
-        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
-        extent = (lon0, lon1, lat0, lat1)
-    else:
-        lon0, lon1, lat0, lat1 = extent
+        extent = auxiliary.extent(longitudes, latitudes, coverage)
 
     # 使用径向基函数基于样本点对选定范围进行插值
     rbf = scipy.interpolate.RBFInterpolator(
@@ -217,6 +213,7 @@ def area(
     )
 
     # 计算分辨率，把长宽最多分成指定点数，且为方格
+    lon0, lon1, lat0, lat1 = extent
     size = numpy.asarray([lon1 - lon0, lat1 - lat0])
     lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
     lon = numpy.linspace(lon0, lon1, lon_res)
@@ -322,7 +319,7 @@ def isogloss(
     longitudes,
     values,
     extent=None,
-    scale=0,
+    coverage: float = 1,
     **kwargs
 ):
     """
@@ -337,7 +334,7 @@ def isogloss(
         longitudes (`numpy.ndarray`): 样本点的经度数组
         values (`numpy.ndarray`): 样本点的值，通常取值范围为 [0, 1]
         extent (array-like): 绘制的范围 (左, 右, 下, 上)
-        scale (float): 当未指定绘制范围时，用于根据样本点计算范围的系数
+        coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
         kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
 
     Returns:
@@ -356,10 +353,7 @@ def isogloss(
     values = values[mask]
 
     if extent is None:
-        lat0, lat1, lon0, lon1 = auxiliary.extent(latitudes, longitudes, scale)
-        extent = (lon0, lon1, lat0, lat1)
-    else:
-        lon0, lon1, lat0, lat1 = extent
+        extent = auxiliary.extent(longitudes, latitudes, coverage)
 
     # 针对完全相同的经纬度，对经度稍作偏移，使能正常计算
     longitudes = pandas.DataFrame({
@@ -370,7 +364,15 @@ def isogloss(
 
     # 使用径向基函数基于样本点对选定范围进行插值
     rbf = scipy.interpolate.Rbf(longitudes, latitudes, values, function='linear')
-    ax, cs = _isogloss(lat0, lat1, lon0, lon1, clip(rbf), **kwargs)
+    ax, cs = _isogloss(
+        extent[2],
+        extent[3],
+        extent[0],
+        extent[1],
+        clip(rbf),
+        **kwargs
+    )
+
     return ax, extent, cs
 
 def isoglosses(
