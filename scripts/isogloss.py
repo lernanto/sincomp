@@ -42,6 +42,7 @@ def isogloss(
     cmap=None,
     color=None,
     extent=None,
+    coverage=1,
     resolution=100,
     levels=np.linspace(0, 1, 11),
     alpha=None,
@@ -56,7 +57,11 @@ def isogloss(
         ax = plt.axes(projection=proj)
 
     if extent is None:
-        extent = sincomp.auxiliary.extent(data.loc[:, lon], data.loc[:, lat])
+        extent = sincomp.auxiliary.extent(
+            data.loc[:, lon],
+            data.loc[:, lat],
+            coverage=coverage
+        )
 
     ax.set_extent(extent)
 
@@ -89,8 +94,6 @@ def isogloss(
         fill=fill,
         cmap=cmap,
         colors=color,
-        vmin=0,
-        vmax=1,
         extent=(
             1.5 * extent[0] - 0.5 * extent[1],
             1.5 * extent[1] - 0.5 * extent[0],
@@ -98,6 +101,8 @@ def isogloss(
             1.5 * extent[3] - 0.5 * extent[2]
         ),
         resolution=resolution * 2,
+        vmin=0,
+        vmax=1,
         clip=geo,
         levels=levels,
         alpha=alpha,
@@ -156,8 +161,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '-e',
         '--extent',
-        type=float_array,
-        help='绘制范围的经纬度，为半角逗号分隔的4个实数'
+        default='1',
+        help='指定绘制范围，当为1个数时，自动计算范围使覆盖该比例的样本点，'
+            '当为半角逗号分隔的4个数时，为经纬度范围'
     )
     parser.add_argument('-o', '--output-prefix', default='', help='输出路径前缀')
     parser.add_argument('-f', '--format', default='png', help='保存的图片格式')
@@ -216,13 +222,14 @@ if __name__ == '__main__':
 
     os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
 
-    if args.extent is None:
+    if ',' in args.extent:
+        extent = float_array(args.extent)
+    else:
         extent = sincomp.auxiliary.extent(
             data.loc[:, 'longitude'],
-            data.loc[:, 'latitude']
+            data.loc[:, 'latitude'],
+            coverage=float(args.extent)
         )
-    else:
-        extent = args.extent
 
     proj = ccrs.LambertConformal(
         0.5 * (extent[0] + extent[1]),
