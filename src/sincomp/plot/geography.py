@@ -7,27 +7,32 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import typing
-import pandas
-import numpy
-import scipy.interpolate
-from sklearn.preprocessing import OneHotEncoder
-import geopandas
-import matplotlib
-import shapely
 import cartopy
-import cartopy.crs
+import cartopy.mpl.geoaxes
 import folium
+import geopandas
+import logging
+import matplotlib
+import numpy
+import pandas
+import scipy.interpolate
+import shapely
+from sklearn.preprocessing import OneHotEncoder
 
 from .. import auxiliary
 
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logger.addHandler(logging.StreamHandler())
 
-def clip(func, vmin=0, vmax=1):
-    """
-    辅助函数，对目标函数的返回值进行截断.
-    """
+try:
+    import pykrige
+except ImportError:
+    logger.warning(
+        'pykrige is not installed, kriging interpolation will be unavailable. '
+        'You can install it via "pip install pykrige".'
+    )
 
-    return lambda x, y: numpy.clip(func(x, y), vmin, vmax)
 
 def make_clip_path(polygons, extent=None):
     """
@@ -151,8 +156,9 @@ def area(
     ax: matplotlib.axes.Axes | None = None,
     extent: tuple[float, float, float, float] | None = None,
     coverage: float = 1,
-    clip=None,
+    interpolate: str = 'rbf',
     resolution: int = 100,
+    clip: shapely.geometry.MultiPolygon | None = None,
     **kwargs
 ) -> tuple[
     matplotlib.axes.Axes,
@@ -169,10 +175,11 @@ def area(
         ax: 作图使用的 Axes 对象，如果为空，创建一个新 `cartopy.mpl.geoaxes.GeoAxes` 对象
         extent: 绘制的范围
         coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
-        clip(shapely.geometry.multipolygon.MultiPolygon):
-            裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
-        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，
-            实际分的点数由长宽比决定
+        interpolate: 插值方法，可选取值：
+            - kriging: 球状方差模型的普通克里金法
+            - rbf: 线性核的径向基函数
+        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，实际分的点数由长宽比决定
+        clip: 裁剪的范围，只绘制该范围内的分区，为空绘制整个绘制范围的分区
         kwargs: 透传给 `matplotlib.pyplot.Axes.pcolormesh`
 
     Returns:
@@ -205,23 +212,51 @@ def area(
         # 根据样本点确定绘制边界
         extent = auxiliary.extent(longitudes, latitudes, coverage)
 
-    # 使用径向基函数基于样本点对选定范围进行插值
-    rbf = scipy.interpolate.RBFInterpolator(
-        numpy.stack([longitudes, latitudes], axis=1),
-        values,
-        kernel='linear'
-    )
-
     # 计算分辨率，把长宽最多分成指定点数，且为方格
     lon0, lon1, lat0, lat1 = extent
     size = numpy.asarray([lon1 - lon0, lat1 - lat0])
     lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
     lon = numpy.linspace(lon0, lon1, lon_res)
     lat = numpy.linspace(lat0, lat1, lat_res)
-    coo = numpy.reshape(numpy.stack(numpy.meshgrid(lon, lat), axis=2), (-1, 2))
 
-    val = numpy.reshape(rbf(coo), (lat_res, lon_res, -1))
-    label = numpy.argmax(val, axis=2)
+    if interpolate == 'kriging':
+        # 使用克里金法基于样本点对选定范围进行插值
+        logger.debug('interpolate with ordinary Kriging with spherical variogram model')
+        val = numpy.empty(
+            (lat.shape[0], lon.shape[0], values.shape[1]),
+            values.dtype
+        )
+        for i in range(values.shape[1]):
+            kriging = pykrige.ok.OrdinaryKriging(
+                latitudes,
+                longitudes,
+                values[:, i],
+                variogram_model='spherical',
+            )
+            val[:, :, i] = kriging.execute('grid', lat, lon)[0].T
+
+    elif interpolate == 'rbf':
+        # 使用径向基函数基于样本点对选定范围进行插值
+        logger.debug('interpolate with radial basis function with linear kernel')
+        rbf = scipy.interpolate.RBFInterpolator(
+            numpy.stack([latitudes, longitudes], axis=-1),
+            values,
+            kernel='linear'
+        )
+        val = numpy.reshape(
+            rbf(
+                numpy.reshape(
+                    numpy.stack(numpy.meshgrid(lat, lon, indexing='ij'), axis=-1),
+                    (-1, 2)
+                )
+            ),
+            (lat.shape[0], lon.shape[0], -1)
+        )
+
+    else:
+        raise ValueError(f'unknown interpolation method: {interpolate}')
+
+    labels = numpy.argmax(val, axis=2)
 
     proj = cartopy.crs.PlateCarree()
     if ax is None:
@@ -233,7 +268,7 @@ def area(
     qm = ax.pcolormesh(
         lon,
         lat,
-        label,
+        labels,
         transform=proj,
         clip_path=(make_clip_path(clip, extent=extent), ax.transData),
         **kwargs
@@ -241,106 +276,53 @@ def area(
 
     return ax, extent, qm
 
-def _isogloss(
-    lat0: float,
-    lat1: float,
-    lon0: float,
-    lon1: float,
-    func: typing.Callable[
-        [numpy.ndarray[float], numpy.ndarray[float]],
-        numpy.ndarray[float]
-    ],
+def isogloss(
+    latitudes: numpy.ndarray[float],
+    longitudes: numpy.ndarray[float],
+    values: numpy.ndarray[float],
     ax: cartopy.mpl.geoaxes.GeoAxes | None = None,
+    extent: tuple[float, float, float, float] | None = None,
+    coverage: float = 1,
+    interpolate: str = 'rbf',
+    resolution: int = 100,
+    vmin: float = 0,
+    vmax: float = 1,
     fill: bool = True,
     label: bool = False,
     clip: shapely.geometry.MultiPolygon | None = None,
-    resolution: int = 100,
     **kwargs
 ) -> tuple[
     cartopy.mpl.geoaxes.GeoAxes,
+    tuple[float, float, float, float],
     matplotlib.contour.QuadContourSet
 ]:
     """
     绘制同言线地图.
 
     输入参数为一系列样本点坐标，及样本点符合某个语言特征的程度值，通常取值范围为 [0, 1]。
-    使用径向基函数根据样本点插值，计算整个绘制空间的值，然后据此计算等值线。
+    根据样本点插值，计算整个绘制空间的值，然后据此计算等值线。
     如果指定了裁剪范围，只绘制该范围内的等值线。
 
     Parameters:
-        lat0, lat1, lon0, lon1: 绘制范围下、上、左、右
-        func: 符合度值函数，输入参数为坐标数组，返回符合度数组
+        latitudes, longitudes: 样本点的纬度、经度数组
+        values: 样本点的值，通常取值范围为 [0, 1]
         ax: 作图使用的 GeoAxes 对象，如果为空，创建一个新对象
+        extent: 绘制的范围 (左, 右, 下, 上)
+        coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
+        interpolate: 插值方法，可选取值：
+            - kriging: 球状方差模型的普通克里金法
+            - rbf: 线性核的径向基函数
+        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，实际分的点数由长宽比决定
+        vmin, vmax: 插值结果的最小值和最大值，用于截断插值结果
         fill: 为真时填充颜色，为假时只绘制等值线
         label: 是否在等值线添加标签，为 str 时指定添加标签的格式
         clip: 裁剪的范围，只绘制该范围内的等值线，为空绘制整个绘制范围的等值线
-        resolution: 分辨率，把绘制范围的长宽最多分为多少个点来插值，实际分的点数由长宽比决定
         kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
 
     Returns:
         ax: 作图使用的 GeoAxes 对象
-        cs: 绘制的等值线集合
-    """
-
-    # 计算分辨率，把长宽最多分成指定点数，且为方格
-    size = numpy.asarray([lon1 - lon0, lat1 - lat0])
-    lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
-    lon, lat = numpy.meshgrid(
-        numpy.linspace(lon0, lon1, lon_res),
-        numpy.linspace(lat0, lat1, lat_res)
-    )
-    val = func(lon, lat)
-
-    proj = cartopy.crs.PlateCarree()
-    if ax is None:
-        ax = matplotlib.pyplot.axes(projection=proj)
-
-    # 根据插值结果绘制等值线图
-    cs = (ax.contourf if fill else ax.contour)(
-        val,
-        extent=(lon0, lon1, lat0, lat1),
-        transform=proj,
-        **kwargs
-    )
-
-    if clip is not None:
-        # 根据传入的图形裁剪等值线图
-        clip_paths(cs, clip)
-
-    if isinstance(label, str):
-        ax.clabel(cs, inline=True, fmt=f'{label} = %s')
-    elif label:
-        ax.clabel(cs, inline=True)
-
-    return ax, cs
-
-def isogloss(
-    latitudes,
-    longitudes,
-    values,
-    extent=None,
-    coverage: float = 1,
-    **kwargs
-):
-    """
-    绘制同言线地图.
-
-    输入参数为一系列样本点坐标，及样本点符合某个语言特征的程度值，通常取值范围为 [0, 1]。
-    使用径向基函数根据样本点插值，计算整个绘制空间的值，然后据此计算等值线。
-    如果指定了裁剪范围，只绘制该范围内的等值线。
-
-    Parameters:
-        latitudes (`numpy.ndarray`): 样本点的纬度数组
-        longitudes (`numpy.ndarray`): 样本点的经度数组
-        values (`numpy.ndarray`): 样本点的值，通常取值范围为 [0, 1]
-        extent (array-like): 绘制的范围 (左, 右, 下, 上)
-        coverage: 当未指定绘制范围时，根据此样本点覆盖率计算范围
-        kwargs: 透传给 `matplotlib.pyplot.Axes.contourf`
-
-    Returns:
-        ax (`cartopy.mpl.geoaxes.GeoAxes`): 作图使用的 GeoAxes 对象
         extent: 绘制的范围
-        cs (`matplotlib.contour.QuadContourSet`): 绘制的等值线集合
+        cs: 绘制的等值线集合
     """
 
     mask = numpy.all([
@@ -362,16 +344,71 @@ def isogloss(
     }).groupby(['latitude', 'longitude'])['longitude'] \
         .transform(lambda x: x + numpy.arange(x.shape[0]) * 1e-4).values
 
-    # 使用径向基函数基于样本点对选定范围进行插值
-    rbf = scipy.interpolate.Rbf(longitudes, latitudes, values, function='linear')
-    ax, cs = _isogloss(
-        extent[2],
-        extent[3],
-        extent[0],
-        extent[1],
-        clip(rbf),
+    # 计算分辨率，把长宽最多分成指定点数，且为方格
+    lon0, lon1, lat0, lat1 = extent
+    size = numpy.asarray([lon1 - lon0, lat1 - lat0])
+    lon_res, lat_res = (size / numpy.max(size) * resolution).astype(int)
+    lon = numpy.linspace(lon0, lon1, lon_res)
+    lat = numpy.linspace(lat0, lat1, lat_res)
+
+    if interpolate == 'kriging':
+        # 使用克里金法基于样本点对选定范围进行插值
+        logger.debug('interpolate with ordinary Kriging with spherical variogram model')
+        kriging = pykrige.ok.OrdinaryKriging(
+            latitudes,
+            longitudes,
+            values,
+            variogram_model='spherical',
+        )
+        val = numpy.clip(kriging.execute('grid', lat, lon)[0], vmin, vmax).T
+
+    elif interpolate == 'rbf':
+        # 使用径向基函数基于样本点对选定范围进行插值
+        logger.debug('interpolate with radial basis function with linear kernel')
+        rbf = scipy.interpolate.RBFInterpolator(
+            numpy.stack([latitudes, longitudes], axis=-1),
+            values,
+            kernel='linear'
+        )
+        val = numpy.reshape(
+            numpy.clip(
+                rbf(
+                    numpy.reshape(
+                        numpy.stack(
+                            numpy.meshgrid(lat, lon, indexing='ij'),
+                            axis=-1
+                        ),
+                    (-1, 2))
+                ),
+                vmin,
+                vmax
+            ),
+            (lat.shape[0], lon.shape[0])
+        )
+
+    else:
+        raise ValueError(f'unknown interpolation method: {interpolate}')
+
+    proj = cartopy.crs.PlateCarree()
+    if ax is None:
+        ax = matplotlib.pyplot.axes(projection=proj)
+
+    # 根据插值结果绘制等值线图
+    cs = (ax.contourf if fill else ax.contour)(
+        val,
+        extent=(lon0, lon1, lat0, lat1),
+        transform=proj,
         **kwargs
     )
+
+    if clip is not None:
+        # 根据传入的图形裁剪等值线图
+        clip_paths(cs, clip)
+
+    if isinstance(label, str):
+        ax.clabel(cs, inline=True, fmt=f'{label} = %s')
+    elif label:
+        ax.clabel(cs, inline=True)
 
     return ax, extent, cs
 
@@ -422,8 +459,6 @@ def isoglosses(
             ax=ax,
             fill=False,
             cmap=None,
-            vmin=0,
-            vmax=1,
             extent=(
                 1.5 * extent[0] - 0.5 * extent[1],
                 1.5 * extent[1] - 0.5 * extent[0],
@@ -431,9 +466,12 @@ def isoglosses(
                 1.5 * extent[3] - 0.5 * extent[2]
             ),
             resolution=resolution * 2,
+            vmin=0,
+            vmax=1,
             clip=geo,
             levels=levels,
-            colors=[cmap(i)]
+            colors=[cmap(i)],
+            **kwargs
         )
 
     if names is not None:
