@@ -38,8 +38,12 @@ def load_rules(fname, characters=None):
     logger.debug(f'loaded {len(rules)} rules from {fname} .')
 
     if characters is not None:
-        rules['char1'] = rules['cid1'].apply(lambda x: ''.join(characters[x]))
-        rules['char2'] = rules['cid2'].apply(lambda x: ''.join(characters[x]))
+        def cids2chars(cids):
+            chars = characters.reindex(cids)
+            return ''.join(numpy.where(chars.notna(), chars, cids))
+
+        rules['char1'] = rules['cid1'].apply(cids2chars)
+        rules['char2'] = rules['cid2'].apply(cids2chars)
 
     return rules
 
