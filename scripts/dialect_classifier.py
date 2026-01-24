@@ -142,23 +142,25 @@ def train(args: argparse.Namespace) -> None:
 
     clf = train_classifier(rules, annotations, args.resample)
 
-    fi = pd.DataFrame({
-        'name': rules['name'],
-        'importance': np.linalg.norm(clf.steps[-1][1].coef_, axis=0)
-    })
-    fi = '\n'.join(f'{r["name"]}: {r["importance"]:.4f}' \
-        for _, r in fi.sort_values('importance', ascending=False).iterrows())
-    logger.info(f'feature importance:\n{fi}')
+    # 以模型权重的标准差作为特征重要性
+    w = clf.steps[-1][1].coef_
+    if w.shape[0] < 2:
+        w = np.concatenate([np.zeros_like(w), w], axis=0)
+    importances = np.std(w, axis=0)
+    idx = np.argsort(importances)[::-1]
+    logger.info('feature importances:')
+    for i in idx:
+        logger.info(f'{rules.iloc[i]["name"]}: {importances[i]:.4f}')
 
     joblib.dump(clf, args.output_file)
 
-def validate(args: argparse.Namespace) -> None:
+def evaluate(args: argparse.Namespace) -> None:
     """
     交叉验证方言分类器准确率
     """
 
     logger.debug(
-        f'cross validate dialect classifier, rule file = {args.rule_file}, '
+        f'cross evaluate dialect classifier, rule file = {args.rule_file}, '
         f'annotation file = {args.annotation_file}, '
         f'resample = {args.resample}'
     )
@@ -314,17 +316,17 @@ if __name__ == '__main__':
     )
     train_parser.set_defaults(func=train)
 
-    validate_parser = subparsers.add_parser(
-        'validate', help=validate.__doc__,
+    evaluate_parser = subparsers.add_parser(
+        'evaluate', help=evaluate.__doc__,
         formatter_class=argparse.RawTextHelpFormatter
     )
-    validate_parser.add_argument(
+    evaluate_parser.add_argument(
         '--resample',
         type=int,
         default=5,
         help='对每个方言样本重采样的次数，以增加模型稳定性，为0不重采样'
     )
-    validate_parser.add_argument(
+    evaluate_parser.add_argument(
         'rule_file',
         help='''
         用于训练的规则文件，为 JSON 格式，为规则的数组，每条规则包含如下字段：
@@ -334,7 +336,7 @@ if __name__ == '__main__':
             - cid2 用于对比的字集2，为字 ID 的数组
         '''
     )
-    validate_parser.add_argument(
+    evaluate_parser.add_argument(
         'annotation_file',
         help='''
         标注的训练样本文件，为 CSV 格式，每行为一个方言样本，包含如下字段：
@@ -345,7 +347,7 @@ if __name__ == '__main__':
             - label 方言所属分类
         '''
     )
-    validate_parser.set_defaults(func=validate)
+    evaluate_parser.set_defaults(func=evaluate)
 
     predict_parser = subparsers.add_parser(
         'predict', help=predict.__doc__,
