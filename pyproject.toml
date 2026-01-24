@@ -16,6 +16,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "OpenCC",
+    "joblib",
     "numpy",
     "pandas[excel]>=1.5",
     "retry",
