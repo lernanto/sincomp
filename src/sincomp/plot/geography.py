@@ -9,6 +9,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import cartopy
 import cartopy.mpl.geoaxes
+import cartopy.mpl.patch
 import folium
 import geopandas
 import logging
