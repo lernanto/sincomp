@@ -9,6 +9,7 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 import numpy
 import scipy
+import sklearn.cluster
 import sklearn.compose
 import sklearn.metrics.pairwise
 import sklearn.pipeline
@@ -47,6 +48,7 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
         """
 
         self.n_features_in_ = X.shape[1]
+        self.n_features_out_ = X.shape[1] * X.shape[1]
         if isinstance(X, pandas.DataFrame):
             self.feature_names_in_ = X.columns.values
 
@@ -139,6 +141,42 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
             list(f'{i}_{j}' for i in input_features for j in input_features)
         )
 
+    def inverse_transform(
+        self,
+        X: Union[numpy.ndarray, scipy.sparse.csr_matrix]
+    ) -> numpy.ndarray:
+        """
+        逆变换，将变换后的数据转换回原始数据
+
+        Parameters:
+           X: 变换后的数据
+
+        Returns:
+           X_original: 原始数据
+        """
+
+        if X.shape[1] != self.n_features_out_:
+            raise ValueError(
+                f'X has {X.shape[1]} features, but {type(self).__name__} '
+                f'is expecting {self.n_features_out_} features as input.'
+            )
+
+        outputs = []
+        for i in range(X.shape[0]):
+            Xi = numpy.reshape(
+                numpy.asarray(X[i:i + 1]),
+                (self.n_features_in_, self.n_features_in_)
+            )
+            dist = numpy.clip(1 - (Xi + Xi.T), 0, 1)
+            labels = sklearn.cluster.AgglomerativeClustering(
+                n_clusters=None,
+                metric='precomputed',
+                linkage='average',
+                distance_threshold=0.5
+            ).fit_predict(dist)
+            outputs.append([f'c{i}' for i in labels])
+
+        return numpy.stack(outputs, axis=0)
 
 class DialectEmbedding(sklearn.pipeline.Pipeline):
     """
