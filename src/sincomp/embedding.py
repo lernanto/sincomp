@@ -168,13 +168,26 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
                 (self.n_features_in_, self.n_features_in_)
             )
             dist = numpy.clip(1 - (Xi + Xi.T), 0, 1)
-            labels = sklearn.cluster.AgglomerativeClustering(
+            ac = sklearn.cluster.AgglomerativeClustering(
                 n_clusters=None,
                 metric='precomputed',
                 linkage='average',
                 distance_threshold=0.5
-            ).fit_predict(dist)
-            outputs.append([f'c{i}' for i in labels])
+            ).fit(dist)
+
+            if hasattr(self, 'feature_names_in_'):
+                # 如果指定了特征名，以该类的第一个特征为类名
+                names = numpy.empty(self.n_features_in_, dtype=object)
+                for j in range(ac.n_clusters_):
+                    mask = ac.labels_ == j
+                    names[mask] = self.feature_names_in_[mask][0]
+                    
+                names = names.astype(str)
+
+            else:
+                names = ac.labels_.astype(str)
+
+            outputs.append(names)
 
         return numpy.stack(outputs, axis=0)
 
