@@ -192,7 +192,7 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
         return numpy.stack(outputs, axis=0)
 
 
-class SimilarityComposer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     """
     合并方言字音各部分的相似度矩阵
     """
@@ -200,56 +200,15 @@ class SimilarityComposer(sklearn.base.BaseEstimator, sklearn.base.TransformerMix
     def __init__(
         self,
         column_selectors: Sequence[Union[str, Sequence, slice]] = ['initial', 'final', 'tone'],
+        mean_threshold: float = 0.05,
         dtype: Type = numpy.float64
     ):
         self.column_selectors = list(column_selectors)
+        self.mean_threshold = mean_threshold
         self.dtype = dtype
 
-    def fit(
-        self,
-        X: Union[numpy.ndarray, pandas.DataFrame],
-        y: Optional[numpy.ndarray] = None
-    ) -> 'SimilarityComposer':
-        """
-        训练模型，设置内部状态以准备转换数据。
-
-        Parameters:
-            X: 输入数据，可以是 NumPy 数组或 pandas DataFrame。
-            y: 目标变量，可选。
-
-        Returns:
-            self: 当前对象。
-        """
-
-        self.n_features_in_ = X.shape[1]
-        if isinstance(X, pandas.DataFrame):
-            self.feature_names_in_ = X.columns.values
-
-        self.input_indices_ = []
-        self.transformers_ = []
-        indices = numpy.arange(X.shape[1])
-        X_arr = numpy.asarray(X)
-        for s in self.column_selectors:
-            if isinstance(s, str):
-                assert isinstance(X, pandas.DataFrame)
-                idx = indices[X.columns.str.contains(s, regex=False)]
-                self.transformers_.append(PhoneSimilarity(self.dtype).fit(X.iloc[:, idx]))
-            else:
-                idx = indices[s]
-                self.transformers_.append(PhoneSimilarity(self.dtype).fit(X_arr[:, idx]))
-
-            self.input_indices_.append(idx)
-
-        limits = numpy.zeros(len(self.transformers_) + 1, dtype=int)
-        numpy.cumsum(
-            [t.n_features_out_ for t in self.transformers_],
-            out=limits[1:]
-        )
-        self.n_features_out_ = int(limits[-1])
-        self.output_indices_ = [slice(int(limits[i]), int(limits[i + 1])) \
-            for i in range(len(self.transformers_))]
-
-        return self
+    def _get_support_masks(self) -> list[numpy.ndarray[bool]]:
+        return [((m > self.mean_threshold) & (m < 1 - self.mean_threshold)) for m in self.means_]
 
     def fit_transform(
         self,
@@ -267,25 +226,60 @@ class SimilarityComposer(sklearn.base.BaseEstimator, sklearn.base.TransformerMix
             X_new: 转换后的相似度矩阵。
         """
 
-        return self.fit(X, y).transform(X)
+        self.n_features_in_ = X.shape[1]
+        if isinstance(X, pandas.DataFrame):
+            self.feature_names_in_ = X.columns.values
 
-    def get_feature_names_out(
+        self.transformers_ = []
+        indices = numpy.arange(X.shape[1])
+        X_arr = numpy.asarray(X)
+        vectors = []
+        for i, s in enumerate(self.column_selectors):
+            if isinstance(s, str):
+                assert isinstance(X, pandas.DataFrame)
+                name = s
+                idx = indices[X.columns.str.contains(s, regex=False)]
+                Xi = X.iloc[:, idx]
+            else:
+                name = f'phonesimilarity{i}'
+                idx = indices[s]
+                Xi = X_arr[:, idx]
+
+            t = PhoneSimilarity(self.dtype)
+            self.transformers_.append((name, t, idx))
+            vectors.append(t.fit_transform(Xi))
+
+        self.means_ = [numpy.asarray(v.mean(axis=0)).squeeze() for v in vectors]
+        masks = self._get_support_masks()
+        start = 0
+        self.output_indices_ = []
+        for m in masks:
+            stop = start + numpy.count_nonzero(m)
+            self.output_indices_.append(slice(start, stop))
+            start = stop
+
+        self.n_features_out_ = start
+
+        return scipy.sparse.hstack([v[:, m] for (v, m) in zip(vectors, masks)])
+
+    def fit(
         self,
-        input_features: Optional[Sequence[str]] = None
-    ) -> numpy.ndarray:
+        X: Union[numpy.ndarray, pandas.DataFrame],
+        y: Optional[numpy.ndarray] = None
+    ) -> 'DialectVectorizer':
         """
-        获取输出特征的名称。
+        训练模型，设置内部状态以准备转换数据。
 
         Parameters:
-            input_features: 输入特征名称，可选。
+            X: 输入数据，可以是 NumPy 数组或 pandas DataFrame。
+            y: 目标变量，可选。
 
         Returns:
-            feature_names_out: 输出特征名称数组。
+            self: 当前对象。
         """
 
-        return numpy.concatenate(
-            [t.get_feature_names_out(input_features) for t in self.transformers_]
-        )
+        self.fit_transform(X, y)
+        return self
 
     def transform(
         self,
@@ -302,11 +296,11 @@ class SimilarityComposer(sklearn.base.BaseEstimator, sklearn.base.TransformerMix
         """
 
         X = numpy.asarray(X)
+        masks = self._get_support_masks()
         return scipy.sparse.hstack(
-            [t.transform(X[:, i]) for i, t in zip(self.input_indices_, self.transformers_)],
+            [t.transform(X[:, i])[:, m] for (_, t, i), m in zip(self.transformers_, masks)],
             format='csr'
         )
-
 
     def inverse_transform(
         self,
@@ -328,11 +322,45 @@ class SimilarityComposer(sklearn.base.BaseEstimator, sklearn.base.TransformerMix
                 f'is expecting {self.n_features_out_} features as input.'
             )
 
-        X_original = numpy.empty((X.shape[0], self.n_features_in_), dtype=object)
-        for t, ii, oi in zip(self.transformers_, self.input_indices_, self.output_indices_):
-            X_original[:, ii] = t.inverse_transform(X[:, oi])
+        X = numpy.asarray(X)
+        X_original = numpy.full(
+            (X.shape[0], self.n_features_in_),
+            '',
+            dtype=object
+        )
+        masks = self._get_support_masks()
+        for (_, t, ii), oi, mean, mask in zip(
+            self.transformers_,
+            self.output_indices_,
+            self.means_,
+            masks
+        ):
+            X_inter = numpy.repeat(mean[None, :], X.shape[0], axis=0)
+            X_inter[:, mask] = X[:, oi]
+            X_original[:, ii] = t.inverse_transform(X_inter)
 
         return X_original.astype(str)
+
+    def get_feature_names_out(
+        self,
+        input_features: Optional[Sequence[str]] = None
+    ) -> numpy.ndarray:
+        """
+        获取转换后特征的名称。
+
+        Parameters:
+            input_features: 输入特征名称列表，可选。如果提供，则用于各子转换器的字段选择；
+                否则使用默认输入特征名称。
+
+        Returns:
+            feature_names_out: 输出特征名称数组，由各个子转换器的名称组成。
+        """
+
+        masks = self._get_support_masks()
+        return numpy.concatenate(
+            [t.get_feature_names_out(None if input_features is None else input_features[i])[m] \
+                for (_, t, i), m in zip(self.transformers_, masks)]
+        )
 
 
 class DialectEmbedding(sklearn.pipeline.Pipeline):
@@ -355,14 +383,13 @@ class DialectEmbedding(sklearn.pipeline.Pipeline):
         self,
         column_selectors: Sequence[Union[str, Sequence, slice]] = ['initial', 'final', 'tone'],
         embedding_size: int = 128,
-        min_variance: float = 0.05 * 0.95
+        mean_threshold: float = 0.05
     ):
         super().__init__([
-            ('vectorizer', SimilarityComposer(column_selectors)),
-            ('selector', sklearn.feature_selection.VarianceThreshold(min_variance)),
+            ('vectorizer', DialectVectorizer(column_selectors, mean_threshold)),
             ('embedding', sklearn.decomposition.TruncatedSVD(embedding_size))
         ])
 
         self.column_selectors = list(column_selectors)
         self.embedding_size = embedding_size
-        self.min_variance = min_variance
+        self.mean_threshold = mean_threshold
