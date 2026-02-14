@@ -15,7 +15,6 @@ import sklearn.metrics.pairwise
 import sklearn.pipeline
 import sklearn.feature_extraction.text
 import sklearn.feature_selection
-import sklearn.decomposition
 from typing import Optional, Sequence, Type, Union
 import pandas
 
@@ -194,27 +193,27 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
 
 class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
     """
-    合并方言字音各部分的相似度矩阵
+    合并方言字音各部分的相似度矩阵。
+
+    Parameters:
+        column_selectors: 字音特征的选择器列表。每个选择器可以是列名模式字符串，
+            也可以是列索引序列或 slice。
+        dtype: 计算相似度时使用的 NumPy 数据类型。
     """
 
     def __init__(
         self,
         column_selectors: Sequence[Union[str, Sequence, slice]] = ['initial', 'final', 'tone'],
-        mean_threshold: float = 0.05,
         dtype: Type = numpy.float64
     ):
         self.column_selectors = list(column_selectors)
-        self.mean_threshold = mean_threshold
         self.dtype = dtype
 
-    def _get_support_masks(self) -> list[numpy.ndarray[bool]]:
-        return [((m > self.mean_threshold) & (m < 1 - self.mean_threshold)) for m in self.means_]
-
-    def fit_transform(
+    def fit(
         self,
         X: Union[numpy.ndarray, pandas.DataFrame],
         y: Optional[numpy.ndarray] = None
-    ) -> scipy.sparse.csr_matrix:
+    ) -> 'DialectVectorizer':
         """
         训练模型并转换输入数据。
 
@@ -233,7 +232,8 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
         self.transformers_ = []
         indices = numpy.arange(X.shape[1])
         X_arr = numpy.asarray(X)
-        vectors = []
+        self.output_indices_ = []
+        start = 0
         for i, s in enumerate(self.column_selectors):
             if isinstance(s, str):
                 assert isinstance(X, pandas.DataFrame)
@@ -245,40 +245,13 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
                 idx = indices[s]
                 Xi = X_arr[:, idx]
 
-            t = PhoneSimilarity(self.dtype)
+            t = PhoneSimilarity(self.dtype).fit(Xi)
+            stop = start + t.n_features_out_
             self.transformers_.append((name, t, idx))
-            vectors.append(t.fit_transform(Xi))
-
-        self.means_ = [numpy.asarray(v.mean(axis=0)).squeeze() for v in vectors]
-        masks = self._get_support_masks()
-        start = 0
-        self.output_indices_ = []
-        for m in masks:
-            stop = start + numpy.count_nonzero(m)
             self.output_indices_.append(slice(start, stop))
             start = stop
 
         self.n_features_out_ = start
-
-        return scipy.sparse.hstack([v[:, m] for (v, m) in zip(vectors, masks)])
-
-    def fit(
-        self,
-        X: Union[numpy.ndarray, pandas.DataFrame],
-        y: Optional[numpy.ndarray] = None
-    ) -> 'DialectVectorizer':
-        """
-        训练模型，设置内部状态以准备转换数据。
-
-        Parameters:
-            X: 输入数据，可以是 NumPy 数组或 pandas DataFrame。
-            y: 目标变量，可选。
-
-        Returns:
-            self: 当前对象。
-        """
-
-        self.fit_transform(X, y)
         return self
 
     def transform(
@@ -295,12 +268,21 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
             X_new: 合并的相似度矩阵。
         """
 
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f'X has {X.shape[1]} features, but DialectVectorizer is expecting {self.n_features_in_} features as input.')
+
         X = numpy.asarray(X)
-        masks = self._get_support_masks()
         return scipy.sparse.hstack(
-            [t.transform(X[:, i])[:, m] for (_, t, i), m in zip(self.transformers_, masks)],
+            [t.transform(X[:, i]) for _, t, i in self.transformers_],
             format='csr'
         )
+
+    def fit_transform(
+        self,
+        X: Union[numpy.ndarray, pandas.DataFrame],
+        y: Optional[numpy.ndarray] = None
+    ) -> scipy.sparse.csr_matrix:
+       return self.fit(X, y).transform(X)
 
     def inverse_transform(
         self,
@@ -328,16 +310,8 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
             '',
             dtype=object
         )
-        masks = self._get_support_masks()
-        for (_, t, ii), oi, mean, mask in zip(
-            self.transformers_,
-            self.output_indices_,
-            self.means_,
-            masks
-        ):
-            X_inter = numpy.repeat(mean[None, :], X.shape[0], axis=0)
-            X_inter[:, mask] = X[:, oi]
-            X_original[:, ii] = t.inverse_transform(X_inter)
+        for (_, t, ii), oi in zip(self.transformers_, self.output_indices_):
+            X_original[:, ii] = t.inverse_transform(X[:, oi])
 
         return X_original.astype(str)
 
@@ -356,14 +330,13 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
             feature_names_out: 输出特征名称数组，由各个子转换器的名称组成。
         """
 
-        masks = self._get_support_masks()
         return numpy.concatenate(
-            [t.get_feature_names_out(None if input_features is None else input_features[i])[m] \
-                for (_, t, i), m in zip(self.transformers_, masks)]
+            [t.get_feature_names_out(None if input_features is None else input_features[i]) \
+                for _, t, i in self.transformers_]
         )
 
 
-class DialectEmbedding(sklearn.pipeline.Pipeline):
+class DialectEmbedding(sklearn.base.BaseEstimator):
     """
     根据方言中字音的两两相似度，计算方言向量
 
@@ -381,15 +354,65 @@ class DialectEmbedding(sklearn.pipeline.Pipeline):
 
     def __init__(
         self,
-        column_selectors: Sequence[Union[str, Sequence, slice]] = ['initial', 'final', 'tone'],
         embedding_size: int = 128,
         mean_threshold: float = 0.05
     ):
-        super().__init__([
-            ('vectorizer', DialectVectorizer(column_selectors, mean_threshold)),
-            ('embedding', sklearn.decomposition.TruncatedSVD(embedding_size))
-        ])
-
-        self.column_selectors = list(column_selectors)
         self.embedding_size = embedding_size
         self.mean_threshold = mean_threshold
+
+    def _get_support_mask(self):
+        return (self.mean_ > self.mean_threshold) & (self.mean_ < 1 - self.mean_threshold)
+
+    def fit_transform(
+        self,
+        X: scipy.sparse.csr_matrix,
+        y: Optional[numpy.ndarray] = None
+    ) -> numpy.ndarray:
+        self.n_features_in_ = X.shape[1]
+        self.n_features_out_ = self.embedding_size
+
+        self.mean_ = numpy.squeeze(numpy.asarray(X.mean(axis=0)))
+        X_new = X[:, self._get_support_mask()]
+        X_new /= X.shape[1]
+
+        u, s, vt = scipy.sparse.linalg.svds(X_new, self.embedding_size)
+        u, s, vt = u[:, ::-1], s[::-1], vt[::-1]
+
+        self.components_ = numpy.asarray(vt)
+        self.singular_values_ = s
+        self.explained_variance_ = numpy.var(u * s[None, :], axis=0)
+        var_sum = X_new.multiply(X_new).sum() / X_new.shape[0] - numpy.linalg.norm(X_new.mean(axis=0)) ** 2
+        self.explained_variance_ratio_ = self.explained_variance_ / var_sum
+
+        return numpy.asarray(u) * numpy.sqrt(s)[None, :]
+
+    def fit(
+        self,
+        X: scipy.sparse.csr_matrix,
+        y: Optional[numpy.ndarray] = None
+    ) -> 'DialectEmbedding':
+        self.fit_transform(X, y)
+        return self
+
+    def transform(self, X: scipy.sparse.csr_matrix) -> numpy.ndarray:
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f'X has {X.shape[1]} features, but DialectEmbedding is expecting {self.n_features_in_} features as input.')
+
+        X_new = X[:, self._get_support_mask()]
+        X_new /= X_new.shape[1]
+        return X_new @ self.components_.T * numpy.sqrt(1 / self.singular_values_)[None, :]
+
+    def inverse_transform(
+        self,
+        X: Union[numpy.ndarray, pandas.DataFrame]
+    ) -> numpy.ndarray:
+        X = numpy.asarray(X)
+        if X.shape[1] != self.n_features_out_:
+            raise ValueError(f'X has {X.shape[1]} features, but DialectEmbedding is expecting {self.n_features_out_} features as input.')
+
+        X = numpy.asarray(X)
+        X_original = numpy.repeat(self.mean_[None, :], X.shape[0], axis=0)
+        mask = self._get_support_mask()
+        Xt = X * numpy.sqrt(self.singular_values_)[None, :] @ self.components_
+        X_original[:, mask] = Xt * Xt.shape[1]
+        return X_original
