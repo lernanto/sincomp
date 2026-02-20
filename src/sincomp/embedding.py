@@ -368,23 +368,30 @@ class DialectEmbedding(sklearn.base.BaseEstimator):
         X: scipy.sparse.csr_matrix,
         y: Optional[numpy.ndarray] = None
     ) -> numpy.ndarray:
+        self.embedding_size_ = min(self.embedding_size, X.shape[0] - 1, X.shape[1] - 1)
         self.n_features_in_ = X.shape[1]
-        self.n_features_out_ = self.embedding_size
+        self.n_features_out_ = self.embedding_size_
 
         self.mean_ = numpy.squeeze(numpy.asarray(X.mean(axis=0)))
-        X_new = X[:, self._get_support_mask()]
-        X_new /= X.shape[1]
 
-        u, s, vt = scipy.sparse.linalg.svds(X_new, self.embedding_size)
+        u, s, vt = scipy.sparse.linalg.svds(
+            X[:, self._get_support_mask()],
+            self.embedding_size_
+        )
         u, s, vt = u[:, ::-1], s[::-1], vt[::-1]
 
         self.components_ = numpy.asarray(vt)
         self.singular_values_ = s
         self.explained_variance_ = numpy.var(u * s[None, :], axis=0)
-        var_sum = X_new.multiply(X_new).sum() / X_new.shape[0] - numpy.linalg.norm(X_new.mean(axis=0)) ** 2
+        var_sum = X.multiply(X).sum() / X.shape[0] \
+            - numpy.linalg.norm(self.mean_) ** 2
         self.explained_variance_ratio_ = self.explained_variance_ / var_sum
 
-        return numpy.asarray(u) * numpy.sqrt(s)[None, :]
+        Xt = numpy.asarray(u) * s[None, :]
+        self.scale_ = numpy.exp(
+            numpy.mean(numpy.log(numpy.linalg.norm(Xt, axis=1)))
+        )
+        return Xt / self.scale_
 
     def fit(
         self,
@@ -398,9 +405,7 @@ class DialectEmbedding(sklearn.base.BaseEstimator):
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f'X has {X.shape[1]} features, but DialectEmbedding is expecting {self.n_features_in_} features as input.')
 
-        X_new = X[:, self._get_support_mask()]
-        X_new /= X_new.shape[1]
-        return X_new @ self.components_.T * numpy.sqrt(1 / self.singular_values_)[None, :]
+        return X[:, self._get_support_mask()] @ self.components_.T / self.scale_
 
     def inverse_transform(
         self,
@@ -412,7 +417,5 @@ class DialectEmbedding(sklearn.base.BaseEstimator):
 
         X = numpy.asarray(X)
         X_original = numpy.repeat(self.mean_[None, :], X.shape[0], axis=0)
-        mask = self._get_support_mask()
-        Xt = X * numpy.sqrt(self.singular_values_)[None, :] @ self.components_
-        X_original[:, mask] = Xt * Xt.shape[1]
+        X_original[:, self._get_support_mask()] = X * self.scale_ @ self.components_
         return X_original
