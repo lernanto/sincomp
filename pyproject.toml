@@ -39,6 +39,7 @@ datasets = [
 ]
 models = [
     "tensorflow>=2.8",
+    "tensorboard>=2.8",
 ]
 parser = [
     "sklearn-crfsuite",
