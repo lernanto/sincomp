@@ -11,6 +11,7 @@ import numpy
 import scipy
 import sklearn.cluster
 import sklearn.compose
+import sklearn.decomposition
 import sklearn.metrics.pairwise
 import sklearn.pipeline
 import sklearn.feature_extraction.text
@@ -419,3 +420,321 @@ class DialectEmbedding(sklearn.base.BaseEstimator):
         X_original = numpy.repeat(self.mean_[None, :], X.shape[0], axis=0)
         X_original[:, self._get_support_mask()] = X * self.scale_ @ self.components_
         return X_original
+
+
+class CharacterVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixin):
+    """Convert a wide dialect phone table into character multi-hot encoding.
+
+    The input must be a wide table with one row per character and one phone
+    feature per column. DataFrame columns must be unique and must not be a
+    MultiIndex.
+
+    Parameters
+    ----------
+    dtype : type, default=numpy.int32
+        Data type of the encoded output.
+
+    Attributes
+    ----------
+    feature_names_in_ : pandas.Index or list of str
+        Names of the input phone feature columns seen during fitting.
+    transformer_ : sklearn.compose.ColumnTransformer
+        Column transformer containing one fitted CountVectorizer per input
+        column.
+    vocabularies_ : list of dict
+        Token-to-index vocabulary for each input column.
+    """
+
+    def __init__(self, dtype=numpy.int32):
+        self.dtype = dtype
+
+    def fit(
+        self,
+        X: Union[pandas.DataFrame, numpy.ndarray],
+        y: Optional[numpy.ndarray] = None
+    ) -> 'CharacterVectorizer':
+        """Fit the transformer on a wide dialect phone table.
+
+        Parameters
+        ----------
+        X : pandas.DataFrame or numpy.ndarray
+            Wide input table with one phone feature per column.
+        y : numpy.ndarray, default=None
+            Ignored. This parameter exists for compatibility with the
+            scikit-learn transformer API.
+
+        Returns
+        -------
+        CharacterVectorizer
+            Fitted transformer.
+        """
+
+        if X.shape[1] == 0:
+            raise ValueError('Input must contain at least one phone column.')
+
+        self.feature_names_in_ = X.columns if isinstance(X, pandas.DataFrame) \
+            else [f'x{i}' for i in range(X.shape[1])]
+
+        vectorizer = sklearn.feature_extraction.text.CountVectorizer(
+            lowercase=False,
+            tokenizer=str.split,
+            token_pattern=None,
+            stop_words=None,
+            binary=True,
+            dtype=self.dtype
+        )
+        self.transformer_ = sklearn.compose.ColumnTransformer(
+            [(n, vectorizer, n) for n in self.feature_names_in_],
+            remainder='drop',
+            sparse_threshold=1.0
+        ).fit(X)
+
+        self.vocabularies_ = [
+            self.transformer_.named_transformers_[n].vocabulary_
+            for n in self.feature_names_in_
+        ]
+
+        return self
+
+    def transform(
+        self,
+        X: Union[pandas.DataFrame, numpy.ndarray]
+    ) -> scipy.sparse.spmatrix:
+        """Transform a wide dialect phone table into character encodings.
+
+        Parameters
+        ----------
+        X : pandas.DataFrame or numpy.ndarray
+            Wide input table with phone feature columns matching the data
+            used during fitting.
+
+        Returns
+        -------
+        scipy.sparse.spmatrix
+            Sparse multi-hot encoding matrix.
+        """
+
+        if not hasattr(self, 'transformer_'):
+            raise ValueError('CharacterVectorizer is not fitted yet.')
+
+        return self.transformer_.transform(X)
+
+    def fit_transform(
+        self,
+        X: Union[pandas.DataFrame, numpy.ndarray],
+        y: Optional[numpy.ndarray] = None
+    ) -> scipy.sparse.spmatrix:
+        """Fit the transformer and transform the input in one step.
+
+        Parameters
+        ----------
+        X : pandas.DataFrame or numpy.ndarray
+            Wide input table with phone feature columns.
+        y : numpy.ndarray, default=None
+            Ignored. This parameter exists for compatibility with the
+            scikit-learn transformer API.
+
+        Returns
+        -------
+        scipy.sparse.spmatrix
+            Sparse multi-hot encoding matrix.
+        """
+
+        return self.fit(X, y).transform(X)
+
+    def get_feature_names_out(
+        self,
+        input_features: Optional[Sequence[str]] = None
+    ) -> numpy.ndarray:
+        """Get output feature names for the multi-hot character encoding.
+
+        Parameters
+        ----------
+        input_features : Sequence[str], default=None
+            Ignored. The output names are determined by the fitted
+            vectorizers.
+
+        Returns
+        -------
+        numpy.ndarray
+            Output feature names.
+        """
+
+        if not hasattr(self, 'transformer_'):
+            raise ValueError('CharacterVectorizer is not fitted yet.')
+        return self.transformer_.get_feature_names_out()
+
+
+class CharacterEmbedding(
+    sklearn.base.BaseEstimator,
+    sklearn.base.TransformerMixin
+):
+    """Convert character multi-hot encodings into dense embeddings.
+
+    The embedding is computed with truncated singular value decomposition.
+
+    Parameters
+    ----------
+    embedding_size : int, default=128
+        Maximum number of dimensions in the output embedding. The effective
+        size is limited by the number of samples and input features.
+    dtype : type, default=numpy.float32
+        Data type of the embedding output.
+
+    Attributes
+    ----------
+    n_features_in_ : int
+        Number of input features seen during fitting.
+    n_features_out_ : int
+        Number of output embedding dimensions.
+    svd_ : sklearn.decomposition.TruncatedSVD
+        Fitted truncated SVD estimator.
+    character_embeddings_ : numpy.ndarray
+        Training data transformed into the embedding space.
+    components_ : numpy.ndarray
+        Principal components of the fitted SVD model.
+    singular_values_ : numpy.ndarray
+        Singular values of the fitted SVD model.
+    explained_variance_ : numpy.ndarray
+        Explained variance for each selected component.
+    explained_variance_ratio_ : numpy.ndarray
+        Percentage of variance explained by each selected component.
+    """
+
+    def __init__(
+        self,
+        embedding_size: int = 128,
+        dtype: Type = numpy.float32
+    ):
+        self.embedding_size = embedding_size
+        self.dtype = dtype
+
+    def fit(
+        self,
+        X: Union[scipy.sparse.spmatrix, numpy.ndarray],
+        y: Optional[numpy.ndarray] = None
+    ) -> 'CharacterEmbedding':
+        """Fit a TruncatedSVD model on character encodings.
+
+        Parameters
+        ----------
+        X : scipy.sparse.spmatrix or numpy.ndarray
+            Character multi-hot encoding matrix.
+        y : numpy.ndarray, default=None
+            Ignored. This parameter exists for compatibility with the
+            scikit-learn transformer API.
+
+        Returns
+        -------
+        CharacterEmbedding
+            Fitted transformer.
+        """
+
+        X = scipy.sparse.csr_matrix(X, dtype=self.dtype) \
+            if not scipy.sparse.isspmatrix(X) else X.astype(self.dtype)
+        self.n_features_in_ = X.shape[1]
+        embedding_size = min(
+            self.embedding_size,
+            X.shape[0],
+            X.shape[1]
+        )
+        self.n_features_out_ = embedding_size
+
+        self.svd_ = sklearn.decomposition.TruncatedSVD(embedding_size)
+        self.character_embeddings_ = self.svd_.fit_transform(X)
+        self.components_ = self.svd_.components_
+        self.singular_values_ = self.svd_.singular_values_
+        self.explained_variance_ = self.svd_.explained_variance_
+        self.explained_variance_ratio_ = self.svd_.explained_variance_ratio_
+        return self
+
+    def transform(
+        self,
+        X: Union[scipy.sparse.spmatrix, numpy.ndarray]
+    ) -> numpy.ndarray:
+        """Transform character multi-hot encoding into dense embeddings.
+
+        Parameters
+        ----------
+        X : scipy.sparse.spmatrix or numpy.ndarray
+            Character multi-hot encoding matrix with the same number of
+            features as the data used during fitting.
+
+        Returns
+        -------
+        numpy.ndarray
+            Dense character embeddings.
+        """
+
+        if not hasattr(self, 'svd_'):
+            raise ValueError('CharacterEmbedding is not fitted yet.')
+        X = scipy.sparse.csr_matrix(X, dtype=self.dtype) \
+            if not scipy.sparse.isspmatrix(X) else X.astype(self.dtype)
+        return self.svd_.transform(X)
+
+    def fit_transform(
+        self,
+        X: Union[scipy.sparse.spmatrix, numpy.ndarray],
+        y: Optional[numpy.ndarray] = None
+    ) -> numpy.ndarray:
+        """Fit the transformer and transform the input in one step.
+
+        Parameters
+        ----------
+        X : scipy.sparse.spmatrix or numpy.ndarray
+            Character multi-hot encoding matrix.
+        y : numpy.ndarray, default=None
+            Ignored. This parameter exists for compatibility with the
+            scikit-learn transformer API.
+
+        Returns
+        -------
+        numpy.ndarray
+            Dense character embeddings.
+        """
+
+        return self.fit(X, y).transform(X)
+
+    def inverse_transform(
+        self,
+        X: Union[numpy.ndarray, pandas.DataFrame]
+    ) -> numpy.ndarray:
+        """Inverse transform dense embeddings back to feature space.
+
+        Parameters
+        ----------
+        X : numpy.ndarray or pandas.DataFrame
+            Dense character embeddings.
+
+        Returns
+        -------
+        numpy.ndarray
+            Reconstructed multi-hot-like feature matrix.
+        """
+
+        if not hasattr(self, 'svd_'):
+            raise ValueError('CharacterEmbedding is not fitted yet.')
+        X = numpy.asarray(X)
+        return self.svd_.inverse_transform(X)
+
+    def get_feature_names_out(
+        self,
+        input_features: Optional[Sequence[str]] = None
+    ) -> numpy.ndarray:
+        """Get output feature names for the dense embeddings.
+
+        Parameters
+        ----------
+        input_features : Sequence[str], default=None
+            Ignored. Embedding feature names are generated from the fitted
+            embedding size.
+
+        Returns
+        -------
+        numpy.ndarray
+            Output embedding feature names.
+        """
+
+        return numpy.asarray([
+            f'embed_{i}' for i in range(self.n_features_out_)
+        ])
