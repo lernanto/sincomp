@@ -142,7 +142,7 @@ sim = sincomp.similarity.chi2(data)
 | 数据集 | 目录 |
 |:-|:-|
 | 小学堂 | datasets/ccr/*.xlsx |
-| 汉字音典 | datasets/mcpdict/tools/tables/output/*.tsv |
+| 汉字音典 | datasets/mcpdict/*.tsv |
 | 语保 | datasets/zhongguoyuyan/*.json |
 
 如果由于网络或其他原因下载失败，可以手动到上文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
