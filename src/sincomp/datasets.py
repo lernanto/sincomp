@@ -837,19 +837,19 @@ class MCPDictDataset(Dataset):
 
         with urllib.request.urlopen(url) as res:
             with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
-                os.makedirs(
-                    os.path.join(output, 'tools', 'tables', 'output'),
-                    exist_ok=True
-                )
+                os.makedirs(output, exist_ok=True)
                 logger.info(f'extracting files to {output} ...')
 
                 for info in zf.infolist():
                     # 路径第一段是带版本号的项目名，需去除
-                    path = info.filename.partition('/')[2]
+                    path = info.filename.split('/')
                     # 把字音数据目录的所有文件解压到目标路径
-                    if not info.is_dir() and path.startswith('tools/tables/output/'):
+                    if (not info.is_dir()) and (len(path) > 4) \
+                        and (path[1] == 'tools') and (path[2] == 'tables') \
+                        and (path[3] == 'output'):
                         logger.info(f'extracting {info.filename} ...')
-                        path = os.path.join(*[output] + path.split('/'))
+                        path = os.path.join(*[output] + path[4:])
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
                         with open(path, 'wb') as of:
                             of.write(zf.read(info))
 
@@ -867,12 +867,11 @@ class MCPDictDataset(Dataset):
         如果文件不存在，先从项目页面下载。
         """
 
-        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
-        if not os.path.isdir(path):
+        fname = os.path.join(self._cache_dir, '_詳情.json')
+        if not os.path.exists(fname):
             # 数据文件不存在，先从汉字音典项目页面下载
             self.download(self._cache_dir)
 
-        fname = os.path.join(path, '_詳情.json')
         info = pandas.read_json(fname, orient='index', encoding='utf-8')
 
         tm = []
@@ -914,12 +913,11 @@ class MCPDictDataset(Dataset):
                 .set_index('did')
 
         else:
-            prefix = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
-            if not os.path.isdir(prefix):
+            fname = os.path.join(self._cache_dir, '_詳情.json')
+            if not os.path.exists(fname):
                 # 数据文件不存在，先从汉字音典项目页面下载
                 self.download(self._cache_dir)
 
-            fname = os.path.join(prefix, '_詳情.json')
             logger.debug(f'load dialect information from {fname}')
             dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
 
@@ -929,18 +927,23 @@ class MCPDictDataset(Dataset):
                 (~dialects['地圖集二分區'].isin(['歷史音', '民族語', '域外方音', '戲劇'])) \
                 & ((self.tone_map.groupby(level=0)['tone'].nunique() > 1) \
                     .reindex(dialects.index, fill_value=False)) \
-                & ((prefix + os.sep + dialects.index + '.tsv').map(os.path.isfile))
+                & ((self._cache_dir + os.sep + dialects.index + '.tsv') \
+                    .map(os.path.isfile))
             ]
 
             # 部分方言数据不适合批量处理，根据读音数据进一步过滤
             keep = numpy.zeros(dialects.shape[0], dtype=bool)
             for i, did in enumerate(dialects.index):
+                fname = os.path.join(self._cache_dir, did + '.tsv')
+                logger.debug(f'load dialect data from {fname}')
                 data = pandas.read_csv(
-                    os.path.join(prefix, did + '.tsv'),
+                    fname,
                     sep='\t',
                     usecols=[1],
                     dtype=str,
-                    encoding='utf-8'
+                    engine='python',
+                    encoding='utf-8',
+                    on_bad_lines='skip'
                 )
                 segments = data.iloc[:, 0].str.extract(
                     r'([^0-9]*)([0-9][0-9a-z]*)?',
@@ -1048,12 +1051,11 @@ class MCPDictDataset(Dataset):
         如果文件不存在，先从项目页面下载。
         """
 
-        path = os.path.join(self._cache_dir, 'tools', 'tables', 'output')
-        if not os.path.isdir(path):
+        fname = os.path.join(self._cache_dir, did + '.tsv')
+        if not os.path.exists(fname):
             # 数据文件不存在，先从汉字音典项目页面下载
             self.download(self._cache_dir)
 
-        fname = os.path.join(path, did + '.tsv')
         logger.debug(f'load data from {fname}')
         data = pandas.read_csv(
             fname,
