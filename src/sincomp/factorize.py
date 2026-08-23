@@ -469,7 +469,7 @@ def factorize_svd(
 
     phone_embs = pipeline.steps[1][1].components_.T
     chars = numpy.concatenate([data.index[mask].values, data.index[~mask].values])
-    dialects = data.columns.get_level_values(0).unique().values
+    dialects = numpy.asarray(data.columns.get_level_values(0).unique())
     phones = pandas.Series(
         [t[1].get_feature_names_out() for t in pipeline.steps[0][1].transformers_],
         index=data.columns
