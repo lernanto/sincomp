@@ -161,12 +161,17 @@ class PhoneSimilarity(sklearn.base.BaseEstimator):
                 f'is expecting {self.n_features_out_} features as input.'
             )
 
+        if self.n_features_in_ == 1:
+            name = self.feature_names_in_[0] if hasattr(
+                self, 'feature_names_in_'
+            ) else '0'
+            return numpy.full((X.shape[0], 1), name, dtype=str)
+
         outputs = []
         for i in range(X.shape[0]):
-            Xi = numpy.reshape(
-                numpy.asarray(X[i:i + 1]),
-                (self.n_features_in_, self.n_features_in_)
-            )
+            Xi = X[i:i + 1].toarray() \
+                if scipy.sparse.issparse(X) else numpy.asarray(X[i:i + 1])
+            Xi = numpy.reshape(Xi, (self.n_features_in_, self.n_features_in_))
             dist = numpy.clip(1 - (Xi + Xi.T), 0, 1)
             ac = sklearn.cluster.AgglomerativeClustering(
                 n_clusters=None,
@@ -272,7 +277,7 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f'X has {X.shape[1]} features, but DialectVectorizer is expecting {self.n_features_in_} features as input.')
 
-        X = numpy.asarray(X)
+        X = X.toarray() if scipy.sparse.issparse(X) else numpy.asarray(X)
         return scipy.sparse.hstack(
             [t.transform(X[:, i]) for _, t, i in self.transformers_],
             format='csr'
@@ -305,7 +310,7 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
                 f'is expecting {self.n_features_out_} features as input.'
             )
 
-        X = numpy.asarray(X)
+        X = X.toarray() if scipy.sparse.issparse(X) else numpy.asarray(X)
         X_original = numpy.full(
             (X.shape[0], self.n_features_in_),
             '',
@@ -331,9 +336,16 @@ class DialectVectorizer(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
             feature_names_out: 输出特征名称数组，由各个子转换器的名称组成。
         """
 
+        if input_features is None:
+            input_features = getattr(
+                self,
+                'feature_names_in_',
+                [f'x{i}' for i in range(self.n_features_in_)]
+            )
+        input_features = numpy.asarray(input_features)
         return numpy.concatenate(
-            [t.get_feature_names_out(None if input_features is None else input_features[i]) \
-                for _, t, i in self.transformers_]
+            [t.get_feature_names_out(input_features[i])
+             for _, t, i in self.transformers_]
         )
 
 
