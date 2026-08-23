@@ -1099,9 +1099,13 @@ def impute(
     """
 
     imputed = data.copy()
-    if isinstance(data, pandas.DataFrame):
-        data = data.fillna('').values
-        output = imputed.values
+    is_dataframe = isinstance(data, pandas.DataFrame)
+    if is_dataframe:
+        data = data.fillna('').to_numpy(dtype=str)
+        output = numpy.empty(data.shape, dtype=object)
+        output[:] = data
+    else:
+        output = imputed.copy()
 
     dist = character_distances(data)
 
@@ -1115,4 +1119,10 @@ def impute(
     )):
         output[:, i] = o
 
+    if is_dataframe:
+        return pandas.DataFrame(
+            output,
+            index=imputed.index,
+            columns=imputed.columns
+        )
     return imputed
