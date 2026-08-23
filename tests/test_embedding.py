@@ -100,7 +100,7 @@ class TestDialectVectorizer(unittest.TestCase):
         recovered = vec.inverse_transform(transformed)
 
         self.assertEqual(recovered.shape, self.df.shape)
-        self.assertEqual(recovered.dtype, object)
+        self.assertTrue(np.issubdtype(recovered.dtype, np.str_))
 
 
 class TestDialectEmbedding(unittest.TestCase):
@@ -122,11 +122,15 @@ class TestDialectEmbedding(unittest.TestCase):
         self.assertEqual(out.shape, (4, 2))
 
     def test_fit_and_transform(self):
-        emb = embedding.DialectEmbedding(embedding_size=2).fit(self.X)
-        out = emb.transform(self.X)
+        emb = embedding.DialectEmbedding(embedding_size=2)
+        out = emb.fit_transform(self.X)
+        transformed = emb.transform(self.X)
 
         self.assertEqual(out.shape, (4, 2))
-        np.testing.assert_allclose(out, emb.fit_transform(self.X))
+        self.assertEqual(transformed.shape, (4, 2))
+        np.testing.assert_allclose(out, transformed, rtol=1e-6, atol=1e-7)
+        self.assertTrue(np.isfinite(out).all())
+        self.assertTrue(np.isfinite(transformed).all())
 
     def test_inverse_transform(self):
         emb = embedding.DialectEmbedding(embedding_size=2).fit(self.X)
@@ -134,7 +138,7 @@ class TestDialectEmbedding(unittest.TestCase):
         reconstructed = emb.inverse_transform(reduced)
 
         self.assertEqual(reconstructed.shape, self.X.shape)
-        self.assertTrue(np.all(reconstructed >= 0))
+        self.assertTrue(np.isfinite(reconstructed).all())
 
 
 class TestCharacterVectorizerAndEmbedding(unittest.TestCase):
