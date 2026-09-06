@@ -38,7 +38,7 @@ print(ccr.sample(1))
 在 Linux 终端或 Windows PowerShell 运行如下命令计算小学堂语料集所有方言两两之间的相似度：
 
 ```shell
-python3 -O -m sincomp.similarity
+sincomp similarity
 ```
 
 视机器性能运行时间可能较久，完成后会在当前目录生成两个文件：
@@ -70,6 +70,36 @@ sim = sincomp.similarity.chi2(data)
 
 更多使用方法参考该模块的帮助及注释。
 
+### 命令行接口
+
+安装本工具后，可以使用以下人类友好的命令：
+
+```shell
+sincomp align DATASET [DATASET ...]
+sincomp align evaluate DATASET
+sincomp compare DATASET [OUTPUT]
+sincomp similarity [DATASET ...]
+```
+
+面向智能体或其他程序调用时，可以使用带有模块命名空间的入口：
+
+```shell
+sincomp.cli.align align DATASET [DATASET ...]
+sincomp.cli.align evaluate DATASET
+sincomp.cli.compare DATASET [OUTPUT]
+sincomp.cli.similarity [DATASET ...]
+```
+
+`align evaluate` 是目前唯一在终端输出评测结果的命令。人类入口默认输出文本，智能体入口默认输出 JSON，也可以显式指定格式：
+
+```shell
+sincomp align evaluate DATASET
+sincomp.cli.align evaluate --format json DATASET
+sincomp.cli.align evaluate --format text DATASET
+```
+
+`align`、`compare` 和 `similarity` 的主要结果写入 CSV 等文件；这些结果文件的格式与命令入口无关。`compare` 默认生成 `{dataset}_compliance_l{norm}.csv`，`similarity` 默认生成 `{dataset}_chi2.csv` 和 `{dataset}_entropy.csv`。
+
 ## 模块
 
 本库包含以下主要模块：
@@ -81,6 +111,7 @@ sim = sincomp.similarity.chi2(data)
 | align | 对齐不同数据集之间的字 ID |
 | similarity | 提供若干无监督的方法计算方言之间的相似度 |
 | compare | 支持手工设定的规则来计算方言对规则的符合程度 |
+| cli | 提供统一的面向人类和智能体的命令行入口 |
 | models | 为方言读音建模，当前主要是基于浅层神经网络的编解码器模型 |
 | plot | 提供制作方言统计图、方言地图等的工具函数 |
 

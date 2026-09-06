@@ -678,7 +678,7 @@ def main(args: argparse.Namespace) -> None:
                 logger.info(f'save {data.shape[0]} aligned data to {path}...')
                 data.to_csv(path, index=False, encoding='utf-8', lineterminator='\n')
 
-def evaluate(args: argparse.Namespace) -> None:
+def evaluate(args: argparse.Namespace) -> dict[str, float] | None:
     """
     使用单个数据集评测多音字对齐准确率
 
@@ -732,7 +732,8 @@ def evaluate(args: argparse.Namespace) -> None:
         logger.info(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
         accuracies.append(acc.mean())
 
-    print(f'accuracy = {numpy.mean(accuracies):.4f}±{numpy.std(accuracies):.4f}')
+    cid_accuracy = numpy.mean(accuracies)
+    cid_deviation = numpy.std(accuracies)
 
     accuracies = []
 
@@ -768,52 +769,12 @@ def evaluate(args: argparse.Namespace) -> None:
         logger.info(f'{dataset.name}: accuracy = {acc.mean()}({acc.sum()}/{acc.count()})')
         accuracies.append(acc.mean())
 
-    print(f'accuracy = {numpy.mean(accuracies):.4f}±{numpy.std(accuracies):.4f}')
+    no_cid_accuracy = numpy.mean(accuracies)
+    no_cid_deviation = numpy.std(accuracies)
+    return {
+        'cid_accuracy': cid_accuracy,
+        'cid_std': cid_deviation,
+        'no_cid_accuracy': no_cid_accuracy,
+        'no_cid_std': no_cid_deviation,
+    }
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser('对齐指定的数据集生成新的汇总数据集')
-    parser.add_argument('-l', '--log-level', default='WARNING', help='日志级别')
-    parser.add_argument(
-        '-e',
-        '--evaluate',
-        default=False,
-        action='store_true',
-        help='使用单个数据集评测多音字对齐准确率'
-    )
-    parser.add_argument(
-        '-n',
-        '--embedding-size',
-        type=int,
-        default=32,
-        help='用于对齐多音字的字向量长度'
-    )
-    parser.add_argument(
-        '--prefix',
-        default='aligned',
-        help='对齐后的数据集输出路径前缀'
-    )
-    parser.add_argument(
-        '--charmap-output',
-        default='charmap.csv',
-        help='新旧字 ID 映射表输出文件'
-    )
-    parser.add_argument(
-        '--character-output',
-        default=os.path.join('aligned', '.characters'),
-        help='对齐后的新字 ID 到各数据集的原字 ID 的映射文件'
-    )
-    parser.add_argument(
-        '--dialect-output',
-        default=os.path.join('aligned', '.dialects'),
-        help='合并各数据集的方言信息文件'
-    )
-    parser.add_argument('datasets', nargs='+', help='要对齐的数据集列表')
-    args = parser.parse_args()
-
-    logger.setLevel(getattr(logging, args.log_level.upper()))
-
-    if args.evaluate:
-        evaluate(args)
-    else:
-        main(args)

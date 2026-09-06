@@ -5,7 +5,6 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import argparse
 import logging
 import numpy
 import pandas
@@ -121,59 +120,3 @@ def compliance(
     # 结果数据按输入规则的顺序重新排序
     return pandas.concat(comp, axis=1).reindex(rules.index, axis=1)
 
-
-if __name__ == '__main__':
-    from . import datasets, preprocess
-
-
-    parser = argparse.ArgumentParser(globals().get('__doc__'))
-    parser.add_argument(
-        '-l',
-        '--log-level',
-        default='WARNING',
-        help='日志级别'
-    )
-    parser.add_argument('-r', '--rule-file', default='rules.json', help='语音规则文件')
-    parser.add_argument(
-        '-n',
-        '--norm',
-        type=int,
-        default=2,
-        help='把规则符合度归一化到 [0, 1]'
-    )
-    parser.add_argument('dataset', help='指定输入方言数据集')
-    parser.add_argument('output', nargs='?', help='输出文件名')
-    args = parser.parse_args()
-
-    logger.setLevel(getattr(logging, args.log_level.upper()))
-
-    dataset = datasets.get(args.dataset)
-    output = f'{dataset.name}_compliance_l{args.norm}.csv' \
-        if args.output is None else args.output
-
-    logger.info(
-        f'compute rule compliance for {dataset.name}, '
-        f'norm = {args.norm}, output = {output}'
-    )
-
-    rules = load_rules(args.rule_file)
-    encoder = sklearn.preprocessing.LabelEncoder()
-    rules['feature_id'] = encoder.fit_transform(rules['feature'])
-
-    data = dataset.data
-    if 'cid' not in data.columns:
-        # 没有字 ID 的数据集使用字形作为 ID
-        data = data.rename(columns={'character': 'cid'}).dropna(subset='cid')
-
-    data = preprocess.transform(
-        data,
-        index='cid',
-        columns='did',
-        values=encoder.classes_,
-        aggfunc=lambda x: ' '.join(x.dropna())
-    )
-
-    comp = compliance(data, rules, norm=args.norm if args.norm > 0 else None)
-    comp.insert(0, 'dataset', dataset.name)
-    comp.insert(1, 'did', comp.index)
-    comp.to_csv(output, index=False, encoding='utf-8', lineterminator='\n')
