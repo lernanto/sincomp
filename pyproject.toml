@@ -33,6 +33,12 @@ classifiers = [
 Homepage = "https://github.com/lernanto/sincomp"
 Issues = "https://github.com/lernanto/sincomp/issues"
 
+[project.scripts]
+sincomp = "sincomp.cli:main"
+"sincomp.cli.align" = "sincomp.cli.align:main"
+"sincomp.cli.compare" = "sincomp.cli.compare:main"
+"sincomp.cli.similarity" = "sincomp.cli.similarity:main"
+
 [project.optional-dependencies]
 datasets = [
     "selenium>=4.6",
