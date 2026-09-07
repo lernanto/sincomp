@@ -38,6 +38,7 @@ sincomp = "sincomp.cli:main"
 "sincomp.cli.align" = "sincomp.cli.align:main"
 "sincomp.cli.compare" = "sincomp.cli.compare:main"
 "sincomp.cli.similarity" = "sincomp.cli.similarity:main"
+"sincomp.cli.dataset" = "sincomp.cli.dataset:main"
 
 [project.optional-dependencies]
 datasets = [

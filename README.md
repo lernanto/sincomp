@@ -79,6 +79,9 @@ sincomp align DATASET [DATASET ...]
 sincomp align evaluate DATASET
 sincomp compare DATASET [OUTPUT]
 sincomp similarity [DATASET ...]
+sincomp dataset list
+sincomp dataset dialects DATASET [DIALECT_FILTER]
+sincomp dataset query DATASET DIALECT_FILTER [DATA_FILTER]
 ```
 
 面向智能体或其他程序调用时，可以使用带有模块命名空间的入口：
@@ -88,6 +91,9 @@ sincomp.cli.align align DATASET [DATASET ...]
 sincomp.cli.align evaluate DATASET
 sincomp.cli.compare DATASET [OUTPUT]
 sincomp.cli.similarity [DATASET ...]
+sincomp.cli.dataset list
+sincomp.cli.dataset dialects DATASET [DIALECT_FILTER]
+sincomp.cli.dataset query DATASET DIALECT_FILTER [DATA_FILTER]
 ```
 
 `align evaluate` 是目前唯一在终端输出评测结果的命令。人类入口默认输出文本，智能体入口默认输出 JSON，也可以显式指定格式：
@@ -99,6 +105,15 @@ sincomp.cli.align evaluate --format text DATASET
 ```
 
 `align`、`compare` 和 `similarity` 的主要结果写入 CSV 等文件；这些结果文件的格式与命令入口无关。`compare` 默认生成 `{dataset}_compliance_l{norm}.csv`，`similarity` 默认生成 `{dataset}_chi2.csv` 和 `{dataset}_entropy.csv`。
+
+`dataset list` 只输出预定义数据集名称。`dataset dialects DATASET [DIALECT_FILTER]` 输出指定数据集的方言信息，可以使用 pandas `query` 表达式对方言进行筛选，包括按方言 ID `did` 或任意列值筛选，不支持输出到文件。目前没有清空缓存并重新下载数据集的命令。
+
+`dataset query` 使用 pandas `query` 表达式筛选数据。数据集名称和方言筛选条件是必选的位置参数，读音数据筛选条件可选：
+
+```shell
+sincomp dataset query CCR "group == '官话'" "tone_category == '平'"
+sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
+```
 
 ## 模块
 
