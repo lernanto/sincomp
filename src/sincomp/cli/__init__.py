@@ -12,6 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
 	commands.add_parser("align", help="对齐方言数据集")
 	commands.add_parser("compare", help="计算语音规则符合度")
 	commands.add_parser("similarity", help="计算方言相似度")
+	commands.add_parser("dataset", help="查看方言数据集")
 	return parser
 
 
@@ -41,6 +42,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 		from . import similarity
 
 		return similarity.main(arguments)
+	if command == "dataset":
+		from . import dataset
+
+		if len(arguments) > 0 and arguments[0] in {"list", "dialects", "query"}:
+			arguments = [arguments[0], "--format", "text", *arguments[1:]]
+		return dataset.main(arguments)
 
 	parser.error(f"invalid choice: {command!r}")
 	return 2
