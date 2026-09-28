@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_list(output_format: str) -> None:
-    names = dataset_api.list_datasets()
+    names = [d.name for d in dataset_api.predefined()]
     if output_format == "json":
         print(json.dumps(names, ensure_ascii=False))
     else:

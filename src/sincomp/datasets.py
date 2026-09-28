@@ -4,6 +4,7 @@
 汉语方言读音数据集
 
 当前支持读取：
+    - 北京大学《漢語方音字彙》的方言数据，见：https://github.com/lexibank/beidazihui
     - 小学堂汉字古今音资料库的现代方言数据，见：https://xiaoxue.iis.sinica.edu.tw/ccrdata/
     - 汉字音典的现代方言数据，见：https://mcpdict.sourceforge.io/
     - 中国语言资源保护工程采录展示平台的方言数据，见：https://zhongguoyuyan.cn/
@@ -73,6 +74,65 @@ def predict_group(
     ).predict(features[mask & labels.isna()])
 
     return predict
+
+
+@retry.retry(exceptions=urllib.error.URLError, tries=3, delay=1)
+def download_and_extract(
+    output: str,
+    url: str,
+    subpath: str | list[str] | None = None
+) -> None:
+    """
+    Download a zip archive and extract files under a given subpath.
+
+    Parameters
+    ----------
+    output : str
+        Local directory where extracted files are saved.
+    url : str
+        URL of the zip archive to download.
+    subpath : str or list of str, default=None
+        Subdirectory prefix of the files to extract, given either as a
+        ``/``-separated string or as a list of path components. If None,
+        all files below the top-level directory are extracted.
+
+    Notes
+    -----
+    The first path component of a GitHub archive zip is ``{repo}-{branch}``
+    and is skipped. Files matching ``subpath`` starting from the second
+    component are extracted into ``output``, preserving relative paths
+    below ``subpath``.
+    """
+
+    logger.info(f"downloading {url} ...")
+
+    if subpath is None:
+        subpath = []
+    elif isinstance(subpath, str):
+        subpath = subpath.split("/") if subpath else []
+
+    with urllib.request.urlopen(url) as res:
+        with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
+            os.makedirs(output, exist_ok=True)
+            logger.info(f"extracting files to {output} ...")
+
+            for info in zf.infolist():
+                # the first path component is {repo}-{branch}, skip it
+                path = info.filename.split("/")
+                if (
+                    not info.is_dir()
+                    and len(path) > len(subpath) + 1
+                    and path[1:len(subpath) + 1] == subpath
+                ):
+                    logger.info(f"extracting {info.filename} ...")
+                    rel_path = os.path.join(
+                        *[output] + path[len(subpath) + 1:]
+                    )
+                    os.makedirs(os.path.dirname(rel_path), exist_ok=True)
+                    with open(rel_path, "wb") as of:
+                        of.write(zf.read(info))
+
+    logger.info("done.")
 
 
 class Dataset:
@@ -487,6 +547,235 @@ class FileDataset(Dataset):
                 .set_index('cid')
 
 
+class BeidazihuiDataset(Dataset):
+    """
+    Dialect pronunciation data of "Hanyu Fangyan Zihui" (漢語方音字彙).
+
+    The data comes from Beijing Daxue 北京大学 (1962): "Hanyu Fangyan Zihui
+    漢語方音字彙" (Chinese dialect character pronunciation list), digitized
+    in the lexibank/beidazihui repository, see:
+    https://github.com/lexibank/beidazihui. The raw pronunciation data is
+    stored as a ``characters.tsv`` table under the ``raw`` directory of
+    the repository, with one reading per row.
+
+    The dataset contains 18 modern dialect varieties and one historical
+    reconstruction (Zhongyuan Yinyun). Only modern dialect data is used.
+    Dialect IDs are the English DOCULECT values in ``characters.tsv``.
+    """
+
+    # download URL of the GitHub repository archive
+    _URL = (
+        "https://github.com/lexibank/beidazihui"
+        "/archive/refs/heads/master.zip"
+    )
+
+    # whitelist of the 18 modern dialect DOCULECT values
+    _DIALECTS = frozenset({
+        "Beijing", "Changsha", "Chaozhou", "Chengdu", "Fuzhou",
+        "Guangzhou", "Hankou", "Jinan", "Meixian", "Nanchang",
+        "Shanghai", "Shuangfeng", "Suzhou", "Taiyuan", "Wenzhou",
+        "Xi_an", "Xiamen", "Yangzhou"
+    })
+
+    def __init__(
+        self,
+        cache_dir: str,
+        empty: str | None = "∅",
+        name: str = "beidazihui"
+    ):
+        """
+        Parameters
+        ----------
+        cache_dir : str
+            Path of the directory where cached files are stored.
+        empty : str, default="∅"
+            String representing empty initial, final or tone. If None,
+            empty values are kept as is.
+        name : str, default="beidazihui"
+            Name of the dataset.
+        """
+
+        super().__init__(name=name)
+        self._cache_dir = os.path.abspath(cache_dir)
+        self._empty = empty
+
+    @functools.cached_property
+    def _characters(self) -> pandas.DataFrame:
+        """Load the raw ``characters.tsv`` table."""
+
+        path = os.path.join(self._cache_dir, "characters.tsv")
+        if not os.path.exists(path):
+            download_and_extract(self._cache_dir, self._URL, "raw")
+
+        logger.debug(f"load characters from {path}")
+        return pandas.read_csv(
+            path,
+            sep="\t",
+            dtype=str,
+            encoding="utf-8"
+        )
+
+    def get_dialects(self, refresh: bool = False) -> pandas.DataFrame:
+        """
+        Load dialect information and generate the cache file.
+
+        Parameters
+        ----------
+        refresh : bool, default=False
+            Whether to force regeneration of the cache file.
+
+        Returns
+        -------
+        dialects : pandas.DataFrame
+            Table of dialect information, indexed by dialect ID, with a
+            single ``name`` column equal to the dialect ID.
+
+        Notes
+        -----
+        Dialect IDs and names are the English DOCULECT values in
+        ``characters.tsv``, restricted to a predefined dialect whitelist.
+        The historical reconstruction Zhongyuan Yinyun is not included.
+        """
+
+        cache_path = os.path.join(self._cache_dir, ".dialects")
+        if os.path.isfile(cache_path) and not refresh:
+            logger.info(
+                f"load dialect information from cache file {cache_path} ."
+            )
+            dialects = pandas.read_csv(
+                cache_path,
+                encoding="utf-8",
+                dtype={"did": str}
+            ).set_index("did")
+        else:
+            available = self._characters["DOCULECT"].dropna().unique()
+            dialect_ids = sorted(set(available) & self._DIALECTS)
+            dialects = pandas.DataFrame(
+                {"name": dialect_ids},
+                index=pandas.Index(dialect_ids, name="did"),
+            )
+
+            logger.info(
+                f"save dialect information to cache file {cache_path} ."
+            )
+            dialects.to_csv(cache_path, encoding="utf-8", lineterminator="\n")
+
+        return dialects
+
+    @functools.cache
+    def get_data(self, did: str) -> pandas.DataFrame:
+        """
+        Load pronunciation data of a dialect.
+
+        Parameters
+        ----------
+        did : str
+            ID of the dialect to load, i.e. the DOCULECT value in the raw
+            data.
+
+        Returns
+        -------
+        data : pandas.DataFrame
+            Table of dialect pronunciation data.
+
+        Notes
+        -----
+        If the data file does not exist, it is downloaded from the project
+        page first. The raw VALUE is already segmented by dots, and a "/"
+        in the tone segment marks alternate tone values of one reading.
+        """
+
+        path = os.path.join(self._cache_dir, "characters.tsv")
+        if not os.path.exists(path):
+            download_and_extract(self._cache_dir, self._URL, "raw")
+
+        logger.debug(f"load data of {did} from {path}")
+        data = self._characters[self._characters["DOCULECT"] == did].copy()
+
+        # keep Chinese characters only, filter out non-character entries
+        # like "E" used for initial/final charts
+        data = data[data["CHARACTER"].str.match(r"[\u4e00-\u9fff]", na=False)]
+
+        # the raw VALUE is already segmented by dots or spaces, e.g.
+        # "t.i.ŋ.⁵⁵" -> ["t", "i", "ŋ", "⁵⁵"]; the first segment is the
+        # initial, an empty first segment marks a zero initial, the middle
+        # segments form the final, and the last segment is the tone, which
+        # may contain alternate tone values separated by "/", e.g. "⁵³/⁵⁵"
+        segments = data["VALUE"].str.split(r"[. ]", regex=True)
+        data["tone"] = segments.str[-1]
+        data["initial"] = segments.str[0]
+        data["final"] = segments.str[1:-1].str.join("")
+
+        # clean the initial and final separately
+        data["initial"] = preprocess.clean_ipa(data["initial"], force=True)
+        data["final"] = preprocess.clean_ipa(data["final"], force=True)
+
+        data.replace("", pandas.NA, inplace=True)
+
+        # drop records where initial, final and tone are all empty
+        data.dropna(
+            how="all",
+            subset=["initial", "final", "tone"],
+            inplace=True
+        )
+
+        # replace empty initials and finals with the placeholder as
+        # requested, e.g. zero initials; empty tones are readings without
+        # a tone value and are kept as missing
+        if self._empty is not None:
+            data[["initial", "final"]] = data[["initial", "final"]].fillna(
+                self._empty
+            )
+
+        data = data.rename(columns={"CHARACTER": "character"})
+        data["did"] = did
+        return data[[
+            "did",
+            "character",
+            "initial",
+            "final",
+            "tone"
+        ]]
+
+    @property
+    def dialect_ids(self) -> list[str]:
+        """List of dialect IDs in the dataset."""
+
+        return self.dialects.index.tolist()
+
+    @functools.cached_property
+    def dialects(self) -> pandas.DataFrame:
+        return self.get_dialects()
+
+    @functools.cached_property
+    def characters(self) -> pandas.DataFrame:
+        """
+        Load character information.
+
+        The cache file is used if it exists, otherwise the information is
+        computed from all dialect data.
+        """
+
+        try:
+            path = os.path.join(self._cache_dir, ".characters")
+            logger.debug(f"load character information from {path}")
+            return pandas.read_csv(path, dtype=str, encoding="utf-8")
+
+        except FileNotFoundError:
+            logger.info(f"{path} not found, get character information from data.")
+            characters = super().characters
+
+            logger.debug(f"save character information to {path}")
+            characters.to_csv(
+                path,
+                index=False,
+                encoding="utf-8",
+                lineterminator="\n"
+            )
+
+            return characters
+
+
 class CCRDataset(Dataset):
     """
     小学堂汉字古今音资料库的现代方言数据集
@@ -802,6 +1091,9 @@ class MCPDictDataset(Dataset):
     见：https://mcpdict.sourceforge.io/。
     """
 
+    # 项目数据下载地址
+    _URL = 'https://github.com/osfans/MCPDict/archive/refs/heads/master.zip'
+
     def __init__(
         self,
         cache_dir: str,
@@ -819,42 +1111,6 @@ class MCPDictDataset(Dataset):
         self._cache_dir = os.path.abspath(cache_dir)
         self._empty = empty
 
-    @staticmethod
-    @retry.retry(exceptions=urllib.error.URLError, tries=3, delay=1)
-    def download(
-        output: str,
-        url: str = 'https://github.com/osfans/MCPDict/archive/refs/heads/master.zip'
-    ) -> None:
-        """
-        从 MCPDict 项目主页下载数据
-
-        Parameters:
-            output: 保存下载解压文件的本地目录
-            url: 项目下载地址
-        """
-
-        logger.info(f'downloading {url} ...')
-
-        with urllib.request.urlopen(url) as res:
-            with zipfile.ZipFile(io.BytesIO(res.read())) as zf:
-                os.makedirs(output, exist_ok=True)
-                logger.info(f'extracting files to {output} ...')
-
-                for info in zf.infolist():
-                    # 路径第一段是带版本号的项目名，需去除
-                    path = info.filename.split('/')
-                    # 把字音数据目录的所有文件解压到目标路径
-                    if (not info.is_dir()) and (len(path) > 4) \
-                        and (path[1] == 'tools') and (path[2] == 'tables') \
-                        and (path[3] == 'output'):
-                        logger.info(f'extracting {info.filename} ...')
-                        path = os.path.join(*[output] + path[4:])
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path, 'wb') as of:
-                            of.write(zf.read(info))
-
-        logger.info('done.')
-
     @functools.cached_property
     def tone_map(self) -> pandas.DataFrame:
         """
@@ -870,7 +1126,9 @@ class MCPDictDataset(Dataset):
         fname = os.path.join(self._cache_dir, '_詳情.json')
         if not os.path.exists(fname):
             # 数据文件不存在，先从汉字音典项目页面下载
-            self.download(self._cache_dir)
+            download_and_extract(
+                self._cache_dir, self._URL, ["tools", "tables", "output"]
+            )
 
         info = pandas.read_json(fname, orient='index', encoding='utf-8')
 
@@ -916,7 +1174,9 @@ class MCPDictDataset(Dataset):
             fname = os.path.join(self._cache_dir, '_詳情.json')
             if not os.path.exists(fname):
                 # 数据文件不存在，先从汉字音典项目页面下载
-                self.download(self._cache_dir)
+                download_and_extract(
+                    self._cache_dir, self._URL, ["tools", "tables", "output"]
+                )
 
             logger.debug(f'load dialect information from {fname}')
             dialects = pandas.read_json(fname, orient='index', encoding='utf-8')
@@ -1054,7 +1314,9 @@ class MCPDictDataset(Dataset):
         fname = os.path.join(self._cache_dir, did + '.tsv')
         if not os.path.exists(fname):
             # 数据文件不存在，先从汉字音典项目页面下载
-            self.download(self._cache_dir)
+            download_and_extract(
+                self._cache_dir, self._URL, ["tools", "tables", "output"]
+            )
 
         logger.debug(f'load data from {fname}')
         data = pandas.read_csv(
@@ -1848,8 +2110,11 @@ dataset_dir = os.path.join(cache_dir, 'datasets')
 
 ccr = CCRDataset(os.path.join(dataset_dir, 'ccr'))
 mcpdict = MCPDictDataset(os.path.join(dataset_dir, 'mcpdict'))
+beidazihui = BeidazihuiDataset(os.path.join(dataset_dir, 'beidazihui'))
 zhongguoyuyan = ZhongguoyuyanDataset(os.path.join(dataset_dir, 'zhongguoyuyan'))
-_datasets = {
+_datasets = [beidazihui, ccr, mcpdict, zhongguoyuyan]
+_dataset_mapping = {
+    'beidazihui': beidazihui,
     'CCR': ccr,
     'ccr': ccr,
     'xiaoxue': ccr,
@@ -1860,15 +2125,18 @@ _datasets = {
 }
 
 
-def list_datasets() -> list[str]:
+def predefined() -> list[Dataset]:
     """
-    列出所有预定义的数据集名称
+    List all predefined datasets.
 
-    Returns:
-        names: 所有预定义的数据集名称列表
+    Returns
+    -------
+    datasets : list of Dataset
+        List of all predefined dataset objects.
     """
 
-    return ['CCR', 'MCPDict', 'zhongguoyuyan']
+    return _datasets.copy()
+
 
 def get(name: str) -> Dataset | None:
     """
@@ -1884,7 +2152,7 @@ def get(name: str) -> Dataset | None:
     """
 
     try:
-        return _datasets[name]
+        return _dataset_mapping[name]
 
     except KeyError:
         # 不是预定义数据集，尝试把入参作为路径从本地加载
