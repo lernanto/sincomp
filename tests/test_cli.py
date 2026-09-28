@@ -64,26 +64,32 @@ class TestCli(unittest.TestCase):
         evaluate.assert_called_once()
 
     @mock.patch(
-        "sincomp.cli.dataset.dataset_api.list_datasets",
-        return_value=["CCR", "MCPDict"],
+        "sincomp.cli.dataset.dataset_api.predefined",
+        return_value=[
+            type("_Stub", (), {"name": "CCR"})(),
+            type("_Stub", (), {"name": "MCPDict"})(),
+        ],
     )
-    def test_agent_dataset_list_outputs_json(self, list_datasets):
+    def test_agent_dataset_list_outputs_json(self, predefined):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(dataset_cli.main(["list"]), 0)
         self.assertEqual(json.loads(output.getvalue()), ["CCR", "MCPDict"])
-        list_datasets.assert_called_once_with()
+        predefined.assert_called_once_with()
 
     @mock.patch(
-        "sincomp.cli.dataset.dataset_api.list_datasets",
-        return_value=["CCR", "MCPDict"],
+        "sincomp.cli.dataset.dataset_api.predefined",
+        return_value=[
+            type("_Stub", (), {"name": "CCR"})(),
+            type("_Stub", (), {"name": "MCPDict"})(),
+        ],
     )
-    def test_human_dataset_list_outputs_names_only(self, list_datasets):
+    def test_human_dataset_list_outputs_names_only(self, predefined):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(cli.main(["dataset", "list"]), 0)
         self.assertEqual(output.getvalue(), "CCR\nMCPDict\n")
-        list_datasets.assert_called_once_with()
+        predefined.assert_called_once_with()
 
     @mock.patch(
         "sincomp.cli.dataset.dataset_api.get",

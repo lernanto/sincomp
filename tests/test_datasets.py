@@ -30,13 +30,16 @@ def mock_urlopen(url, *args, **kwargs):
     if isinstance(url, urllib.request.Request):
         url = url.full_url
 
-    return open(
-        os.path.join(
-            data_dir,
-            urllib.parse.urlparse(url).path.split('/')[-1]
-        ),
-        'rb'
-    )
+    path = urllib.parse.urlparse(url).path
+    parts = path.split("/")
+    # GitHub archive URL: /{owner}/{repo}/archive/refs/heads/{branch}.zip,
+    # use the repository name as the archive file name
+    if len(parts) > 3 and "archive" in parts:
+        fname = parts[2] + ".zip"
+    else:
+        fname = parts[-1]
+
+    return open(os.path.join(data_dir, fname), "rb")
 
 class MockChrome(unittest.mock.MagicMock):
     """
@@ -573,6 +576,105 @@ class TestMCPDictDataset(unittest.TestCase):
         )
 
 
+class TestBeidazihuiDataset(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.dataset = sincomp.datasets.BeidazihuiDataset(self.tmp_dir.name)
+
+    def tearDown(self):
+        super().tearDown()
+        self.tmp_dir.cleanup()
+
+    def test_get_data(self):
+        data = self.dataset.get_data("Beijing")
+        self.assertIsInstance(data, pandas.DataFrame)
+        self.assertEqual(data.shape[0], 5)
+        self.assertListEqual(
+            data.columns.tolist(),
+            ["did", "character", "initial", "final", "tone"]
+        )
+        # check initial/final/tone parsing
+        row = data[data["character"] == "丁"].iloc[0]
+        self.assertEqual(row["initial"], "t")
+        self.assertEqual(row["final"], "iŋ")
+        self.assertEqual(row["tone"], "⁵⁵")
+        # non-character entries like "E" are filtered out
+        self.assertNotIn("E", data["character"].tolist())
+
+    def test_get_data_tone_pairs(self):
+        # a "/" in VALUE marks alternate tone values of one reading,
+        # kept as a single tone value
+        data = self.dataset.get_data("Guangzhou")
+        data = data[data["character"] == "麩"]
+        self.assertEqual(data.shape[0], 1)
+        self.assertEqual(data["initial"].iloc[0], "f")
+        self.assertEqual(data["tone"].iloc[0], "⁵³/⁵⁵")
+
+    def test_get_data_zero_initial(self):
+        # an empty first segment in VALUE marks a zero initial
+        data = self.dataset.get_data("Beijing")
+        row = data[data["character"] == "一"].iloc[0]
+        self.assertEqual(row["initial"], "∅")
+        self.assertEqual(row["final"], "i")
+        self.assertEqual(row["tone"], "⁵⁵")
+
+    def test_get_data_space_segments(self):
+        # segments in VALUE may be separated by spaces instead of dots
+        data = self.dataset.get_data("Xiamen")
+        row = data[(data["character"] == "丈") & (data["tone"] == "³³")].iloc[0]
+        self.assertEqual(row["initial"], "t")
+        self.assertEqual(row["final"], "iuː")
+        self.assertEqual(row["tone"], "³³")
+
+    def test_get_data_missing_tone(self):
+        # a reading without tone is kept with an empty tone value
+        data = self.dataset.get_data("Xiamen")
+        row = data[data["character"] == "冷"].iloc[0]
+        self.assertEqual(row["initial"], "l")
+        self.assertEqual(row["final"], "ɪŋ")
+        self.assertTrue(pandas.isna(row["tone"]))
+
+    def test_dialect_ids(self):
+        self.assertListEqual(
+            self.dataset.dialect_ids,
+            ["Beijing", "Guangzhou", "Suzhou", "Xiamen"]
+        )
+
+    def test_dialects(self):
+        dialects = self.dataset.dialects
+        self.assertIsInstance(dialects, pandas.DataFrame)
+        self.assertListEqual(
+            dialects.index.tolist(),
+            ["Beijing", "Guangzhou", "Suzhou", "Xiamen"]
+        )
+        # dialect IDs are the English DOCULECT values in characters.tsv,
+        # misparsed rows and historical reconstructions are excluded
+        self.assertListEqual(dialects.columns.tolist(), ["name"])
+        self.assertListEqual(
+            dialects["name"].tolist(),
+            ["Beijing", "Guangzhou", "Suzhou", "Xiamen"],
+        )
+
+    def test_characters(self):
+        chars = self.dataset.characters
+        self.assertIsInstance(chars, pandas.DataFrame)
+        self.assertGreater(chars.shape[0], 0)
+        self.assertIn("character", chars.columns)
+
+    def test_data(self):
+        data = self.dataset.data
+        self.assertIsInstance(data, pandas.DataFrame)
+        # 5 (Beijing) + 1 (Guangzhou) + 5 (Suzhou)
+        # + 7 (Xiamen, two readings of 一)
+        self.assertEqual(data.shape[0], 19)
+        self.assertListEqual(
+            data.columns.tolist(),
+            ["did", "character", "initial", "final", "tone"]
+        )
+
+
 class TestZhongguoyuyanDownloader(unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -683,8 +785,14 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
 
 
 class TestDatasets(unittest.TestCase):
-    def test_list_datasets(self):
-        self.assertListEqual(sincomp.datasets.list_datasets(), ['CCR', 'MCPDict', 'zhongguoyuyan'])
+    def test_predefined(self):
+        datasets = sincomp.datasets.predefined()
+        self.assertListEqual(
+            [d.name for d in datasets],
+            ["beidazihui", "CCR", "MCPDict", "zhongguoyuyan"]
+        )
+        for d in datasets:
+            self.assertIsInstance(d, sincomp.datasets.Dataset)
 
     def test_get(self):
         self.assertIsInstance(

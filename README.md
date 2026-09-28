@@ -1,6 +1,6 @@
 # SinComp 汉语方言计算及比较工具集
 
-SinComp 是一个自动化处理汉语方言读音数据的工具集，包含了一系列针对方言读音数据执行清洗、度量、比较、建模、作图的功能函数。当前支持处理小学堂、汉字音典、语保等方言读音数据集。
+SinComp 是一个自动化处理汉语方言读音数据的工具集，包含了一系列针对方言读音数据执行清洗、度量、比较、建模、作图的功能函数。当前支持处理汉语方音字汇、小学堂、汉字音典、语保等方言读音数据集。
 
 ## 安装
 
@@ -144,11 +144,16 @@ sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
 
 | 代号 | 说明 | 简称 | 链接 | 别名 |
 |:-|:-|:-|:-|:-|
+| beidazihui | 《汉语方音字汇》方言字音 | 汉语方音字汇 | [GitHub](https://github.com/lexibank/beidazihui) | |
 | CCR | 小学堂汉字古今音资料库现代音 | 小学堂 | [小学堂汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/) | ccr、xiaoxue |
-| MCPDict | 汉字音典方言汉字读音 | 汉字音典 | [汉字音典](https://mcpdict.sourceforge.io/) | mcpdict |
+| MCPDict | 汉字音典方言字音 | 汉字音典 | [音典网页版](https://nk2028.shn.hk/yindian/) | mcpdict |
 | zhongguoyuyan | 中国语言资源保护工程汉语方言单字音 | 语保 | [中国语言资源保护工程采录展示平台](https://zhongguoyuyan.cn/) | yubao |
 
 如下为以上数据集的版权声明：
+
+### 汉语方音字汇
+
+为北京大学中国语言文学系语言学教研室编《汉语方音字汇》（文字改革出版社，1962 年）收录的方言字音数据，由 lexibank 项目数字化，以 CC-BY-4.0 许可在 [GitHub](https://github.com/lexibank/beidazihui) 发布，详情见其[许可声明](https://github.com/lexibank/beidazihui?tab=CC-BY-4.0-1-ov-file)。
 
 ### 小学堂
 
@@ -185,11 +190,12 @@ sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
 
 各数据集会下载到上述目录下的不同路径：
 
-| 数据集 | 目录 |
-|:-|:-|
-| 小学堂 | datasets/ccr/*.xlsx |
-| 汉字音典 | datasets/mcpdict/*.tsv |
-| 语保 | datasets/zhongguoyuyan/*.json |
+| 数据集 | 资源路径 | 缓存路径 |
+|:-|:-|:-|
+| 汉语方音字汇 | raw/characters.tsv | datasets/beidazihui/characters.tsv |
+| 小学堂 | 每个方言区一个独立压缩文件 | datasets/ccr/*.xlsx |
+| 汉字音典 | tools/tables/output/*.tsv | datasets/mcpdict/*.tsv |
+| 语保 | 每个方言点对应后台一个资源链接 | datasets/zhongguoyuyan/*.json |
 
 如果由于网络或其他原因下载失败，可以手动到上文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
 
