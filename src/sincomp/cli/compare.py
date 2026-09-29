@@ -11,6 +11,7 @@ from .. import compare, datasets, preprocess
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the rule comparison command-line parser."""
+
     parser = argparse.ArgumentParser(description="计算方言数据对语音规则的符合度")
     parser.add_argument("-l", "--log-level", default="WARNING", help="日志级别")
     parser.add_argument("-r", "--rule-file", default="rules.json", help="语音规则文件")
@@ -24,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the rule comparison command-line interface."""
+
     args = build_parser().parse_args(argv)
     compare.logger.setLevel(getattr(logging, args.log_level.upper()))
 

@@ -22,6 +22,7 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the alignment command-line parser."""
+
     parser = argparse.ArgumentParser(description="对齐方言数据集")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the alignment command-line interface."""
+
     args = build_parser().parse_args(argv)
     alignment.logger.setLevel(getattr(logging, args.log_level.upper()))
 
