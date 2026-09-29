@@ -143,16 +143,19 @@ class Dataset:
     def __init__(
         self,
         data: pandas.DataFrame | None = None,
-        name: str = 'unnamed'
+        name: str = 'unnamed',
+        description: str | None = None
     ):
         """
         Parameters:
             data: 方言字音数据表
             name: 数据集名字
+            description: 数据集描述
         """
 
         self._data = None if data is None else pandas.DataFrame(data)
         self.name = str(name)
+        self.description = description
 
     def get_data(self, did: str) -> pandas.DataFrame:
         """
@@ -595,7 +598,10 @@ class BeidazihuiDataset(Dataset):
             Name of the dataset.
         """
 
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            description="Hanyu fangyin zihui (漢語方音字彙) dialect pronunciation data."
+        )
         self._cache_dir = os.path.abspath(cache_dir)
         self._empty = empty
 
@@ -799,7 +805,13 @@ class CCRDataset(Dataset):
             dialect_file: 指定方言信息文件，默认使用随库自带的文件
         """
 
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            description=(
+                "Modern dialect pronunciation data "
+                "from Chinese Character Readings (漢字古今音資料庫)."
+            )
+        )
         self._cache_dir = os.path.abspath(cache_dir)
         self._dialect_file = os.path.abspath(dialect_file)
 
@@ -1107,7 +1119,10 @@ class MCPDictDataset(Dataset):
             name: 数据集名称
         """
 
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            description="MCPDict (漢字音典) dialect pronunciation data."
+        )
         self._cache_dir = os.path.abspath(cache_dir)
         self._empty = empty
 
@@ -1625,7 +1640,13 @@ class ZhongguoyuyanDataset(Dataset):
             downloader_kwargs: 传给下载器的参数
         """
 
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            description=(
+                "Character pronunciation data from "
+                "China's language resources protection project (中国语言资源保护工程)."
+            )
+        )
         self._cache_dir = cache_dir
 
         if 'selenium' in globals():

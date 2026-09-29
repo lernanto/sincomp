@@ -66,29 +66,88 @@ class TestCli(unittest.TestCase):
     @mock.patch(
         "sincomp.cli.dataset.dataset_api.predefined",
         return_value=[
-            type("_Stub", (), {"name": "CCR"})(),
-            type("_Stub", (), {"name": "MCPDict"})(),
+            type(
+                "_Stub",
+                (),
+                {
+                    "name": "CCR",
+                    "description": "CCR description",
+                    "dialect_ids": ["a", "b"],
+                },
+            )(),
+            type(
+                "_Stub",
+                (),
+                {
+                    "name": "MCPDict",
+                    "description": "MCPDict description",
+                    "dialect_ids": ["x", "y", "z"],
+                },
+            )(),
         ],
     )
     def test_agent_dataset_list_outputs_json(self, predefined):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(dataset_cli.main(["list"]), 0)
-        self.assertEqual(json.loads(output.getvalue()), ["CCR", "MCPDict"])
+        self.assertEqual(
+            json.loads(output.getvalue()),
+            [
+                {
+                    "name": "CCR",
+                    "description": "CCR description",
+                    "dialect_count": 2,
+                },
+                {
+                    "name": "MCPDict",
+                    "description": "MCPDict description",
+                    "dialect_count": 3,
+                },
+            ],
+        )
         predefined.assert_called_once_with()
 
     @mock.patch(
         "sincomp.cli.dataset.dataset_api.predefined",
         return_value=[
-            type("_Stub", (), {"name": "CCR"})(),
-            type("_Stub", (), {"name": "MCPDict"})(),
+            type(
+                "_Stub",
+                (),
+                {
+                    "name": "CCR",
+                    "description": "CCR description",
+                    "dialect_ids": ["a", "b"],
+                },
+            )(),
+            type(
+                "_Stub",
+                (),
+                {
+                    "name": "MCPDict",
+                    "description": "MCPDict description",
+                    "dialect_ids": ["x", "y", "z"],
+                },
+            )(),
         ],
     )
-    def test_human_dataset_list_outputs_names_only(self, predefined):
+    def test_human_dataset_list_outputs_table(self, predefined):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(cli.main(["dataset", "list"]), 0)
-        self.assertEqual(output.getvalue(), "CCR\nMCPDict\n")
+
+        lines = output.getvalue().splitlines()
+        self.assertEqual(
+            lines[0].split(), ["name", "description", "dialect_count"]
+        )
+        # normalize whitespace so column width changes do not break the test
+        rows = {" ".join(line.split()) for line in lines[1:]}
+        self.assertEqual(
+            rows,
+            {
+                "CCR CCR description 2",
+                "MCPDict MCPDict description 3",
+            },
+        )
         predefined.assert_called_once_with()
 
     @mock.patch(

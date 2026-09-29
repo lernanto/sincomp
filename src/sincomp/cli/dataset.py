@@ -1,7 +1,6 @@
 """Command-line interface for dialect datasets."""
 
 import argparse
-import json
 from typing import Sequence
 
 import pandas
@@ -38,11 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_list(output_format: str) -> None:
-    names = [d.name for d in dataset_api.predefined()]
+    datasets = dataset_api.predefined()
+    items = pandas.DataFrame(
+        {
+            "name": [d.name for d in datasets],
+            "description": [d.description for d in datasets],
+            "dialect_count": [len(d.dialect_ids) for d in datasets],
+        }
+    )
     if output_format == "json":
-        print(json.dumps(names, ensure_ascii=False))
+        print(items.to_json(orient="records", force_ascii=False, indent=2))
     else:
-        print("\n".join(names))
+        print(items.to_string(index=False))
 
 
 def _print_dialects(
