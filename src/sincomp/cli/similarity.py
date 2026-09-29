@@ -11,6 +11,7 @@ from .. import datasets, preprocess, similarity
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the similarity command-line parser."""
+
     parser = argparse.ArgumentParser(description="计算方言之间的预测相似度")
     parser.add_argument(
         "-m",
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_dataset(value: str):
     """Load a registered dataset, CSV file, or dataset directory."""
+
     try:
         return getattr(datasets, value), value
     except AttributeError:
@@ -44,6 +46,7 @@ def _load_dataset(value: str):
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the similarity command-line interface."""
+
     args = build_parser().parse_args(argv)
     methods = (args.method,) if args.method else ("chi2", "entropy")
 

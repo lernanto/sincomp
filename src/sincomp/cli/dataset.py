@@ -10,6 +10,7 @@ from .. import datasets as dataset_api
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the dataset command-line parser."""
+
     parser = argparse.ArgumentParser(description="查看方言数据集")
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -100,6 +101,7 @@ def _print_query(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the dataset command-line interface."""
+
     args = build_parser().parse_args(argv)
     if args.command == "list":
         _print_list(args.format)
