@@ -11,6 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
 	commands = parser.add_subparsers(dest="command")
 	commands.add_parser("align", help="对齐方言数据集")
 	commands.add_parser("compare", help="计算语音规则符合度")
+	commands.add_parser("classifier", help="训练方言分类模型")
 	commands.add_parser("similarity", help="计算方言相似度")
 	commands.add_parser("dataset", help="查看方言数据集")
 	return parser
@@ -38,6 +39,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 		from . import compare
 
 		return compare.main(arguments)
+	if command == "classifier":
+		from . import classifier
+
+		return classifier.main(arguments)
 	if command == "similarity":
 		from . import similarity
 

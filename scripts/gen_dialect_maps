@@ -105,7 +105,7 @@ fi
 
 echo "Training dialect classifier with rule file $rule_file,"
 echo "annotation file $annotation_file..."
-python3 -O "$BASE_DIR/dialect_classifier.py" \
+python3 -O -m sincomp.cli.classifier \
     --log-level="$log_level" \
     train "$rule_file" "$annotation_file" "$model_file" || exit 1
 echo "Done. saved model to $model_file."
@@ -131,7 +131,7 @@ else
     for dataset in $datasets; do
         echo "Computing rule compliances for dataset $dataset. This may take a while..."
         cf=$(mktemp)
-        python3 -O -m sincomp.compare \
+        python3 -O -m sincomp.cli.compare \
             --rule-file="$rule_file" \
             "$dataset" \
             "$cf" || exit 1
@@ -144,11 +144,11 @@ else
 fi
 
 echo "Predicting dialects classes for $compliance_file..."
-python3 -O "$BASE_DIR/dialect_classifier.py" \
+python3 -O -m sincomp.cli.classifier \
     --log-level="$log_level" \
     predict \
     --precomputed \
-    --model="$model_file" \
+    --model-file="$model_file" \
     "$compliance_file" \
     "$prediction_file" || exit 1
 echo "Done. saved predictions to $prediction_file."

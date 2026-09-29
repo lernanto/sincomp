@@ -83,7 +83,7 @@ prediction file = $PredictionFile
 "@
 
 Write-Host "Training dialect classifier with rule file $RuleFile, annotation file $AnnotationFile..."
-$ret = python -O (Join-Path $BaseDir 'dialect_classifier.py') `
+$ret = python -O -m sincomp.cli.classifier `
     --log-level=$LogLevel `
     train `
     $RuleFile `
@@ -104,7 +104,7 @@ if ($ComplianceFile) {
     foreach ($dataset in $Datasets) {
         Write-Host "Computing rule compliances for dataset $dataset. This may take a while..."
         $cf = [System.IO.Path]::GetTempFileName()
-        $ret = python -O -m sincomp.compare --rule-file=$RuleFile $dataset $cf
+        $ret = python -O -m sincomp.cli.compare --rule-file=$RuleFile $dataset $cf
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Computing rule compliances failed: $ret"
             exit 1
@@ -129,11 +129,11 @@ if ($ComplianceFile) {
 }
 
 Write-Host "Predicting dialects classes for $ComplianceFile..."
-$ret = python -O (Join-Path $BaseDir 'dialect_classifier.py') `
+$ret = python -O -m sincomp.cli.classifier `
     --log-level=$LogLevel `
     predict `
     --precomputed `
-    --model=$ModelFile `
+    --model-file=$ModelFile `
     $ComplianceFile `
     $PredictionFile
 if ($LASTEXITCODE -ne 0) {
