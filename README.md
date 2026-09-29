@@ -18,19 +18,41 @@ pip install sincomp[datasets,models,parser,plot]
 pip install 'sincomp[datasets,models,parser,plot] @ git+https://github.com/lernanto/sincomp.git'
 ```
 
-## 使用简介
+## 命令行接口
 
-本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，使用时会自动从数据集所在的网站下载数据。
+本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，使用时会自动从数据集所在的网站下载数据。安装本工具后，可以使用以下的命令：
 
-### 使用数据集
+```shell
+sincomp dataset list
+sincomp dataset dialects DATASET [DIALECT_FILTER]
+sincomp dataset query DATASET DIALECT_FILTER [DATA_FILTER]
+sincomp similarity [DATASET ...]
+sincomp compare DATASET [OUTPUT]
+sincomp align DATASET [DATASET ...]
+sincomp align evaluate DATASET
+```
 
-```python
-import sincomp.datasets
+面向智能体或其他程序调用时，可以使用带有模块命名空间的入口，参数与人类入口一致：
 
-ccr = sincomp.datasets.get('CCR')
-print(ccr.dialects)
-# 采用延迟加载方式，在使用时才下载实际数据并缓存到本地文件，数据集对外表现如同 pandas.DataFrame
-print(ccr.sample(1))
+```shell
+sincomp.cli.dataset list
+sincomp.cli.dataset dialects DATASET [DIALECT_FILTER]
+sincomp.cli.dataset query DATASET DIALECT_FILTER [DATA_FILTER]
+sincomp.cli.similarity [DATASET ...]
+sincomp.cli.compare DATASET [OUTPUT]
+sincomp.cli.align DATASET [DATASET ...]
+sincomp.cli.align evaluate DATASET
+```
+
+### 检索数据集
+
+`dataset list` 输出所有预定义数据集的信息。`dataset dialects DATASET [DIALECT_FILTER]` 输出指定数据集的方言信息，可以使用 pandas `query` 表达式对方言进行筛选，包括按方言 ID `did` 或任意列值筛选，不支持输出到文件。目前没有清空缓存并重新下载数据集的命令。
+
+`dataset query` 使用 pandas `query` 表达式筛选数据。数据集名称和方言筛选条件是必选的位置参数，读音数据筛选条件可选：
+
+```shell
+sincomp dataset query CCR "group == '官话'" "tone_category == '平'"
+sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
 ```
 
 ### 计算方言相似度
@@ -48,7 +70,22 @@ sincomp similarity
 | CCR_chi2.csv | 使用卡方方法计算的相似度 |
 | CCR_entropy.csv | 使用条件熵计算的相似度 |
 
-上述命令实际上在内部调用了相似度函数，其用法如下所示：
+## Python 接口
+
+### 使用数据集
+
+```python
+import sincomp.datasets
+
+ccr = sincomp.datasets.get('CCR')
+print(ccr.dialects)
+# 采用延迟加载方式，在使用时才下载实际数据并缓存到本地文件，数据集对外表现如同 pandas.DataFrame
+print(ccr.sample(1))
+```
+
+### 计算方言相似度
+
+`sincomp similarity` 命令实际上在内部调用了相似度函数，其用法如下所示：
 
 ```python
 import sincomp.datasets
@@ -70,51 +107,6 @@ sim = sincomp.similarity.chi2(data)
 
 更多使用方法参考该模块的帮助及注释。
 
-### 命令行接口
-
-安装本工具后，可以使用以下人类友好的命令：
-
-```shell
-sincomp align DATASET [DATASET ...]
-sincomp align evaluate DATASET
-sincomp compare DATASET [OUTPUT]
-sincomp similarity [DATASET ...]
-sincomp dataset list
-sincomp dataset dialects DATASET [DIALECT_FILTER]
-sincomp dataset query DATASET DIALECT_FILTER [DATA_FILTER]
-```
-
-面向智能体或其他程序调用时，可以使用带有模块命名空间的入口：
-
-```shell
-sincomp.cli.align align DATASET [DATASET ...]
-sincomp.cli.align evaluate DATASET
-sincomp.cli.compare DATASET [OUTPUT]
-sincomp.cli.similarity [DATASET ...]
-sincomp.cli.dataset list
-sincomp.cli.dataset dialects DATASET [DIALECT_FILTER]
-sincomp.cli.dataset query DATASET DIALECT_FILTER [DATA_FILTER]
-```
-
-`align evaluate` 是目前唯一在终端输出评测结果的命令。人类入口默认输出文本，智能体入口默认输出 JSON，也可以显式指定格式：
-
-```shell
-sincomp align evaluate DATASET
-sincomp.cli.align evaluate --format json DATASET
-sincomp.cli.align evaluate --format text DATASET
-```
-
-`align`、`compare` 和 `similarity` 的主要结果写入 CSV 等文件；这些结果文件的格式与命令入口无关。`compare` 默认生成 `{dataset}_compliance_l{norm}.csv`，`similarity` 默认生成 `{dataset}_chi2.csv` 和 `{dataset}_entropy.csv`。
-
-`dataset list` 只输出预定义数据集名称。`dataset dialects DATASET [DIALECT_FILTER]` 输出指定数据集的方言信息，可以使用 pandas `query` 表达式对方言进行筛选，包括按方言 ID `did` 或任意列值筛选，不支持输出到文件。目前没有清空缓存并重新下载数据集的命令。
-
-`dataset query` 使用 pandas `query` 表达式筛选数据。数据集名称和方言筛选条件是必选的位置参数，读音数据筛选条件可选：
-
-```shell
-sincomp dataset query CCR "group == '官话'" "tone_category == '平'"
-sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
-```
-
 ## 模块
 
 本库包含以下主要模块：
@@ -126,9 +118,9 @@ sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
 | align | 对齐不同数据集之间的字 ID |
 | similarity | 提供若干无监督的方法计算方言之间的相似度 |
 | compare | 支持手工设定的规则来计算方言对规则的符合程度 |
-| cli | 提供统一的面向人类和智能体的命令行入口 |
 | models | 为方言读音建模，当前主要是基于浅层神经网络的编解码器模型 |
 | plot | 提供制作方言统计图、方言地图等的工具函数 |
+| cli | 提供统一的面向人类和智能体的命令行入口 |
 
 其中部分功能的应用在如下几篇文章中有简要的介绍：
 - [基于矩阵分解的方言字音对齐](https://zhuanlan.zhihu.com/p/20230566259)
