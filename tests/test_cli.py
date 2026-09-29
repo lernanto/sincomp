@@ -1,13 +1,21 @@
+import json
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
-import json
 from unittest import mock
 
+import joblib
 import pandas
+import sklearn.compose
+import sklearn.impute
+import sklearn.linear_model
+import sklearn.pipeline
 
 from sincomp import cli
 from sincomp.cli import align as align_cli
+from sincomp.cli import classifier as classifier_cli
 from sincomp.cli import dataset as dataset_cli
 
 
@@ -27,6 +35,14 @@ class TestCli(unittest.TestCase):
     def test_compare_is_forwarded_without_subcommand(self, main):
         self.assertEqual(cli.main(["compare", "ccr"]), 0)
         main.assert_called_once_with(["ccr"])
+
+    @mock.patch("sincomp.cli.classifier.main", return_value=0)
+    def test_classifier_is_forwarded_with_subcommand(self, main):
+        self.assertEqual(
+            cli.main(["classifier", "train", "rules.json", "annotations.csv"]),
+            0,
+        )
+        main.assert_called_once_with(["train", "rules.json", "annotations.csv"])
 
     @mock.patch("sincomp.cli.similarity.main", return_value=0)
     def test_similarity_is_forwarded_without_subcommand(self, main):
@@ -284,6 +300,243 @@ class TestCli(unittest.TestCase):
         self.assertIn("character", output.getvalue())
         self.assertIn("學", output.getvalue())
         get_dataset.assert_called_once_with("CCR")
+
+
+def _build_classifier_data() -> pandas.DataFrame:
+    """Build synthetic long-format pronunciations for 16 dialects.
+
+    Characters are split into three groups: G0 (cid 0-4), G1 (cid 5-9) and
+    G2 (cid 10-19). Rule r1 compares G0 with G1 and rule r2 compares G2
+    with G1. A dialects are (G0 mostly x, G1 mostly x, G2 y) while B
+    dialects are (G0 x, G1 mostly y, G2 y), so their rule compliances lie
+    near opposite feature axes and are separable without an intercept.
+    """
+    rows = []
+    for label in ("A", "B"):
+        for i in range(8):
+            did = f"{label}{i}"
+            for cid in range(20):
+                if cid < 5:
+                    initial = "x"
+                elif cid == 5:
+                    # one G1 character breaks the uniform pattern
+                    initial = "y" if label == "A" else "x"
+                elif cid < 10:
+                    initial = "x" if label == "A" else "y"
+                else:
+                    initial = "y"
+                rows.append(
+                    {"cid": str(cid), "did": did, "initial": initial}
+                )
+    return pandas.DataFrame(rows)
+
+
+def _write_rules(path: str) -> None:
+    """Write a minimal two-rule JSON rule file."""
+    rules = [
+        {
+            "id": "r1",
+            "name": "rule 1",
+            "feature": "initial",
+            "cid1": [str(c) for c in range(5)],
+            "cid2": [str(c) for c in range(5, 10)],
+        },
+        {
+            "id": "r2",
+            "name": "rule 2",
+            "feature": "initial",
+            "cid1": [str(c) for c in range(10, 20)],
+            "cid2": [str(c) for c in range(5, 10)],
+        },
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rules, f)
+
+
+def _write_annotations(path: str) -> None:
+    """Write the annotated dialect samples."""
+    annotations = pandas.DataFrame(
+        [
+            ("stub", f"{label}{i}", label)
+            for label in ("A", "B")
+            for i in range(8)
+        ],
+        columns=["dataset", "did", "label"],
+    )
+    annotations.to_csv(
+        path, index=False, encoding="utf-8", lineterminator="\n"
+    )
+
+
+def _make_stub_dataset() -> mock.Mock:
+    """Build a dataset mock that filters pronunciations by dialect IDs."""
+    data = _build_classifier_data()
+    dataset = mock.Mock()
+
+    def select(dids):
+        selected = mock.Mock()
+        selected.data = data[data["did"].isin(list(dids))]
+        return selected
+
+    dataset.select.side_effect = select
+    return dataset
+
+
+class TestClassifierCli(unittest.TestCase):
+    def test_subcommand_required(self):
+        with self.assertRaises(SystemExit):
+            classifier_cli.build_parser().parse_args([])
+
+    def test_train_defaults(self):
+        args = classifier_cli.build_parser().parse_args(
+            ["train", "rules.json", "annotations.csv"]
+        )
+        self.assertEqual(args.resample, 5)
+        self.assertEqual(args.output_file, "dialect_classifier.bz2")
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_stub_dataset(),
+    )
+    def test_train_end_to_end(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            rule_file = os.path.join(tmp, "rules.json")
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            model_file = os.path.join(tmp, "classifier.bz2")
+            _write_rules(rule_file)
+            _write_annotations(annotation_file)
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "train",
+                    "--resample", "0",
+                    rule_file,
+                    annotation_file,
+                    model_file,
+                ]),
+                0,
+            )
+
+            self.assertTrue(os.path.isfile(model_file))
+            model = joblib.load(model_file)
+            self.assertIsInstance(model, sklearn.pipeline.Pipeline)
+            self.assertListEqual(list(model.classes_), ["A", "B"])
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_stub_dataset(),
+    )
+    def test_evaluate_end_to_end(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            rule_file = os.path.join(tmp, "rules.json")
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            _write_rules(rule_file)
+            _write_annotations(annotation_file)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    classifier_cli.main([
+                        "evaluate",
+                        "--resample", "0",
+                        rule_file,
+                        annotation_file,
+                    ]),
+                    0,
+                )
+
+            # the compliance perfectly separates the two classes
+            self.assertIn("accuracy = 1.0000", output.getvalue())
+        get_dataset.assert_called_with("stub")
+
+    def test_predict_precomputed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_file = os.path.join(tmp, "classifier.bz2")
+            input_file = os.path.join(tmp, "compliances.csv")
+            output_file = os.path.join(tmp, "predictions.csv")
+
+            features = pandas.DataFrame({
+                "r1": [1.0, 0.0, 1.0, 0.0],
+                "r2": [1.0, 0.0, 1.0, 0.0],
+            })
+            model = sklearn.pipeline.make_pipeline(
+                sklearn.compose.make_column_transformer(
+                    ("passthrough", features.columns)
+                ),
+                sklearn.impute.KNNImputer(),
+                sklearn.linear_model.LogisticRegression(),
+            ).fit(features, ["A", "B", "A", "B"])
+            joblib.dump(model, model_file)
+
+            pandas.DataFrame(
+                [("stub", "A0", 1, 1), ("stub", "B0", 0, 0)],
+                columns=["dataset", "did", "r1", "r2"],
+            ).to_csv(
+                input_file, index=False, encoding="utf-8",
+                lineterminator="\n",
+            )
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "predict",
+                    "--precomputed",
+                    "--model-file", model_file,
+                    input_file,
+                    output_file,
+                ]),
+                0,
+            )
+
+            result = pandas.read_csv(output_file).set_index("did")
+            self.assertGreater(result.loc["A0", "A"], result.loc["A0", "B"])
+            self.assertGreater(result.loc["B0", "B"], result.loc["B0", "A"])
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_stub_dataset(),
+    )
+    def test_predict_from_datasets(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            rule_file = os.path.join(tmp, "rules.json")
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            model_file = os.path.join(tmp, "classifier.bz2")
+            sample_file = os.path.join(tmp, "samples.csv")
+            output_file = os.path.join(tmp, "predictions.csv")
+            _write_rules(rule_file)
+            _write_annotations(annotation_file)
+
+            # train the model first, then predict from raw dialect samples
+            classifier_cli.main([
+                "train",
+                "--resample", "0",
+                rule_file,
+                annotation_file,
+                model_file,
+            ])
+            pandas.DataFrame(
+                [("stub", "A0"), ("stub", "B0")],
+                columns=["dataset", "did"],
+            ).to_csv(
+                sample_file, index=False, encoding="utf-8",
+                lineterminator="\n",
+            )
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "predict",
+                    "--model-file", model_file,
+                    "--rule-file", rule_file,
+                    sample_file,
+                    output_file,
+                ]),
+                0,
+            )
+
+            result = pandas.read_csv(output_file).set_index("did")
+            self.assertGreater(result.loc["A0", "A"], result.loc["A0", "B"])
+            self.assertGreater(result.loc["B0", "B"], result.loc["B0", "A"])
+        get_dataset.assert_called_with("stub")
 
 
 if __name__ == "__main__":
