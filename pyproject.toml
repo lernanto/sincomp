@@ -37,8 +37,10 @@ Issues = "https://github.com/lernanto/sincomp/issues"
 sincomp = "sincomp.cli:main"
 "sincomp.cli.align" = "sincomp.cli.align:main"
 "sincomp.cli.compare" = "sincomp.cli.compare:main"
+"sincomp.cli.classifier" = "sincomp.cli.classifier:main"
 "sincomp.cli.similarity" = "sincomp.cli.similarity:main"
 "sincomp.cli.dataset" = "sincomp.cli.dataset:main"
+"sincomp.cli.reconstruct" = "sincomp.cli.reconstruct:main"
 
 [project.optional-dependencies]
 datasets = [
