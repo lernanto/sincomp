@@ -30,6 +30,10 @@ sincomp similarity [DATASET ...]
 sincomp compare DATASET [OUTPUT]
 sincomp align DATASET [DATASET ...]
 sincomp align evaluate DATASET
+sincomp classifier train RULE_FILE ANNOTATION_FILE [OUTPUT_FILE]
+sincomp classifier evaluate RULE_FILE ANNOTATION_FILE
+sincomp classifier predict [OPTIONS] [INPUT] [OUTPUT]
+sincomp reconstruct --dialects DIALECT [DIALECT ...]
 ```
 
 面向智能体或其他程序调用时，可以使用带有模块命名空间的入口，参数与人类入口一致：
@@ -42,6 +46,10 @@ sincomp.cli.similarity [DATASET ...]
 sincomp.cli.compare DATASET [OUTPUT]
 sincomp.cli.align DATASET [DATASET ...]
 sincomp.cli.align evaluate DATASET
+sincomp.cli.classifier train RULE_FILE ANNOTATION_FILE [OUTPUT_FILE]
+sincomp.cli.classifier evaluate RULE_FILE ANNOTATION_FILE
+sincomp.cli.classifier predict [OPTIONS] [INPUT] [OUTPUT]
+sincomp.cli.reconstruct --dialects DIALECT [DIALECT ...]
 ```
 
 ### 检索数据集
