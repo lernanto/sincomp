@@ -7,6 +7,7 @@ from io import StringIO
 from unittest import mock
 
 import joblib
+import numpy
 import pandas
 import sklearn.compose
 import sklearn.impute
@@ -17,6 +18,7 @@ from sincomp import cli
 from sincomp.cli import align as align_cli
 from sincomp.cli import classifier as classifier_cli
 from sincomp.cli import dataset as dataset_cli
+from sincomp.cli import reconstruct as reconstruct_cli
 
 
 class TestCli(unittest.TestCase):
@@ -43,6 +45,14 @@ class TestCli(unittest.TestCase):
             0,
         )
         main.assert_called_once_with(["train", "rules.json", "annotations.csv"])
+
+    @mock.patch("sincomp.cli.reconstruct.main", return_value=0)
+    def test_reconstruct_is_forwarded_with_subcommand(self, main):
+        self.assertEqual(
+            cli.main(["reconstruct", "evaluate", "--dialects", "a"]),
+            0,
+        )
+        main.assert_called_once_with(["evaluate", "--dialects", "a"])
 
     @mock.patch("sincomp.cli.similarity.main", return_value=0)
     def test_similarity_is_forwarded_without_subcommand(self, main):
@@ -536,6 +546,743 @@ class TestClassifierCli(unittest.TestCase):
             result = pandas.read_csv(output_file).set_index("did")
             self.assertGreater(result.loc["A0", "A"], result.loc["A0", "B"])
             self.assertGreater(result.loc["B0", "B"], result.loc["B0", "A"])
+        get_dataset.assert_called_with("stub")
+
+
+def _build_reconstruct_data() -> pandas.DataFrame:
+    """Build long-form pronunciation data for two dialects."""
+    return pandas.DataFrame(
+        [
+            (
+                did,
+                f"c{i}",
+                ("p", "t", "k", "m")[i % 4],
+                ("a", "i", "u", "an")[i % 4],
+                str(i % 3 + 1),
+            )
+            for i in range(20)
+            for did in ("d1", "d2")
+        ],
+        columns=["did", "cid", "initial", "final", "tone"],
+    )
+
+
+def _make_reconstruct_dataset() -> mock.Mock:
+    """Build a dataset mock with two dialects for reconstruction."""
+    data = _build_reconstruct_data()
+    dataset = mock.Mock()
+    dataset.dialects = pandas.DataFrame(
+        {"name": ["Alpha", "Beta"]},
+        index=pandas.Index(["d1", "d2"], name="did")
+    )
+    cids = sorted(data["cid"].unique())
+    dataset.characters = pandas.DataFrame(
+        {"character": cids},
+        index=pandas.Index(cids, name="cid")
+    )
+
+    def select(dids):
+        selected = mock.Mock()
+        selected.data = data[data["did"].isin(list(dids))]
+        return selected
+
+    dataset.select.side_effect = select
+    return dataset
+
+
+def _write_segment_annotations(path: str) -> None:
+    """Write per-character segment labels as annotations."""
+    annotations = pandas.DataFrame(
+        [
+            (
+                f"c{i}",
+                ("p", "t", "k", "m")[i % 4],
+                ("a", "i", "u", "an")[i % 4],
+                str(i % 3 + 1),
+            )
+            for i in range(20)
+        ],
+        columns=["cid", "initial", "final", "tone"],
+    )
+    annotations.to_csv(
+        path, index=False, encoding="utf-8", lineterminator="\n"
+    )
+
+
+class TestReconstructCli(unittest.TestCase):
+    def test_parser_defaults(self):
+        args = reconstruct_cli.build_parser().parse_args([])
+        self.assertEqual(args.dataset, "MCPDict")
+        self.assertEqual(args.embedding_size, 128)
+        self.assertEqual(args.output_dir, "reconstruction")
+        self.assertEqual(args.log_level, "WARNING")
+        self.assertEqual(args.min_dialect_coverage, 0.5)
+        self.assertEqual(args.min_cluster_size, 3)
+        self.assertEqual(args.max_cluster_distance, 0.1)
+        self.assertEqual(args.max_clusters, 200)
+        self.assertEqual(args.min_phone_proportion, 0.1)
+        self.assertEqual(args.max_merge_tolerance, 0)
+        self.assertEqual(args.max_merge_distance, 0.5)
+
+    def test_dialects_required(self):
+        with self.assertRaises(SystemExit):
+            reconstruct_cli.main([])
+
+    def test_cluster_rejects_invalid_min_cluster_size(self):
+        data = pandas.DataFrame(
+            [("d1", "c0", "p", "a", "1")],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        with self.assertRaises(ValueError):
+            reconstruct_cli.cluster(
+                data,
+                data["cid"].unique(),
+                min_cluster_size=0,
+            )
+
+    def test_assign_unclustered_characters(self):
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 0, 1, 1, -1, -1],
+                "final_cluster": [0, 0, 0, 0, 0, 0, 0],
+                "tone_cluster": [0, 0, 0, 0, 0, 0, 0],
+            },
+            index=pandas.Index(
+                ["c0", "c1", "c2", "c3", "c4", "c5", "c6"], name="cid"
+            ),
+        )
+        embeddings = {
+            # initial clusters along the x and y directions
+            "initial": numpy.array([
+                [1.0, 0.0], [1.0, 0.1], [0.9, 0.1],
+                [0.0, 1.0], [0.1, 1.0],
+                [1.0, 0.3], [0.2, 1.0],
+            ]),
+            "final": numpy.ones((7, 1)),
+            "tone": numpy.ones((7, 1)),
+        }
+
+        assigned = reconstruct_cli.assign_unclustered_characters(
+            result, embeddings
+        )
+        # each unclustered character joins the cluster of its nearest
+        # clustered character, independently of the other characters
+        self.assertEqual(assigned.loc["c5", "initial_cluster"], 0)
+        self.assertEqual(assigned.loc["c6", "initial_cluster"], 1)
+        # clustered characters keep their cluster
+        numpy.testing.assert_array_equal(
+            assigned["final_cluster"], result["final_cluster"]
+        )
+        # the input frame is not modified
+        self.assertEqual(result.loc["c5", "initial_cluster"], -1)
+
+        # fully clustered characters are returned unchanged
+        pandas.testing.assert_frame_equal(
+            reconstruct_cli.assign_unclustered_characters(
+                assigned, embeddings
+            ),
+            assigned,
+        )
+
+        with self.assertRaises(ValueError):
+            reconstruct_cli.assign_unclustered_characters(
+                result.assign(initial_cluster=-1), embeddings
+            )
+
+    def _cluster_annotated(self, annotations):
+        # c0-c3 share the frequent segments p/a; c4 has the rare
+        # segments q/b and is annotated for the initial only or for
+        # both segments; c5 shares the rare initial q without any
+        # annotation
+        data = pandas.DataFrame(
+            [
+                *[
+                    (did, f"c{i}", "p", "a", "1")
+                    for i in range(4)
+                    for did in ("d1", "d2")
+                ],
+                ("d1", "c4", "q", "b", "1"),
+                ("d2", "c4", "q", "b", "1"),
+                ("d1", "c5", "q", "a", "1"),
+                ("d2", "c5", "q", "a", "1"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        result, _ = reconstruct_cli.cluster(
+            data,
+            data["cid"].unique(),
+            annotations,
+            min_cluster_size=3,
+        )
+        return result
+
+    def test_cluster_partial_annotations(self):
+        # c4 is annotated for the initial only: the small initial
+        # cluster q keeps the annotated character, while the small
+        # final cluster b, whose annotation is empty, is dissolved
+        annotations = pandas.DataFrame(
+            {"initial": ["q"], "final": [None]},
+            index=pandas.Index(["c4"], name="cid"),
+        )
+        result = self._cluster_annotated(annotations)
+        # the annotated character keeps its small initial cluster
+        self.assertNotEqual(
+            result.loc["c4", "initial_cluster"],
+            result.loc["c0", "initial_cluster"],
+        )
+        # the unannotated character of the small initial cluster is
+        # left unclustered until the phoneme merging
+        self.assertEqual(result.loc["c5", "initial_cluster"], -1)
+        # the small final cluster without annotation is dissolved
+        self.assertEqual(result.loc["c4", "final_cluster"], -1)
+
+    def test_cluster_complete_annotations(self):
+        # with both annotations, the small initial and final clusters
+        # of the annotated character are both kept
+        annotations = pandas.DataFrame(
+            {"initial": ["q"], "final": ["b"]},
+            index=pandas.Index(["c4"], name="cid"),
+        )
+        result = self._cluster_annotated(annotations)
+        self.assertNotEqual(
+            result.loc["c4", "initial_cluster"],
+            result.loc["c0", "initial_cluster"],
+        )
+        self.assertNotEqual(
+            result.loc["c4", "final_cluster"],
+            result.loc["c0", "final_cluster"],
+        )
+
+    def test_summarize_cluster_phones(self):
+        # c2 is not recorded by d1 and has two alternate phones at d2
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p"),
+                ("d1", "c1", "p"),
+                ("d2", "c0", "t"),
+                ("d2", "c2", "p"),
+                ("d2", "c2", "t"),
+            ],
+            columns=["did", "cid", "initial"],
+        )
+        data["final"] = pandas.NA
+        data["tone"] = pandas.NA
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 0],
+                "final_cluster": [0, 0, 0],
+                "tone_cluster": [0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c2"], name="cid"),
+        )
+
+        # p occurs in 3 of 5 recorded samples, t in 2 of 5
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        summary = reconstruct_cli.summarize_cluster_phones(
+            distributions, min_phone_proportion=0.5
+        )
+        rows = summary.xs(0, level="cluster")
+        self.assertEqual(set(rows["sample_count"]), {3})
+        # t covers two samples but misses the proportion threshold
+        self.assertEqual(set(rows["phone"]), {"p"})
+        p_row = rows[rows["phone"] == "p"].iloc[0]
+        self.assertEqual(p_row.character_count, 3)
+        self.assertNotIn(("initial", 1), summary.index)
+        # the display does not include the assigned phone
+        self.assertNotIn("assigned_phone", summary.columns)
+
+        summary = reconstruct_cli.summarize_cluster_phones(
+            distributions, min_phone_proportion=0.4
+        )
+        phones = set(
+            summary.xs(0, level="cluster")["phone"]
+        )
+        # alternate readings are counted individually, not as one cell
+        self.assertEqual(phones, {"p", "t"})
+
+    def test_assign_cluster_phones_avoids_conflicts(self):
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p"), ("d2", "c0", "p"),
+                ("d1", "c1", "p"), ("d2", "c1", "t"),
+                ("d1", "c2", "t"), ("d2", "c2", "p"),
+                ("d1", "c3", "p"), ("d2", "c3", "p"),
+            ],
+            columns=["did", "cid", "initial"],
+        )
+        data["final"] = pandas.NA
+        data["tone"] = pandas.NA
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 0, 1],
+                "final_cluster": [0, 0, 0, 0],
+                "tone_cluster": [0, 0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
+        )
+
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        assigned = reconstruct_cli.assign_cluster_phones(distributions)
+        # the larger cluster claims its most frequent reading first
+        self.assertEqual(assigned.loc[("initial", 0)], "p₁")
+        # the smaller cluster falls back to a distinguished form
+        self.assertEqual(assigned.loc[("initial", 1)], "p₂")
+
+    def test_assign_cluster_phones_requires_two_samples(self):
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p"),
+                ("d1", "c1", "p"),
+                ("d1", "c2", "p"),
+                # a single sample of q covers 25% but is not frequent
+                ("d2", "c0", "q"),
+            ],
+            columns=["did", "cid", "initial"],
+        )
+        data["final"] = pandas.NA
+        data["tone"] = pandas.NA
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 0],
+                "final_cluster": [0, 0, 0],
+                "tone_cluster": [0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c2"], name="cid"),
+        )
+
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        assigned = reconstruct_cli.assign_cluster_phones(distributions)
+        # readings with fewer than two samples are ignored
+        self.assertEqual(assigned.loc[("initial", 0)], "p")
+
+    def test_merge_cluster_phonemes(self):
+        data = pandas.DataFrame(
+            [
+                # final i only follows the ts initial
+                ("d1", "c0", "ts", "i", "55"),
+                ("d2", "c0", "ts", "i", "55"),
+                # final ei only follows the p initial
+                ("d1", "c1", "p", "ei", "55"),
+                ("d2", "c1", "p", "ei", "55"),
+                # in d2, ei also contrasts with i after ts
+                ("d1", "c3", "ts", "ei", "55"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 1, 0],
+                "final_cluster": [1, 2, 3],
+                "tone_cluster": [0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c3"], name="cid"),
+        )
+
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        # mean reading vectors: cluster 1 near [1, 0], cluster 2 near
+        # [0.9, 0.1] (similar), cluster 3 near [0.95, 0.05] (similar to
+        # cluster 1 but contrasts with it in d1); the initial clusters
+        # hold near-identical vectors so that their average pairwise
+        # distance is small
+        embeddings = {
+            "initial": numpy.array(
+                [[1.0, 0.0], [0.95, 0.312], [0.95, 0.312]]
+            ),
+            "final": numpy.array(
+                [[1.0, 0.0], [0.9, 0.1], [0.95, 0.05]]
+            ),
+            "tone": numpy.array([[1.0], [1.0], [1.0]]),
+        }
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions
+        )
+        # final clusters 2 and 3 share the phone ei with complementary
+        # environments, so they share one phoneme
+        self.assertEqual(phonemes[("final", 1)], "i")
+        self.assertEqual(phonemes[("final", 2)], "ei")
+        self.assertEqual(phonemes[("final", 3)], "ei")
+        # cluster 1 contrasts with the ei group on one character in d1
+        # and keeps its own phoneme
+
+        # tolerating one co-occurring character merges cluster 3; the
+        # merged group claims its most frequent phone ei
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions,
+            max_merge_tolerance=1,
+        )
+        self.assertEqual(phonemes[("final", 1)], "ei")
+        self.assertEqual(phonemes[("final", 2)], "ei")
+        self.assertEqual(phonemes[("final", 3)], "ei")
+
+        # a lower similarity threshold merges the initial clusters,
+        # whose environments overlap by one character
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions,
+            max_merge_tolerance=1, max_merge_distance=0.3,
+        )
+        self.assertEqual(phonemes[("initial", 0)], "ts")
+        self.assertEqual(phonemes[("initial", 1)], "ts")
+
+    def test_merge_cluster_phonemes_label_threshold(self):
+        # a rare phone below the assignment threshold must not become
+        # the phoneme label of a cluster whose frequent phones are all
+        # claimed by other clusters
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p", "a", "55"),
+                ("d2", "c0", "p", "a", "55"),
+                ("d1", "c1", "pʰ", "a", "55"),
+                ("d2", "c1", "pʰ", "a", "55"),
+                ("d1", "c2", "t", "a", "55"),
+                ("d2", "c2", "t", "a", "55"),
+                ("d1", "c3", "tʰ", "a", "55"),
+                ("d1", "c3", "tʰ", "n", "55"),
+                ("d2", "c3", "tʰ", "a", "55"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 1, 2, 3],
+                "final_cluster": [1, 1, 2, 2],
+                "tone_cluster": [0, 0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
+        )
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        # orthogonal embeddings keep the final clusters unmerged
+        embeddings = {
+            "initial": numpy.eye(4),
+            "final": numpy.array(
+                [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]
+            ),
+            "tone": numpy.ones((4, 1)),
+        }
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions
+        )
+        # both clusters are dominated by a; the rare n (1 of 4 samples)
+        # is not eligible as a label, so the second cluster shares a
+        self.assertEqual(phonemes[("final", 1)], "a₁")
+        self.assertEqual(phonemes[("final", 2)], "a₂")
+        self.assertNotIn(
+            "n", phonemes[phonemes.index.get_level_values(0) == "final"]
+        )
+
+    def test_merge_cluster_phonemes_greedy_across_features(self):
+        # a tone pair (similarity 0.95) must be merged before an
+        # initial pair (similarity 0.90); merging the tones first
+        # blocks the initial merge, while merging initial first would
+        # block the tone merge under a serial per-feature order
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p", "a", "11"),
+                ("d1", "c1", "p", "a", "11"),
+                ("d1", "c2", "t", "a", "22"),
+                ("d1", "c3", "t", "a", "22"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 1, 1],
+                "final_cluster": [0, 0, 0, 0],
+                "tone_cluster": [0, 0, 1, 1],
+            },
+            index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
+        )
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        embeddings = {
+            "initial": numpy.array(
+                [[1.0, 0.0], [1.0, 0.0], [0.9, 0.436], [0.9, 0.436]]
+            ),
+            "final": numpy.ones((4, 1)),
+            "tone": numpy.array(
+                [[1.0, 0.0], [1.0, 0.0], [0.95, 0.312], [0.95, 0.312]]
+            ),
+        }
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions
+        )
+        # the tone clusters merge; the initial clusters stay separate
+        # because their environments now overlap beyond the tolerance
+        self.assertEqual(phonemes[("tone", 0)], "11")
+        self.assertEqual(phonemes[("tone", 1)], "11")
+        self.assertEqual(phonemes[("initial", 0)], "p")
+        self.assertEqual(phonemes[("initial", 1)], "t")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_reconstruct_without_annotations(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--output-dir", tmp,
+                        "--embedding-size", "4",
+                    ]),
+                    0,
+                )
+
+            result = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            self.assertListEqual(
+                sorted(result.columns),
+                [
+                    "character",
+                    "final",
+                    "final_cluster",
+                    "final_phoneme",
+                    "initial",
+                    "initial_cluster",
+                    "initial_phoneme",
+                    "tone",
+                    "tone_cluster",
+                    "tone_phoneme",
+                ],
+            )
+            self.assertEqual(len(result), 20)
+            # every character receives the pronunciation and phoneme of
+            # its cluster
+            self.assertFalse(
+                result[[
+                    "initial", "final", "tone",
+                    "initial_phoneme", "final_phoneme", "tone_phoneme",
+                ]].isna().any().any()
+            )
+
+            # cluster phone distributions and assigned phones are
+            # reported, one phoneme per cluster
+            cluster_phones = pandas.read_csv(
+                os.path.join(tmp, "cluster_phones.csv")
+            )
+            self.assertListEqual(
+                list(cluster_phones.columns),
+                [
+                    "feature",
+                    "cluster",
+                    "phone",
+                    "character_count",
+                    "sample_count",
+                ],
+            )
+            clusters = pandas.read_csv(
+                os.path.join(tmp, "clusters.csv")
+            )
+            self.assertListEqual(
+                list(clusters.columns),
+                ["feature", "cluster", "phone", "phoneme"],
+            )
+
+            # the summary is printed as plain text and no report file
+            # is written
+            self.assertIn("20 characters", output.getvalue())
+            self.assertIn("2 dialects", output.getvalue())
+            self.assertFalse(
+                os.path.isfile(os.path.join(tmp, "reconstruct.json"))
+            )
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch("sincomp.cli.reconstruct.datasets.get")
+    def test_min_dialect_coverage_excludes_sparse_characters(self, get_dataset):
+        # a character observed in only one of two dialects
+        data = pandas.concat(
+            [
+                _build_reconstruct_data(),
+                pandas.DataFrame(
+                    [("d1", "cx", "p", "a", "1")],
+                    columns=["did", "cid", "initial", "final", "tone"],
+                ),
+            ],
+            ignore_index=True,
+        )
+        dataset = mock.Mock()
+        dataset.dialects = pandas.DataFrame(
+            {"name": ["Alpha", "Beta"]},
+            index=pandas.Index(["d1", "d2"], name="did"),
+        )
+        cids = sorted(data["cid"].unique())
+        dataset.characters = pandas.DataFrame(
+            {"character": cids},
+            index=pandas.Index(cids, name="cid"),
+        )
+
+        def select(dids):
+            selected = mock.Mock()
+            selected.data = data[data["did"].isin(list(dids))]
+            return selected
+
+        dataset.select.side_effect = select
+        get_dataset.return_value = dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--output-dir", tmp,
+                        "--embedding-size", "4",
+                        "--min-dialect-coverage", "0.8",
+                    ]),
+                    0,
+                )
+
+            result = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            # the sparse character stays in the output
+            self.assertEqual(len(result), 21)
+            self.assertEqual(result.loc["cx", "character"], "cx")
+            # and it is still assigned to clusters
+            for feature in ("initial", "final", "tone"):
+                self.assertFalse(
+                    pandas.isna(result.loc["cx", f"{feature}_cluster"])
+                )
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_min_cluster_size_end_to_end(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--output-dir", tmp,
+                        "--embedding-size", "4",
+                        "--min-cluster-size", "3",
+                    ]),
+                    0,
+                )
+
+            result = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            self.assertEqual(len(result), 20)
+            for feature in ("initial", "final", "tone"):
+                self.assertIn(f"{feature}_cluster", result.columns)
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_large_max_cluster_distance_merges_all(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--output-dir", tmp,
+                        "--embedding-size", "4",
+                        "--max-cluster-distance", "1000",
+                    ]),
+                    0,
+                )
+
+            result = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            # a huge threshold puts every character in one cluster
+            for feature in ("initial", "final", "tone"):
+                self.assertEqual(
+                    result[f"{feature}_cluster"].nunique(), 1
+                )
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_reconstruct_with_annotations(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            _write_segment_annotations(annotation_file)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--annotation-file", annotation_file,
+                        "--output-dir", tmp,
+                        "--embedding-size", "4",
+                    ]),
+                    0,
+                )
+
+            result = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            self.assertIn("character", result.columns)
+            for feature in ("initial", "final", "tone"):
+                self.assertIn(feature, result.columns)
+                self.assertIn(f"{feature}_cluster", result.columns)
+
+            self.assertIn("20 characters", output.getvalue())
+
+            # no pronunciation summary is written when annotations exist
+            self.assertFalse(
+                os.path.isfile(os.path.join(tmp, "cluster_phones.csv"))
+            )
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_config_provides_defaults(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.json")
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "dataset": "stub",
+                    "dialects": ["d1", "d2"],
+                    "embedding_size": 4,
+                }, f)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "--config", config_file,
+                        "--output-dir", tmp,
+                    ]),
+                    0,
+                )
+
+            self.assertTrue(
+                os.path.isfile(os.path.join(tmp, "reconstruction.csv"))
+            )
+            self.assertIn("20 characters", output.getvalue())
+            self.assertIn("stub", output.getvalue())
         get_dataset.assert_called_with("stub")
 
 
