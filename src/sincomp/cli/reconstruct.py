@@ -23,6 +23,8 @@ from scipy import linalg
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.tree import DecisionTreeClassifier
 
 from .. import datasets, embedding, preprocess
 
@@ -462,6 +464,62 @@ def apply_cluster_phones(
     return output
 
 
+def map_annotation_phones(
+    result: pandas.DataFrame,
+    annotations: pandas.DataFrame
+) -> pandas.Series:
+    """Assign each cluster the annotated phones of its characters.
+
+    The annotations provide the phone of each cluster: characters of
+    one cluster must share one phone, so each cluster takes the mode of
+    the annotated phones of its characters, and clusters sharing the
+    same phone are distinguished with subscript digits, larger
+    clusters first.
+
+    Parameters
+    ----------
+    result : pandas.DataFrame
+        Cluster identifiers indexed by character ID, with one
+        ``<feature>_cluster`` column per segment type.
+    annotations : pandas.DataFrame
+        Manually assigned segment labels indexed by character ID.
+
+    Returns
+    -------
+    pandas.Series
+        Phone of each cluster, indexed by feature and cluster.
+    """
+
+    phones = {}
+    for feature in FEATURES:
+        annotated = annotations[feature].reindex(result.index)
+        clusters = result[f"{feature}_cluster"]
+        mask = annotated.notna() & (clusters >= 0)
+        modes = annotated[mask].groupby(clusters[mask]).agg(
+            lambda values: values.mode().iloc[0]
+        )
+        sizes = clusters[clusters >= 0].value_counts()
+        ordered = sorted(
+            modes.index, key=lambda cluster: (-int(sizes[cluster]), cluster)
+        )
+        claims: dict[str, list] = {}
+        for cluster in ordered:
+            claims.setdefault(modes.loc[cluster], []).append(cluster)
+        for phone, cluster_ids in claims.items():
+            shared = (
+                (f"{phone}{_subscript(n)}", cluster)
+                for n, cluster in enumerate(cluster_ids, start=1)
+            ) if len(cluster_ids) > 1 else (
+                (phone, cluster) for cluster in cluster_ids
+            )
+            for label, cluster in shared:
+                phones[(feature, int(cluster))] = label
+    index = pandas.MultiIndex.from_tuples(
+        phones.keys(), names=["feature", "cluster"]
+    )
+    return pandas.Series(phones.values(), index=index, name="phone")
+
+
 def _subscript(number: int) -> str:
     """Return the subscript form of a decimal number."""
     digits = "₀₁₂₃₄₅₆₇₈₉"
@@ -828,6 +886,49 @@ def assign_unclustered_characters(
     return output
 
 
+def predict_annotated_phonemes(
+    result: pandas.DataFrame,
+    annotations: pandas.DataFrame
+) -> pandas.DataFrame:
+    """Predict the annotated phoneme of each character from its clusters.
+
+    The annotations are treated as already merged phonemes, but a
+    cluster does not necessarily map to a single phoneme: the phoneme
+    may depend on the other features (conditional divergence), so a
+    decision tree is trained on the annotated characters to predict the
+    phoneme of every character from the identifiers of the clusters of
+    all its features.
+
+    Parameters
+    ----------
+    result : pandas.DataFrame
+        Cluster identifiers indexed by character ID, with one
+        ``<feature>_cluster`` column per segment type.
+    annotations : pandas.DataFrame
+        Manually assigned segment labels indexed by character ID.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copy of the result with one ``<feature>_phoneme`` column per
+        feature holding the predicted phoneme of each character.
+    """
+
+    output = result.copy()
+    cluster_columns = [f"{feature}_cluster" for feature in FEATURES]
+    for feature in FEATURES:
+        known = annotations[feature].reindex(result.index)
+        mask = known.notna()
+        classifier = make_pipeline(
+            OneHotEncoder(handle_unknown="ignore"),
+            DecisionTreeClassifier()
+        ).fit(output.loc[mask, cluster_columns], known[mask])
+        output[f"{feature}_phoneme"] = classifier.predict(
+            output[cluster_columns]
+        )
+    return output
+
+
 def dialect_coverage(wide: pandas.DataFrame) -> pandas.Series:
     """Return the proportion of dialects with data for each character.
 
@@ -900,9 +1001,12 @@ def cluster(
 
     The long-form data is first converted to a wide character-by-dialect
     table. Characters outside ``covered`` are excluded from embedding
-    fitting and clustering. Clusters with fewer than
-    ``min_cluster_size`` characters are dissolved, except for their
-    characters with annotations, which keep their cluster. Characters
+    fitting and clustering, except for annotated characters, which
+    always participate whatever their coverage is. Clusters with fewer
+    than ``min_cluster_size`` characters are dissolved, except for
+    their characters with annotations, which keep their cluster. When
+    annotations are available, clusters without any annotated character
+    are dissolved as well, since they would have no phone. Characters
     without a cluster are marked with ``-1``; they are assigned to
     clusters, phones and phonemes after the phoneme merging, see
     :func:`assign_unclustered_characters`.
@@ -970,6 +1074,19 @@ def cluster(
     )
 
     fit_mask = pandas.Series(wide.index.isin(covered), index=wide.index)
+    if annotations is not None:
+        # annotated characters join the fitting and the clustering
+        # whatever their dialect coverage is
+        columns = [f for f in FEATURES if f in annotations.columns]
+        annotated = (
+            annotations[columns]
+            .notna()
+            .any(axis=1)
+            .reindex(wide.index)
+            .fillna(False)
+            .astype(bool)
+        )
+        fit_mask |= annotated
     if not fit_mask.any():
         raise ValueError("No character is covered.")
     logger.info(
@@ -1019,21 +1136,31 @@ def cluster(
                 annotations[feature].reindex(wide.index).notna().to_numpy()
             )
         # characters without a cluster (low coverage characters and
-        # members of clusters that are too small to keep) are marked
-        # with -1 and assigned to clusters, phones and phonemes after
-        # the phoneme merging; annotated characters keep their cluster
+        # members of dissolved clusters) are marked with -1 and assigned
+        # to clusters, phones and phonemes after the phoneme merging;
+        # annotated characters keep their cluster, and when annotations
+        # are available, clusters without any annotated character have
+        # no phone and are dissolved entirely
         assigned = numpy.full(len(values), -1, dtype=cluster_ids.dtype)
         counts = pandas.Series(cluster_ids).value_counts()
-        small = counts[counts < min_cluster_size].index.to_numpy()
-        if len(small) > 0:
-            members = numpy.isin(cluster_ids, small)
-            if known_mask is not None:
-                members &= ~known_mask[fit_array]
+        members = numpy.isin(
+            cluster_ids, counts[counts < min_cluster_size].index.to_numpy()
+        )
+        if known_mask is not None:
+            members &= ~known_mask[fit_array]
+            annotated = pandas.Series(known_mask[fit_array]).groupby(
+                cluster_ids
+            ).any()
+            members |= ~numpy.isin(
+                cluster_ids, annotated[annotated].index.to_numpy()
+            )
+        if members.any():
+            dissolved = pandas.Series(cluster_ids[members]).nunique()
             cluster_ids = cluster_ids.copy()
             cluster_ids[members] = -1
             logger.debug(
-                "%s: dissolving %d small clusters (%d characters)",
-                feature, len(small), int(members.sum()),
+                "%s: dissolving %d clusters (%d characters)",
+                feature, dissolved, int(members.sum()),
             )
         assigned[fit_array] = cluster_ids
         result[f"{feature}_cluster"] = assigned
@@ -1339,6 +1466,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             encoding="utf-8"
         )
         logger.info("wrote %s", prons_file)
+    else:
+        # the annotations provide the cluster phones and act as already
+        # merged phonemes; characters without a cluster are assigned
+        # first, then the phoneme of each character is predicted from
+        # the identifiers of its clusters
+        result = assign_unclustered_characters(result, feature_embeddings)
+        result = apply_cluster_phones(
+            result, map_annotation_phones(result, annotations)
+        )
+        result = predict_annotated_phonemes(result, annotations)
 
     output = result
     output.index.name = "cid"
