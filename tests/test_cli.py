@@ -735,6 +735,9 @@ class TestReconstructCli(unittest.TestCase):
         self.assertEqual(result.loc["c5", "initial_cluster"], -1)
         # the small final cluster without annotation is dissolved
         self.assertEqual(result.loc["c4", "final_cluster"], -1)
+        # the initial cluster without any annotated character is
+        # dissolved as well
+        self.assertEqual(result.loc["c0", "initial_cluster"], -1)
 
     def test_cluster_complete_annotations(self):
         # with both annotations, the small initial and final clusters
@@ -752,6 +755,97 @@ class TestReconstructCli(unittest.TestCase):
             result.loc["c4", "final_cluster"],
             result.loc["c0", "final_cluster"],
         )
+        # the clusters without any annotated character are dissolved
+        self.assertEqual(result.loc["c0", "initial_cluster"], -1)
+        self.assertEqual(result.loc["c0", "final_cluster"], -1)
+
+    def test_cluster_includes_annotated_characters(self):
+        # an annotated character below the coverage threshold still
+        # joins the embedding fitting and the clustering
+        data = pandas.DataFrame(
+            [
+                *[
+                    (did, f"c{i}", "p", "a", "1")
+                    for i in range(3)
+                    for did in ("d1", "d2")
+                ],
+                # c3 is recorded by d1 only and carries an annotation
+                ("d1", "c3", "q", "b", "1"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        covered = reconstruct_cli.covered_characters(data, 0.75)
+        self.assertNotIn("c3", covered)
+        annotations = pandas.DataFrame(
+            {"initial": [None, None, None, "q"]},
+            index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
+        )
+        result, _ = reconstruct_cli.cluster(
+            data,
+            covered,
+            annotations,
+            min_cluster_size=3,
+        )
+        # the annotated character is clustered despite its coverage
+        self.assertGreaterEqual(result.loc["c3", "initial_cluster"], 0)
+
+    def test_map_annotation_phones(self):
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 1, 2],
+                "final_cluster": [0, 0, 0, 0],
+                "tone_cluster": [0, 0, 0, 0],
+            },
+            index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
+        )
+        annotations = pandas.DataFrame(
+            {
+                "initial": ["p", "p", "p", "k"],
+                "final": ["a", "a", "a", "a"],
+                "tone": ["1", "2", "1", "1"],
+            },
+            index=result.index,
+        )
+        phones = reconstruct_cli.map_annotation_phones(result, annotations)
+        # clusters sharing a reading are distinguished with subscripts,
+        # larger clusters first
+        self.assertEqual(phones[("initial", 0)], "p₁")
+        self.assertEqual(phones[("initial", 1)], "p₂")
+        self.assertEqual(phones[("initial", 2)], "k")
+        # a reading claimed by one cluster only carries no subscript
+        self.assertEqual(phones[("final", 0)], "a")
+        # a cluster with disagreeing annotations takes the mode
+        self.assertEqual(phones[("tone", 0)], "1")
+
+    def test_predict_annotated_phonemes(self):
+        # the phoneme of one final cluster depends on the initial: the
+        # characters following the p initial are annotated a while the
+        # characters following the k initial are annotated wa
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 0, 1, 1, 0, 1],
+                "final_cluster": [1, 1, 1, 1, 1, 1],
+                "tone_cluster": [0, 0, 0, 0, 0, 0],
+            },
+            index=pandas.Index(
+                ["c0", "c1", "c2", "c3", "c4", "c5"], name="cid"
+            ),
+        )
+        annotations = pandas.DataFrame(
+            {
+                "initial": ["p", "p", "k", "k", None, None],
+                "final": ["a", "a", "wa", "wa", None, None],
+                "tone": ["1", "1", "1", "1", None, None],
+            },
+            index=result.index,
+        )
+        predicted = reconstruct_cli.predict_annotated_phonemes(
+            result, annotations
+        )
+        # the phoneme of the same final cluster diverges with the
+        # initial cluster
+        self.assertEqual(predicted.loc["c4", "final_phoneme"], "a")
+        self.assertEqual(predicted.loc["c5", "final_phoneme"], "wa")
 
     def test_summarize_cluster_phones(self):
         # c2 is not recorded by d1 and has two alternate phones at d2
@@ -1245,6 +1339,9 @@ class TestReconstructCli(unittest.TestCase):
             for feature in ("initial", "final", "tone"):
                 self.assertIn(feature, result.columns)
                 self.assertIn(f"{feature}_cluster", result.columns)
+                # the annotations provide the phones and the phonemes
+                self.assertTrue(result[feature].notna().all())
+                self.assertTrue(result[f"{feature}_phoneme"].notna().all())
 
             self.assertIn("20 characters", output.getvalue())
 
