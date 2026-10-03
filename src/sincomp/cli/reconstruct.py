@@ -196,7 +196,8 @@ def cluster_phone_distributions(
         written form as ID.
     result : pandas.DataFrame
         Cluster identifiers indexed by character ID, with one
-        ``<feature>_cluster`` column per segment type.
+        ``<feature>_cluster`` column per segment type; characters
+        without a cluster (marked with ``-1``) contribute no samples.
 
     Returns
     -------
@@ -219,6 +220,8 @@ def cluster_phone_distributions(
         phones["cluster"] = phones["cid"].map(clusters)
         phones = phones.dropna(subset=["cluster"])
         phones["cluster"] = phones["cluster"].astype(int)
+        # characters without a cluster contribute no samples
+        phones = phones[phones["cluster"] >= 0]
         # count each phone at most once per recorded sample
         phones = phones.drop_duplicates(["cluster", "did", "cid", "phone"])
         totals = phones.groupby("cluster").size()
@@ -466,11 +469,9 @@ def _subscript(number: int) -> str:
 
 
 def merge_cluster_phonemes(
-    data: pandas.DataFrame,
-    result: pandas.DataFrame,
+    original: pandas.DataFrame,
     embeddings: dict[str, numpy.ndarray],
     distributions: pandas.DataFrame,
-    assignments: pandas.Series,
     max_merge_tolerance: int = 0,
     max_merge_distance: float = 0.5,
     min_phone_proportion: float = 0.1
@@ -479,41 +480,43 @@ def merge_cluster_phonemes(
 
     Following the phoneme merging rules of the machine-assisted
     reconstruction method, two clusters of one feature are assigned the
-    same phoneme when their phones are in complementary distribution —
-    no combination of the phonemes of all the other features co-occurs
-    with both beyond ``max_merge_tolerance`` characters — and the
-    cosine distance between the mean phone vectors of their
-    characters is at most ``max_merge_distance``. Merging is greedy
-    across all features: at every step the closest feasible pair among
-    the clusters of all features is merged, so every choice is made
-    against the latest environments and does not depend on the order of
-    the features. The phoneme value of each merged group is claimed
-    greedily from the phone distribution of its characters, and
-    groups sharing a value are distinguished with subscript digits.
+    same phoneme when their character sets are in complementary
+    distribution — there is no combination of the clusters of all the
+    other features whose character sets both contain characters beyond
+    ``max_merge_tolerance`` — and the average cosine distance between
+    the phone vectors of their characters is at most
+    ``max_merge_distance``. Only the characters of the kept clusters
+    participate in the merging; characters without a cluster (low
+    coverage characters and members of clusters that are too small to
+    keep) are assigned to clusters and inherit their phonemes after the
+    merging. Merging is greedy across all features: at every
+    step the closest feasible pair among the clusters of all features
+    is merged, so every choice is made against the latest environments
+    and does not depend on the order of the features. After the
+    merging, the phoneme value of each group is claimed greedily from
+    the phone distribution of its member clusters, and groups sharing
+    a value are distinguished with subscript digits.
 
     Parameters
     ----------
-    data : pandas.DataFrame
-        Long-form dialect data with ``did``, ``cid`` and segment columns;
-        used to derive the environment of each sample.
-    result : pandas.DataFrame
+    original : pandas.DataFrame
         Cluster identifiers indexed by character ID, with one
-        ``<feature>_cluster`` column per segment type.
+        ``<feature>_cluster`` column per segment type; characters
+        without a cluster are marked with ``-1``.
     embeddings : dict[str, numpy.ndarray]
         Dense phone vectors of each character keyed by segment type,
         as returned by :func:`reconstruct`.
     distributions : pandas.DataFrame
-        Phone distributions as returned by
-        :func:`cluster_phone_distributions`.
-    assignments : pandas.Series
-        Assigned phone of each cluster as returned by
-        :func:`assign_cluster_phones`.
+        Phone distributions of the kept clusters as returned by
+        :func:`cluster_phone_distributions`; consulted only after the
+        merging, to claim the phoneme value of each group from the
+        phone distribution of its member clusters.
     max_merge_tolerance : int, default=0
         Maximum number of co-occurring characters tolerated for two
         clusters to be considered complementary.
     max_merge_distance : float, default=0.5
-        Maximum cosine distance between the mean phone vectors of two
-        clusters to merge them.
+        Maximum average cosine distance between the phone vectors of
+        two clusters to merge them.
     min_phone_proportion : float, default=0.1
         Minimum proportion of recorded samples covering a phone for it
         to be eligible as the phoneme label of a group.
@@ -524,42 +527,41 @@ def merge_cluster_phonemes(
         Phoneme of each cluster, indexed by feature and cluster.
     """
 
-    # environment of each cluster: the number of characters recorded for
-    # each combination of the clusters of the other features
+    # only characters whose clusters are kept for all features
+    # participate in the merging
+    cluster_columns = [f"{feature}_cluster" for feature in FEATURES]
+    clustered_mask = (
+        original[cluster_columns] >= 0
+    ).all(axis=1).to_numpy()
+    covered_positions = numpy.flatnonzero(clustered_mask)
+    covered_index = original.index[covered_positions]
+    covered_original = original.loc[covered_index]
+    if covered_index.empty:
+        raise ValueError(
+            "No character has all its features clustered; lower the "
+            "minimum cluster size or increase the data coverage."
+        )
+
+    # environment of each cluster: the number of covered characters
+    # belonging to each combination of the clusters of the other
+    # features; the character sets are determined by the cluster
+    # identifiers alone and do not depend on the dialect phones
     environments = {}
-    top_phones = {}
     for feature in FEATURES:
-        samples = data[["did", "cid", feature]].rename(
-            columns={feature: "phone"}
-        )
-        samples = samples[
-            samples["phone"].notna() & (samples["phone"] != "")
-        ]
-        samples["cluster"] = samples["cid"].map(
-            result[f"{feature}_cluster"]
-        )
-        samples = samples.dropna(subset=["cluster"])
         others = [f"{g}_cluster" for g in FEATURES if g != feature]
-        combinations = samples["cid"].map(
-            result[others].astype(str).agg(",".join, axis=1)
-        )
-        for cluster_id, group in samples.groupby("cluster"):
-            key = (feature, int(cluster_id))
-            environments[key] = group.groupby(
-                combinations.loc[group.index]
-            )["cid"].nunique()
-            top_phones[key] = group["phone"].value_counts().index[0]
+        counts = covered_original.groupby(
+            [f"{feature}_cluster"] + others
+        ).size()
+        for (cluster_id, *rest), n in counts.items():
+            combo = ",".join(str(value) for value in rest)
+            environments.setdefault((feature, int(cluster_id)), {})[
+                combo
+            ] = int(n)
 
-    # one group per cluster to start with
+    # one group per kept cluster to start with
     cluster_ids = {
-        feature: sorted(pandas.unique(result[f"{feature}_cluster"]))
+        feature: sorted(pandas.unique(covered_original[f"{feature}_cluster"]))
         for feature in embeddings
-    }
-
-    # start from one phoneme per cluster, labeled by its assigned phone
-    labels = {
-        key: assignments.get(key, top_phones.get(key))
-        for key in environments
     }
 
     # union-find state persists across steps so that already merged
@@ -576,37 +578,59 @@ def merge_cluster_phonemes(
             cluster = parent[cluster]
         return cluster
 
-    cluster_arrays = {
-        feature: result[f"{feature}_cluster"].to_numpy()
-        for feature in FEATURES
-    }
-
     other_features = {
         feature: [g for g in FEATURES if g != feature]
         for feature in FEATURES
     }
 
-    def build_state(feature: str) -> tuple[dict, dict, dict]:
-        """Group members, environment and phone counts per root."""
+    # unit phone vectors of the covered characters per feature; the
+    # average pairwise cosine distance between the covered characters
+    # of two groups is 1 minus the cosine of the angle between the sums
+    # of their unit vectors, so no pairwise matrix is needed
+    unit_vectors = {}
+    for feature, values in embeddings.items():
+        vectors = values[covered_positions]
+        norms = numpy.linalg.norm(vectors, axis=1, keepdims=True)
+        unit_vectors[feature] = vectors / numpy.maximum(norms, 1e-12)
+
+    def build_state(feature: str) -> dict:
+        """Merging state of the groups of one feature."""
 
         members = {}
         env_counts = {}
-        group_counts = {}
         for cluster in cluster_ids[feature]:
             root = find(feature, cluster)
             members.setdefault(root, []).append(cluster)
             counts = env_counts.setdefault(root, {})
-            for combo, n in environments[(feature, cluster)].items():
+            for combo, n in environments.get((feature, cluster), {}).items():
                 counts[combo] = counts.get(combo, 0) + int(n)
-            group = group_counts.setdefault(root, {})
-            phones = distributions.xs(
-                (feature, cluster), level=["feature", "cluster"]
-            )
-            for phone, n in phones.groupby("phone")[
-                "sample_count"
-            ].sum().items():
-                group[phone] = group.get(phone, 0) + int(n)
-        return members, env_counts, group_counts
+        roots = sorted(members)
+        cluster_of = original.loc[covered_index, f"{feature}_cluster"]
+        positions = {
+            root: numpy.flatnonzero(cluster_of.to_numpy() == root)
+            for root in roots
+        }
+        sizes = numpy.array(
+            [len(positions[root]) for root in roots], dtype=float
+        )
+        # average pairwise distance between the covered characters of
+        # each pair of groups
+        sums = numpy.vstack([
+            unit_vectors[feature][positions[root]].sum(axis=0)
+            for root in roots
+        ])
+        group_distances = 1.0 - sums @ sums.T / numpy.maximum(
+            numpy.outer(sizes, sizes), 1e-12
+        )
+        return {
+            "members": members,
+            "env_counts": env_counts,
+            "roots": roots,
+            "pos": {root: i for i, root in enumerate(roots)},
+            "sizes": sizes,
+            "active": numpy.ones(len(roots), dtype=bool),
+            "distances": group_distances,
+        }
 
     states = {
         feature: build_state(feature) for feature in cluster_ids
@@ -625,9 +649,9 @@ def merge_cluster_phonemes(
         )
 
     def conflicts(feature: str, root1: int, root2: int) -> int:
-        """Characters co-occurring with both groups."""
+        """Covered characters co-occurring with both groups."""
 
-        env_counts = states[feature][1]
+        env_counts = states[feature]["env_counts"]
         counts1 = {}
         for combo, n in env_counts[root1].items():
             key = env_key(feature, combo)
@@ -644,38 +668,30 @@ def merge_cluster_phonemes(
             if key in counts2
         )
 
-    def centroid(feature: str, member_ids: list) -> numpy.ndarray:
-        values = embeddings[feature]
-        mask = numpy.isin(cluster_arrays[feature], member_ids)
-        return values[mask].mean(axis=0)
-
     # greedily merge the closest feasible pair among the clusters of
     # all features; merging one feature changes the environments of the
-    # others, so every choice is made against the latest state. The
-    # pairwise cosine distances of the group centroids are computed
-    # vectorized, and conflicts are only evaluated for candidate pairs
-    # in increasing distance until the first feasible pair is found.
+    # others, so every choice is made against the latest state. Group
+    # distances start from the precomputed character distances and are
+    # updated by the average-linkage rule, and conflicts are only
+    # evaluated for candidate pairs in increasing distance until the
+    # first feasible pair is found.
     while True:
         best = None
         for feature in FEATURES:
-            members, _, _ = states[feature]
-            roots = sorted(members)
-            if len(roots) < 2:
+            state = states[feature]
+            active = numpy.flatnonzero(state["active"])
+            if len(active) < 2:
                 continue
-            centroids = numpy.vstack(
-                [centroid(feature, members[root]) for root in roots]
-            )
-            norms = numpy.linalg.norm(centroids, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            centroids = centroids / norms
-            distances = 1.0 - centroids @ centroids.T
-            ii, jj = numpy.triu_indices(len(roots), k=1)
-            order = numpy.argsort(distances[ii, jj], kind="stable")
+            group_distances = state["distances"]
+            sub = group_distances[numpy.ix_(active, active)]
+            ii, jj = numpy.triu_indices(len(active), k=1)
+            order = numpy.argsort(sub[ii, jj], kind="stable")
             for index in order:
-                distance = float(distances[ii[index], jj[index]])
+                distance = float(sub[ii[index], jj[index]])
                 if distance > max_merge_distance:
                     break
-                r1, r2 = roots[ii[index]], roots[jj[index]]
+                r1 = state["roots"][active[ii[index]]]
+                r2 = state["roots"][active[jj[index]]]
                 if conflicts(feature, r1, r2) <= max_merge_tolerance:
                     if best is None or distance < best[0]:
                         best = (distance, feature, r1, r2)
@@ -683,13 +699,12 @@ def merge_cluster_phonemes(
         if best is None:
             break
         distance, feature, r1, r2 = best
-        members, env_counts, group_counts = states[feature]
+        state = states[feature]
+        members = state["members"]
+        env_counts = state["env_counts"]
         logger.debug(
-            "merge %s clusters %s and %s (phones %s + %s, "
-            "conflict=%d, distance=%.3f)",
+            "merge %s clusters %s and %s (conflict=%d, distance=%.3f)",
             feature, members[r1], members[r2],
-            assignments.get((feature, r1)),
-            assignments.get((feature, r2)),
             conflicts(feature, r1, r2), distance,
         )
         parents[feature][r2] = r1
@@ -698,23 +713,30 @@ def merge_cluster_phonemes(
             env_counts[r1][combo] = (
                 env_counts[r1].get(combo, 0) + n
             )
-        for phone, n in group_counts.pop(r2).items():
-            group_counts[r1][phone] = (
-                group_counts[r1].get(phone, 0) + n
-            )
+        # average-linkage update of the group distances
+        p1, p2 = state["pos"][r1], state["pos"][r2]
+        s1, s2 = state["sizes"][p1], state["sizes"][p2]
+        group_distances = state["distances"]
+        group_distances[p1, :] = (
+            s1 * group_distances[p1, :] + s2 * group_distances[p2, :]
+        ) / (s1 + s2)
+        group_distances[:, p1] = group_distances[p1, :]
+        state["sizes"][p1] = s1 + s2
+        state["active"][p2] = False
 
     logger.info(
         "merging converged: %s phoneme groups",
-        {feature: len(states[feature][0]) for feature in FEATURES},
+        {feature: len(states[feature]["members"]) for feature in FEATURES},
     )
 
-    # label each group by greedily claiming a phone value from its
-    # merged phone distribution, larger groups first; a phone is
-    # eligible only when it covers at least the same minimum number of
-    # samples as the phone assignment
+    # after the merging, claim each group's phoneme from the phone
+    # distribution of its member clusters, larger groups first; a phone
+    # is eligible only when it covers at least the same minimum number
+    # of samples as the phone assignment
+    labels = {}
     for feature in FEATURES:
-        members, _, group_counts = states[feature]
-        sizes = result[f"{feature}_cluster"].value_counts()
+        members = states[feature]["members"]
+        sizes = original[f"{feature}_cluster"].value_counts()
         priority = sorted(
             members,
             key=lambda root: (
@@ -722,6 +744,20 @@ def merge_cluster_phonemes(
                 min(members[root]),
             ),
         )
+        group_counts = {}
+        for root, member_ids in members.items():
+            counts = group_counts.setdefault(root, {})
+            for cluster in member_ids:
+                key = (feature, cluster)
+                if key not in distributions.index:
+                    continue
+                phones = distributions.xs(
+                    key, level=["feature", "cluster"]
+                )
+                for phone, n in phones.groupby("phone")[
+                    "sample_count"
+                ].sum().items():
+                    counts[phone] = counts.get(phone, 0) + int(n)
         assigned = claim_group_phones(
             group_counts, priority, min_phone_proportion
         )
@@ -738,53 +774,58 @@ def merge_cluster_phonemes(
     return pandas.Series(labels.values(), index=index, name="phoneme")
 
 
-def assign_unclustered_clusters(
-    embeddings: numpy.ndarray,
-    cluster_ids: numpy.ndarray,
-    unclustered: numpy.ndarray,
-) -> numpy.ndarray:
+def assign_unclustered_characters(
+    result: pandas.DataFrame,
+    embeddings: dict[str, numpy.ndarray]
+) -> pandas.DataFrame:
     """Assign clusters to unclustered characters character by character.
 
-    Characters marked in ``unclustered`` (low coverage characters and
-    members of clusters that are too small to keep) are each assigned
-    to the cluster of their nearest clustered character with a
-    nearest-neighbor classifier. The characters are assigned
-    independently of each other, so the result does not depend on the
-    order of the characters.
+    Characters without a cluster identifier (low coverage characters
+    and members of clusters that are too small to keep, marked with
+    ``-1``) are each assigned to the cluster of their nearest clustered
+    character with a nearest-neighbor classifier. The characters are
+    assigned independently of each other, so the result does not depend
+    on the order of the characters. They then inherit the phones and
+    phonemes of their new clusters.
 
     Parameters
     ----------
-    embeddings : numpy.ndarray
-        Character embeddings for one segment type.
-    cluster_ids : numpy.ndarray
-        Cluster identifier of each character; characters marked in
-        ``unclustered`` may hold any placeholder value and are
-        replaced.
-    unclustered : numpy.ndarray
-        Boolean mask of characters without a cluster.
+    result : pandas.DataFrame
+        Cluster identifiers indexed by character ID, with one
+        ``<feature>_cluster`` column per segment type; characters
+        without a cluster are marked with ``-1``.
+    embeddings : dict[str, numpy.ndarray]
+        Dense phone vectors of each character keyed by segment type,
+        aligned with the result index, as returned by :func:`cluster`.
 
     Returns
     -------
-    numpy.ndarray
-        Cluster identifier for each character after assignment.
+    pandas.DataFrame
+        Copy of the result with every character assigned to a cluster.
 
     Raises
     ------
     ValueError
-        If every character is unclustered, so that there is no cluster
-        to assign to.
+        If every character of a feature is unclustered, so that there
+        is no cluster to assign to.
     """
 
-    if unclustered.all():
-        raise ValueError("Every character is unclustered.")
-    if not unclustered.any():
-        return cluster_ids
-    classifier = KNeighborsClassifier(
-        n_neighbors=1, metric="cosine"
-    ).fit(embeddings[~unclustered], cluster_ids[~unclustered])
-    assigned = cluster_ids.copy()
-    assigned[unclustered] = classifier.predict(embeddings[unclustered])
-    return assigned
+    output = result.copy()
+    for feature, values in embeddings.items():
+        column = f"{feature}_cluster"
+        cluster_ids = output[column].to_numpy()
+        unclustered = cluster_ids < 0
+        if unclustered.all():
+            raise ValueError(f"Every {feature} character is unclustered.")
+        if not unclustered.any():
+            continue
+        classifier = KNeighborsClassifier(
+            n_neighbors=1, metric="cosine"
+        ).fit(values[~unclustered], cluster_ids[~unclustered])
+        cluster_ids = cluster_ids.copy()
+        cluster_ids[unclustered] = classifier.predict(values[unclustered])
+        output[column] = cluster_ids
+    return output
 
 
 def dialect_coverage(wide: pandas.DataFrame) -> pandas.Series:
@@ -859,10 +900,12 @@ def cluster(
 
     The long-form data is first converted to a wide character-by-dialect
     table. Characters outside ``covered`` are excluded from embedding
-    fitting and clustering, but are still assigned to the nearest cluster
-    and receive cluster phones. Clusters with fewer than
-    ``min_cluster_size`` characters are merged into other clusters,
-    except for characters with annotations, which keep their cluster.
+    fitting and clustering. Clusters with fewer than
+    ``min_cluster_size`` characters are dissolved, except for their
+    characters with annotations, which keep their cluster. Characters
+    without a cluster are marked with ``-1``; they are assigned to
+    clusters, phones and phonemes after the phoneme merging, see
+    :func:`assign_unclustered_characters`.
 
     Parameters
     ----------
@@ -975,32 +1018,24 @@ def cluster(
             known_mask = (
                 annotations[feature].reindex(wide.index).notna().to_numpy()
             )
-        # characters of clusters that are too small to keep are treated
-        # as unclustered and assigned character by character, like
-        # low coverage characters
+        # characters without a cluster (low coverage characters and
+        # members of clusters that are too small to keep) are marked
+        # with -1 and assigned to clusters, phones and phonemes after
+        # the phoneme merging; annotated characters keep their cluster
         assigned = numpy.full(len(values), -1, dtype=cluster_ids.dtype)
-        assigned[fit_array] = cluster_ids
-        unclustered = ~fit_array
-        low_count = int(unclustered.sum())
         counts = pandas.Series(cluster_ids).value_counts()
         small = counts[counts < min_cluster_size].index.to_numpy()
         if len(small) > 0:
             members = numpy.isin(cluster_ids, small)
             if known_mask is not None:
                 members &= ~known_mask[fit_array]
-            unclustered[fit_array] = members
-
-        if unclustered.any():
+            cluster_ids = cluster_ids.copy()
+            cluster_ids[members] = -1
             logger.debug(
-                "%s: dissolving %d small clusters; assigning %d "
-                "characters without a cluster (%d low coverage, "
-                "%d from small clusters)",
-                feature, len(small), int(unclustered.sum()), low_count,
-                int(unclustered.sum()) - low_count,
+                "%s: dissolving %d small clusters (%d characters)",
+                feature, len(small), int(members.sum()),
             )
-        assigned = assign_unclustered_clusters(
-            values, assigned, unclustered
-        )
+        assigned[fit_array] = cluster_ids
         result[f"{feature}_cluster"] = assigned
 
         if annotations is None or feature not in annotations:
@@ -1266,10 +1301,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         logger.info("assigned phones to %d clusters", len(assignments))
         phonemes = merge_cluster_phonemes(
-            data, result, feature_embeddings, distributions, assignments,
+            result, feature_embeddings, distributions,
             args.max_merge_tolerance, args.max_merge_distance,
             args.min_phone_proportion
         )
+        # characters without a cluster are assigned to clusters and
+        # inherit their phones and phonemes after the merging
+        result = assign_unclustered_characters(result, feature_embeddings)
         result = apply_cluster_phones(result, assignments)
         result = apply_cluster_phones(result, phonemes, suffix="_phoneme")
         cluster_output = summarize_cluster_phones(
