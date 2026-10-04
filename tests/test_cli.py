@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -847,6 +848,112 @@ class TestReconstructCli(unittest.TestCase):
         self.assertEqual(predicted.loc["c4", "final_phoneme"], "a")
         self.assertEqual(predicted.loc["c5", "final_phoneme"], "wa")
 
+    def test_extract_tree_rules(self):
+        # every rule must be satisfied exactly by the training readings
+        # of its own label; inverted branch directions would match the
+        # readings of the other labels instead. Since the values of one
+        # feature are mutually exclusive, a feature must not mix
+        # positive and negative conditions in one rule
+        x = pandas.DataFrame({
+            "reconstructed_initial": ["p", "p", "k", "k"],
+            "reconstructed_final": ["a", "a", "wa", "wa"],
+        })
+        y = pandas.Series(["pf", "pf", "k", "k"])
+        classifier = reconstruct_cli.make_pipeline(
+            reconstruct_cli.OneHotEncoder(handle_unknown="ignore"),
+            reconstruct_cli.DecisionTreeClassifier(),
+        ).fit(x, y)
+        rules = reconstruct_cli.extract_tree_rules(classifier)
+
+        for rule in rules:
+            conditions = rule["conditions"]
+            matched = x.apply(
+                lambda row: all(
+                    (row[column] == part)
+                    if not part.startswith("!")
+                    else (row[column] != part[1:])
+                    for column, spec in conditions.items()
+                    for part in spec.split("&")
+                ),
+                axis=1,
+            )
+            self.assertGreater(int(matched.sum()), 0)
+            self.assertEqual(set(y[matched]), {rule["phone"]})
+
+            for spec in conditions.values():
+                parts = spec.split("&")
+                positives = [p for p in parts if not p.startswith("!")]
+                if positives:
+                    self.assertEqual(positives, parts)
+
+    def test_extract_tree_rules_rewrites_negatives(self):
+        # negative conditions are rewritten as their complement among
+        # the observed values whenever the complement has fewer
+        # conditions
+        x = pandas.DataFrame({
+            "reconstructed_initial": ["p", "p", "k", "k", "t", "t"],
+            "reconstructed_final": ["a", "a", "a", "a", "a", "a"],
+        })
+        y = pandas.Series(["A", "A", "B", "B", "C", "C"])
+        classifier = reconstruct_cli.make_pipeline(
+            reconstruct_cli.OneHotEncoder(handle_unknown="ignore"),
+            reconstruct_cli.DecisionTreeClassifier(),
+        ).fit(x, y)
+        rules = reconstruct_cli.extract_tree_rules(classifier)
+
+        observed = {"initial": {"p", "k", "t"}}
+        for rule in rules:
+            for feature, spec in rule["conditions"].items():
+                parts = spec.split("&")
+                if all(p.startswith("!") for p in parts):
+                    remaining = observed[feature] - {p[1:] for p in parts}
+                    self.assertGreaterEqual(len(remaining), len(parts))
+
+        # the rule predicting the class of the last value must name it
+        # positively: its path can only exclude the other two values
+        c_rules = [
+            rule["conditions"] for rule in rules if rule["phone"] == "C"
+        ]
+        self.assertTrue(c_rules)
+        for conditions in c_rules:
+            self.assertEqual(conditions["reconstructed_initial"], "t")
+
+    def test_extract_tree_rules_drops_unsatisfiable(self):
+        # a path excluding every observed value of a feature cannot be
+        # satisfied by any sample and its rule is dropped; the stub
+        # tree has the leaf '!a&!b' for the observed values a and b
+        onehot = types.SimpleNamespace(
+            categories_=[numpy.array(["a", "b"]), numpy.array(["a"])]
+        )
+        tree = types.SimpleNamespace(
+            children_left=numpy.array([1, 3, -1, -1, -1]),
+            children_right=numpy.array([4, 2, -1, -1, -1]),
+            feature=numpy.array([0, 1, -2, -2, -2]),
+            value=numpy.array([
+                [[0.5, 0.5]], [[0.5, 0.5]], [[1.0, 0.0]],
+                [[0.0, 1.0]], [[1.0, 0.0]],
+            ]),
+            n_node_samples=numpy.array([6, 3, 3, 0, 3]),
+        )
+        classifier = types.SimpleNamespace(
+            steps=[
+                ("onehot", onehot),
+                ("tree", types.SimpleNamespace(
+                    tree_=tree, classes_=numpy.array(["A", "B"])
+                )),
+            ]
+        )
+        rules = reconstruct_cli.extract_tree_rules(classifier)
+
+        # the unsatisfiable leaf is dropped, the other two leaves keep
+        # their rewritten single positive conditions
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(
+            [rule["conditions"]["reconstructed_initial"] for rule in rules],
+            ["b", "a"],
+        )
+        self.assertTrue(all(rule["phone"] == "A" for rule in rules))
+
     def test_summarize_cluster_phones(self):
         # c2 is not recorded by d1 and has two alternate phones at d2
         data = pandas.DataFrame(
@@ -1279,6 +1386,177 @@ class TestReconstructCli(unittest.TestCase):
             self.assertEqual(len(result), 20)
             for feature in ("initial", "final", "tone"):
                 self.assertIn(f"{feature}_cluster", result.columns)
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_inference_command(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            # the explicit reconstruct prefix behaves like the default
+            self.assertEqual(
+                reconstruct_cli.main([
+                    "reconstruct",
+                    "--dataset", "stub",
+                    "--dialects", "d1", "d2",
+                    "--output-dir", tmp,
+                    "--embedding-size", "4",
+                ]),
+                0,
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "inference",
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--reconstruction-file",
+                        os.path.join(tmp, "reconstruction.csv"),
+                        "--output-dir", tmp,
+                    ]),
+                    0,
+                )
+            # one rule file for all dialects, with leading did and
+            # feature columns marking the dialect and the initial,
+            # final and tone rules
+            rules_file = os.path.join(tmp, "rules.csv")
+            self.assertTrue(os.path.isfile(rules_file))
+            all_rules = pandas.read_csv(rules_file, dtype=str)
+            self.assertEqual(
+                list(all_rules.columns),
+                [
+                    "did",
+                    "feature",
+                    "reconstructed_initial",
+                    "reconstructed_final",
+                    "reconstructed_tone",
+                    "phone",
+                    "support",
+                ],
+            )
+            self.assertListEqual(
+                sorted(all_rules["did"].unique().tolist()),
+                ["d1", "d2"],
+            )
+            self.assertListEqual(
+                sorted(all_rules["feature"].unique().tolist()),
+                ["final", "initial", "tone"],
+            )
+            self.assertTrue(all_rules["phone"].notna().all())
+            self.assertTrue((all_rules["support"] != "0").all())
+
+            # across the features of one dialect at least one rule
+            # carries conditions: a feature whose mapping is too
+            # ambiguous may reduce to a single conditionless rule
+            condition_columns = [
+                column for column in all_rules.columns
+                if column.startswith("reconstructed_")
+            ]
+            self.assertTrue(
+                all_rules[condition_columns].notna().any(axis=1).any()
+            )
+
+            # the predicted readings of every character and dialect,
+            # with the recorded readings for comparison
+            predictions = pandas.read_csv(
+                os.path.join(tmp, "predictions.csv"),
+                dtype={"cid": str, "did": str},
+            )
+            reconstruction = pandas.read_csv(
+                os.path.join(tmp, "reconstruction.csv"), index_col="cid"
+            )
+            self.assertEqual(
+                list(predictions.columns),
+                [
+                    "did", "name", "cid", "character",
+                    "initial", "final", "tone", "note",
+                    "reconstructed_initial", "reconstructed_final",
+                    "reconstructed_tone",
+                    "predicted_initial", "predicted_final", "predicted_tone",
+                ],
+            )
+            names = {"d1": "Alpha", "d2": "Beta"}
+            for did in ("d1", "d2"):
+                block = predictions[predictions["did"] == did]
+                self.assertEqual(len(block), len(reconstruction))
+                self.assertTrue((block["name"] == names[did]).all())
+                for feature in ("initial", "final", "tone"):
+                    self.assertTrue(block[feature].notna().all())
+                for feature in (
+                    "predicted_initial", "predicted_final", "predicted_tone",
+                ):
+                    self.assertTrue(block[feature].notna().all())
+
+            # the run report and the prediction accuracy are reported,
+            # with the average over the dialects at the end
+            report = output.getvalue()
+            self.assertIn("Inferred pronunciation rules of 2 dialects", report)
+            self.assertIn("dialects: 2", report)
+            self.assertIn("characters:", report)
+            self.assertIn("samples: 40", report)
+            self.assertIn("rules per dialect:", report)
+            self.assertIn("phone prediction accuracy:", report)
+            self.assertIn("did", report)
+            for did in ("d1", "d2"):
+                self.assertIn(did, report)
+            self.assertIn("mean", report)
+            for feature in ("initial", "final", "tone"):
+                self.assertIn(feature, report)
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
+    def test_inference_config_dialects(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.json")
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump({"inference": {"dialects": ["d1", "d2"]}}, f)
+            self.assertEqual(
+                reconstruct_cli.main([
+                    "reconstruct",
+                    "--dataset", "stub",
+                    "--dialects", "d1", "d2",
+                    "--output-dir", tmp,
+                    "--embedding-size", "4",
+                ]),
+                0,
+            )
+            arguments = [
+                "inference",
+                "--config", config_file,
+                "--dataset", "stub",
+                "--reconstruction-file",
+                os.path.join(tmp, "reconstruction.csv"),
+                "--output-dir", tmp,
+            ]
+            # the config file provides the descendant dialects
+            self.assertEqual(reconstruct_cli.main(arguments), 0)
+            self.assertTrue(
+                os.path.isfile(os.path.join(tmp, "rules.csv"))
+            )
+            # command-line arguments take precedence over the config
+            override_dir = os.path.join(tmp, "override")
+            self.assertEqual(
+                reconstruct_cli.main([
+                    *arguments, "--dialects", "d2", "--output-dir",
+                    override_dir,
+                ]),
+                0,
+            )
+            self.assertTrue(
+                os.path.isfile(os.path.join(override_dir, "rules.csv"))
+            )
+            rules = pandas.read_csv(
+                os.path.join(override_dir, "rules.csv"), dtype=str
+            )
+            # only the dialects of the command line are inferred
+            self.assertListEqual(
+                sorted(rules["did"].unique().tolist()), ["d2"]
+            )
         get_dataset.assert_called_with("stub")
 
     @mock.patch(
