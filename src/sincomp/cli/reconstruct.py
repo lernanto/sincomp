@@ -565,7 +565,7 @@ def merge_cluster_phonemes(
         without a cluster are marked with ``-1``.
     embeddings : dict[str, numpy.ndarray]
         Dense phone vectors of each character keyed by segment type,
-        as returned by :func:`reconstruct`.
+        as returned by :func:`cluster`.
     distributions : pandas.DataFrame
         Phone distributions of the kept clusters as returned by
         :func:`cluster_phone_distributions`; consulted only after the
@@ -1351,7 +1351,7 @@ def load_annotations(path: str | None) -> pandas.DataFrame | None:
     return annotations
 
 
-def reconstruct(argv: Sequence[str] | None = None) -> int:
+def reconstruct_cmd(argv: Sequence[str] | None = None) -> int:
     """Run the reconstruction command-line interface.
 
     Parameters
@@ -1742,6 +1742,56 @@ def train_pronunciation_rules(
     return rules, classifiers
 
 
+def inference(
+    reconstruction: pandas.DataFrame,
+    samples: pandas.DataFrame
+) -> tuple[list[dict], pandas.DataFrame]:
+    """Infer the pronunciation rules and predict the phones.
+
+    One decision tree per feature is trained on the given samples —
+    every recorded phone is one training sample whose features are the
+    reconstructed phonemes of its character — and the phone of every
+    character of the reconstruction is predicted from its reconstructed
+    phonemes.
+
+    Parameters
+    ----------
+    reconstruction : pandas.DataFrame
+        Reconstruction result indexed by character ID, with one
+        ``<feature>_phoneme`` column per segment type, as written by
+        the reconstruct command.
+    samples : pandas.DataFrame
+        Long-form phones of the training dialect; the ``cid`` column
+        maps each phone to its character.
+
+    Returns
+    -------
+    tuple[list[dict], pandas.DataFrame]
+        The rules of each feature — every rule holds the ``conditions``
+        on the reconstructed phonemes, the resulting ``phone`` and the
+        ``support`` — together with the predicted phones of every
+        character of the reconstruction, one column per feature;
+        characters whose reconstructed phonemes are incomplete hold
+        NaN.
+    """
+
+    rules, classifiers = train_pronunciation_rules(reconstruction, samples)
+    phoneme_columns = [f"{feature}_phoneme" for feature in FEATURES]
+    valid = reconstruction[phoneme_columns].notna().all(axis=1)
+    predicted = pandas.DataFrame(
+        index=reconstruction.index, columns=FEATURES, dtype=object
+    )
+    for feature in FEATURES:
+        classifier = classifiers[feature]
+        if classifier is None:
+            predicted[feature] = rules[feature][0]["phone"]
+        else:
+            predicted.loc[valid, feature] = classifier.predict(
+                reconstruction.loc[valid, phoneme_columns].astype(str)
+            )
+    return rules, predicted
+
+
 def build_inference_parser(
     config: dict | None = None
 ) -> argparse.ArgumentParser:
@@ -1811,7 +1861,7 @@ def build_inference_parser(
     return parser
 
 
-def inference(argv: Sequence[str] | None = None) -> int:
+def inference_cmd(argv: Sequence[str] | None = None) -> int:
     """Run the inference command-line interface.
 
     For every selected descendant dialect, a decision tree is trained
@@ -1856,8 +1906,6 @@ def inference(argv: Sequence[str] | None = None) -> int:
     )
     dataset = datasets.get(args.dataset)
     dialect_ids = select_dialects(dataset, args.dialects)
-    phoneme_columns = [f"{feature}_phoneme" for feature in FEATURES]
-    valid = reconstruction[phoneme_columns].notna().all(axis=1)
     os.makedirs(args.output_dir, exist_ok=True)
 
     if "name" in dataset.dialects.columns:
@@ -1884,9 +1932,7 @@ def inference(argv: Sequence[str] | None = None) -> int:
         # reconstruction and are not predictable
         samples = samples.dropna(subset=["cid"])
 
-        rules, classifiers = train_pronunciation_rules(
-            reconstruction, samples
-        )
+        rules, predicted = inference(reconstruction, samples)
         rule_table.append({
             "did": did,
             "name": names.loc[did],
@@ -1918,20 +1964,6 @@ def inference(argv: Sequence[str] | None = None) -> int:
             frame["phone"] = [rule["phone"] for rule in rules[feature]]
             frame["support"] = [rule["support"] for rule in rules[feature]]
             rule_frames.append(frame)
-
-        # predict the phones of every character from the reconstructed
-        # phonemes
-        predicted = pandas.DataFrame(
-            index=reconstruction.index, columns=FEATURES, dtype=object
-        )
-        for feature in FEATURES:
-            classifier = classifiers[feature]
-            if classifier is None:
-                predicted[feature] = rules[feature][0]["phone"]
-            else:
-                predicted.loc[valid, feature] = classifiers[feature].predict(
-                    reconstruction.loc[valid, phoneme_columns].astype(str)
-                )
 
         # the recorded phones of the dialect for comparison, aligned
         # with the reconstructed phonemes and the predicted phones
@@ -2022,13 +2054,374 @@ def inference(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def reconstruct(
+    data: pandas.DataFrame,
+    covered: pandas.Index,
+    embedding_size: int = 128,
+    min_cluster_size: int = 3,
+    max_cluster_distance: float = 0.1,
+    max_clusters: int = 200,
+    min_phone_proportion: float = 0.1,
+    max_merge_tolerance: int = 0,
+    max_merge_distance: float = 0.5
+) -> pandas.DataFrame:
+    """Run the reconstruction pipeline on the given data.
+
+    The data-driven path of the reconstruct command without
+    annotations: the covered characters are clustered per feature,
+    cluster phones are assigned, clusters are merged into phonemes and
+    the characters without a cluster are assigned to clusters; every
+    character of the result carries its cluster, phone and phoneme per
+    feature.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Long-form dialect data with ``did``, ``cid`` and segment
+        columns; characters without a character ID must have received
+        their written form as ID.
+    covered : pandas.Index
+        Character IDs that participate in embedding fitting and
+        clustering, as returned by :func:`covered_characters`.
+    embedding_size : int, default=128
+        Maximum dimension of the character embedding.
+    min_cluster_size : int, default=3
+        Minimum number of characters per cluster.
+    max_cluster_distance : float, default=0.1
+        Maximum cosine distance within a cluster for clustering.
+    max_clusters : int, default=200
+        Maximum number of clusters per segment type.
+    min_phone_proportion : float, default=0.1
+        Minimum proportion of recorded samples covering a phone.
+    max_merge_tolerance : int, default=0
+        Maximum number of co-occurring characters tolerated for two
+        clusters to be considered complementary.
+    max_merge_distance : float, default=0.5
+        Maximum average cosine distance between the phone vectors of
+        two clusters to merge them.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Cluster identifiers, phones and phonemes per feature, indexed
+        by character ID.
+    """
+
+    result, feature_embeddings = cluster(
+        data,
+        covered,
+        embedding_size=embedding_size,
+        min_cluster_size=min_cluster_size,
+        max_cluster_distance=max_cluster_distance,
+        max_clusters=max_clusters
+    )
+    covered_data = data[data["cid"].isin(covered)]
+    distributions = cluster_phone_distributions(covered_data, result)
+    assignments = assign_cluster_phones(
+        distributions, min_phone_proportion
+    )
+    logger.info("assigned phones to %d clusters", len(assignments))
+    phonemes = merge_cluster_phonemes(
+        result, feature_embeddings, distributions,
+        max_merge_tolerance, max_merge_distance, min_phone_proportion
+    )
+    # characters without a cluster are assigned to clusters and inherit
+    # their phones and phonemes after the merging
+    result = assign_unclustered_characters(result, feature_embeddings)
+    result = apply_cluster_phones(result, assignments)
+    result = apply_cluster_phones(result, phonemes, suffix="_phoneme")
+    return result
+
+
+def build_evaluate_parser(
+    config: dict | None = None
+) -> argparse.ArgumentParser:
+    """Build the evaluate subcommand parser.
+
+    Parameters
+    ----------
+    config : dict, default=None
+        Configuration values applied as argument defaults; the
+        ``evaluate`` section applies to this subcommand only, the
+        other sections and top-level keys follow the reconstruct
+        command.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser for the evaluate subcommand.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="reconstruct evaluate",
+        description=(
+            "Evaluate the reconstruction pipeline on random splits of "
+            "training and test dialects and characters"
+        )
+    )
+    add_common_arguments(parser)
+    parser.add_argument("--config", help="JSON configuration file")
+    parser.add_argument(
+        "--folds",
+        type=int,
+        default=10,
+        help=(
+            "Number of folds the dialect pool and the characters are "
+            "each partitioned into; each is truncated to the pool "
+            "size when larger."
+        )
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "Number of dialect fold and character fold pairings drawn "
+            "for the evaluation."
+        )
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed for the dialect and character splits; the "
+            "splits are purely random by default."
+        )
+    )
+    parser.add_argument("--embedding-size", type=int, default=128)
+    if config is not None:
+        sections = {"defaults", "reconstruct", "evaluate", "inference"}
+        defaults = {
+            key: value for key, value in config.items()
+            if key not in sections
+        }
+        defaults.update(config.get("defaults", {}))
+        if not isinstance(defaults, dict):
+            raise ValueError(
+                "Configuration sections must contain JSON objects."
+            )
+        defaults.update(config.get("evaluate", {}))
+        parser.set_defaults(**defaults)
+    return parser
+
+
+def evaluate_cmd(argv: Sequence[str] | None = None) -> int:
+    """Run the evaluation command-line interface.
+
+    The dialect pool and the characters are each partitioned into
+    ``folds`` folds — the requested fold count is truncated to each
+    pool size with a warning, so the two sides may use different fold
+    counts. The trials pair the dialect folds and the character folds
+    like non-attacking rooks on a board: no dialect fold repeats
+    within every ``dialect-folds`` trials and no character fold within
+    every ``character-folds`` trials, and over the cycles every fold
+    is tested equally often. In every trial the reconstruction pipeline
+    runs on the remaining dialects with the remaining characters only,
+    and for every dialect of the test fold a phone classifier is
+    trained on the training characters and predicts the phones of the
+    test characters from their reconstructed phonemes. Every trial and
+    dialect contributes one accuracy per feature; the mean and the
+    standard deviation over all of them are reported to the standard
+    output, and the accuracy of every trial and dialect is logged at
+    debug level.
+
+    Parameters
+    ----------
+    argv : Sequence[str], default=None
+        Command-line arguments; defaults to ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Exit code; the accuracy summary is printed to the standard
+        output.
+    """
+
+    preliminary_parser = argparse.ArgumentParser(add_help=False)
+    preliminary_parser.add_argument("--config")
+    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
+    config = None
+    if preliminary_args.config is not None:
+        config = load_config(preliminary_args.config)
+    parser = build_evaluate_parser(config)
+    args = parser.parse_args(argv)
+    if args.annotation_file:
+        parser.error(
+            "--annotation-file is not supported by the evaluate "
+            "subcommand."
+        )
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    dataset = datasets.get(args.dataset)
+    if args.dialects:
+        pool = list(select_dialects(dataset, args.dialects))
+    else:
+        pool = list(dataset.dialects.index)
+
+    data = dataset.select(pool).data
+    if "cid" not in data.columns:
+        # without character IDs, characters act as their own IDs
+        data = data.assign(cid=data["character"])
+    data = data.dropna(subset=["cid"])
+    character_ids = numpy.array(sorted(data["cid"].unique()))
+    # truncate the requested fold counts to the pool sizes instead of
+    # failing; a fold must keep at least one dialect or character
+    dialect_folds = min(args.folds, len(pool))
+    character_folds = min(args.folds, len(character_ids))
+    if dialect_folds < args.folds:
+        logger.warning(
+            "%d dialect folds requested but only %d dialects are "
+            "available; using %d folds.",
+            args.folds, len(pool), dialect_folds,
+        )
+    if character_folds < args.folds:
+        logger.warning(
+            "%d character folds requested but only %d characters are "
+            "available; using %d folds.",
+            args.folds, len(character_ids), character_folds,
+        )
+    if min(dialect_folds, character_folds) < 2:
+        raise ValueError(
+            "The truncated fold counts must leave at least 2 folds for "
+            "the dialects and the characters."
+        )
+
+    # k-fold partitions of the dialect pool and the characters; every
+    # trial draws one dialect fold and one character fold as the test
+    # parts and uses all the other folds for training
+    rng = numpy.random.default_rng(args.seed)
+    dialect_test_folds = numpy.array_split(
+        rng.permutation(pool), dialect_folds
+    )
+    character_test_folds = numpy.array_split(
+        rng.permutation(character_ids), character_folds
+    )
+    # pair the dialect and character folds like non-attacking rooks on
+    # a board: within every cycle of trials no fold of one side
+    # repeats, so a small number of trials spreads the test parts as
+    # widely as possible, and over the cycles every fold is tested
+    # equally often; the two sides cycle with their own fold counts
+    trials = []
+    dialect_order = character_order = None
+    for t in range(args.repeat):
+        if t % dialect_folds == 0:
+            dialect_order = rng.permutation(dialect_folds)
+        if t % character_folds == 0:
+            character_order = rng.permutation(character_folds)
+        trials.append((
+            int(dialect_order[t % dialect_folds]),
+            int(character_order[t % character_folds]),
+        ))
+    logger.info(
+        "evaluating %d dialect fold x character fold pairings over "
+        "%d dialects in %d folds and %d characters in %d folds "
+        "(seed=%s)",
+        len(trials), len(pool), dialect_folds, len(character_ids),
+        character_folds, args.seed,
+    )
+
+    rows = []
+    for trial, (dialect_fold, character_fold) in enumerate(trials):
+        test_dialects = dialect_test_folds[dialect_fold]
+        test_characters = set(character_test_folds[character_fold])
+        train_characters = set(character_ids) - test_characters
+        logger.info(
+            "trial %d: dialect fold %d, character fold %d "
+            "(%d test dialects, %d test characters)",
+            trial, dialect_fold, character_fold,
+            len(test_dialects), len(test_characters),
+        )
+
+        # reconstruct the phones from the training dialects alone; the
+        # test characters receive clusters and phonemes, too, but only
+        # through the cluster assignment
+        train_data = data[~data["did"].isin(test_dialects)]
+        covered = covered_characters(train_data, args.min_dialect_coverage)
+        covered = covered[covered.isin(train_characters)]
+        reconstruction = reconstruct(
+            train_data,
+            covered,
+            embedding_size=args.embedding_size,
+            min_cluster_size=args.min_cluster_size,
+            max_cluster_distance=args.max_cluster_distance,
+            max_clusters=args.max_clusters,
+            min_phone_proportion=args.min_phone_proportion,
+            max_merge_tolerance=args.max_merge_tolerance,
+            max_merge_distance=args.max_merge_distance,
+        )
+
+        # for every test dialect, train the phone classifier on the
+        # training characters and predict the test characters from
+        # their reconstructed phonemes; every trial and dialect
+        # contributes one accuracy per feature
+        for did in test_dialects:
+            samples = data[data["did"] == did]
+            train_rows = samples[samples["cid"].isin(train_characters)]
+            test_rows = samples[samples["cid"].isin(test_characters)]
+            _, predicted = inference(reconstruction, train_rows)
+            predicted_rows = predicted.reindex(test_rows["cid"].to_numpy())
+            row = {"trial": trial, "did": did}
+            for feature in FEATURES:
+                mask = (
+                    predicted_rows[feature].notna().to_numpy()
+                    & test_rows[feature].notna().to_numpy()
+                )
+                row[feature] = (
+                    float(
+                        (
+                            predicted_rows.loc[mask, feature].to_numpy()
+                            == test_rows.loc[mask, feature].to_numpy()
+                        ).mean()
+                    )
+                    if mask.any()
+                    else float("nan")
+                )
+            rows.append(row)
+            logger.debug(
+                "trial %d (dialect fold %d, character fold %d), "
+                "%s accuracy: %s", trial, dialect_fold, character_fold,
+                did,
+                {
+                    feature: f"{row[feature]:.3f}"
+                    for feature in FEATURES
+                },
+            )
+
+    # the mean and the standard deviation over all trial and dialect
+    # accuracies
+    report = pandas.DataFrame(rows)
+    summary = report[list(FEATURES)].agg(["mean", "std"])
+    summary.columns.name = "feature"
+    print("Phone prediction accuracy of held-out characters:")
+    print(f"dataset: {args.dataset}")
+    print(
+        f"trials: {len(trials)} "
+        f"(dialect folds repeat every {dialect_folds} trials, "
+        f"character folds every {character_folds})"
+    )
+    print(f"dialects: {len(pool)} in {dialect_folds} folds")
+    print(f"characters: {len(character_ids)} in {character_folds} folds")
+    print(summary.to_string(float_format=lambda value: f"{value:.3f}"))
+    print(
+        f"{len(report)} trial dialect accuracies in total."
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch the reconstruction command-line interface.
 
     The reconstruct subcommand is the default, so that the
     human-friendly command line keeps working without a subcommand; the
-    inference subcommand infers the pronunciation rules of descendant dialects
-    from a reconstruction result.
+    inference subcommand infers the pronunciation rules of descendant
+    dialects from a reconstruction result, and the evaluate subcommand
+    measures the phone prediction accuracy on random splits of training
+    and test dialects and characters.
     """
 
     if argv is None:
@@ -2037,8 +2430,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv and argv[0] == "reconstruct":
         argv = argv[1:]
     if argv and argv[0] == "inference":
-        return inference(argv[1:])
-    return reconstruct(argv)
+        return inference_cmd(argv[1:])
+    if argv and argv[0] == "evaluate":
+        return evaluate_cmd(argv[1:])
+    return reconstruct_cmd(argv)
 
 
 if __name__ == "__main__":
