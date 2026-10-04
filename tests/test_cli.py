@@ -1563,6 +1563,36 @@ class TestReconstructCli(unittest.TestCase):
         "sincomp.cli.reconstruct.datasets.get",
         return_value=_make_reconstruct_dataset(),
     )
+    def test_evaluate_command(self, get_dataset):
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                reconstruct_cli.main([
+                    "evaluate",
+                    "--dataset", "stub",
+                    "--dialects", "d1", "d2",
+                    "--folds", "5",
+                    "--repeat", "2",
+                    "--seed", "7",
+                    "--embedding-size", "4",
+                    "--min-cluster-size", "1",
+                ]),
+                0,
+            )
+        # the summary reports the mean and the standard deviation of
+        # every feature over all trial and dialect accuracies
+        text = output.getvalue()
+        self.assertIn("mean", text)
+        self.assertIn("std", text)
+        self.assertIn("initial", text)
+        self.assertIn("final", text)
+        self.assertIn("tone", text)
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.reconstruct.datasets.get",
+        return_value=_make_reconstruct_dataset(),
+    )
     def test_large_max_cluster_distance_merges_all(self, get_dataset):
         with tempfile.TemporaryDirectory() as tmp:
             output = StringIO()
