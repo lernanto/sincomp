@@ -15,12 +15,14 @@ import argparse
 import json
 import logging
 import os
+import sys
 from typing import Sequence
 
 import numpy
 import pandas
 from scipy import linalg
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.model_selection import GridSearchCV
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder
@@ -1349,7 +1351,7 @@ def load_annotations(path: str | None) -> pandas.DataFrame | None:
     return annotations
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def reconstruct(argv: Sequence[str] | None = None) -> int:
     """Run the reconstruction command-line interface.
 
     Parameters
@@ -1492,6 +1494,551 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{result[feature + '_phoneme'].nunique()} phonemes"
         )
     return 0
+
+
+def extract_tree_rules(classifier: Pipeline) -> list[dict]:
+    """Convert a trained one-hot decision tree into readable rules.
+
+    Every root-to-leaf path of the tree becomes one rule: the
+    ``conditions`` hold the branch decisions on the reconstructed
+    phonemes (a bare category means the phoneme must match it, a
+    ``!``-prefixed category means it must not), the ``phone`` is the
+    majority class of the leaf and ``support`` the number of training
+    samples reaching it. Because the values of one feature are
+    mutually exclusive, the negative conditions of a feature are
+    dropped when the path contains a positive condition of the same
+    feature: the positive condition already implies them. Otherwise
+    the negative conditions are rewritten as their complement among
+    the observed values of the feature when that complement has fewer
+    conditions, and a path whose negative conditions cover every
+    observed value of a feature is dropped, since no sample can
+    satisfy it.
+
+    Parameters
+    ----------
+    classifier : sklearn.pipeline.Pipeline
+        A fitted pipeline of a one-hot encoder and a decision tree.
+
+    Returns
+    -------
+    list[dict]
+        One rule per satisfiable leaf of the tree.
+    """
+
+    onehot = classifier.steps[0][1]
+    estimator = classifier.steps[-1][1]
+    if hasattr(estimator, "best_estimator_"):
+        # a grid-search meta estimator: use the refitted best tree
+        estimator = estimator.best_estimator_
+    tree = estimator.tree_
+    classes = estimator.classes_
+    columns = [
+        (feature, str(category))
+        for feature, categories in zip(FEATURES, onehot.categories_)
+        for category in categories
+    ]
+
+    def format_conditions(conditions: dict[int, list[str]]) -> dict:
+        grouped: dict[str, list[str]] = {}
+        for column, parts in conditions.items():
+            if parts:
+                feature = columns[column][0]
+                grouped.setdefault(feature, []).extend(parts)
+
+        # the values of one feature are mutually exclusive: a positive
+        # condition implies all the negative conditions of the feature,
+        # and negative conditions can be rewritten as their complement
+        # among the observed values when the complement has fewer
+        # conditions; a complement covering every observed value makes
+        # the path unsatisfiable and drops the rule
+        formatted = {}
+        for feature, parts in sorted(grouped.items()):
+            positives = [part for part in parts if not part.startswith("!")]
+            if positives:
+                selected = positives
+            else:
+                index = FEATURES.index(feature)
+                negatives = {p[1:] for p in parts}
+                remaining = sorted(
+                    set(onehot.categories_[index]) - negatives
+                )
+                if not remaining:
+                    return None
+                if len(remaining) < len(negatives):
+                    selected = remaining
+                else:
+                    selected = [f"!{value}" for value in sorted(negatives)]
+            formatted[f"reconstructed_{feature}"] = "&".join(
+                sorted(selected)
+            )
+        return formatted
+
+    rules = []
+
+    def walk(node: int, conditions: dict[int, list[str]]) -> None:
+        if tree.children_left[node] == -1:
+            # tree.value holds normalized class proportions; the number
+            # of training samples is taken from n_node_samples
+            values = tree.value[node][0]
+            conditions = format_conditions(conditions)
+            if conditions is None:
+                # no sample can reach this leaf: the path excludes
+                # every observed value of a feature
+                return
+            rules.append({
+                "conditions": conditions,
+                "phone": str(classes[int(values.argmax())]),
+                "support": int(tree.n_node_samples[node]),
+            })
+            return
+        column = tree.feature[node]
+        category = columns[column][1]
+        # the tree branches on ``x <= 0.5`` for one-hot columns, so the
+        # left subtree is the absent case and the right subtree the
+        # present case
+        left = {key: list(parts) for key, parts in conditions.items()}
+        right = {key: list(parts) for key, parts in conditions.items()}
+        left.setdefault(column, []).append(f"!{category}")
+        right.setdefault(column, []).append(category)
+        walk(tree.children_left[node], left)
+        walk(tree.children_right[node], right)
+
+    walk(0, {})
+    return rules
+
+
+def train_pronunciation_rules(
+    reconstruction: pandas.DataFrame,
+    samples: pandas.DataFrame
+) -> tuple[dict[str, list], dict[str, Pipeline | None]]:
+    """Train the pronunciation rules of one descendant dialect.
+
+    For every feature, a decision tree is trained to predict the
+    dialect phone of a character from the reconstructed phonemes of
+    all its features, and the tree is converted into readable rules.
+    Every recorded phone is one training sample, so a character with
+    several phones in the dialect contributes one sample per phone.
+
+    Parameters
+    ----------
+    reconstruction : pandas.DataFrame
+        Reconstruction result indexed by character ID, with one
+        ``<feature>_phoneme`` column per segment type, as written by
+        the reconstruct command.
+    samples : pandas.DataFrame
+        Long-form phones of the dialect; the ``cid`` column maps each
+        phone to its character.
+
+    Returns
+    -------
+    tuple[dict[str, list], dict[str, Pipeline | None]]
+        The rules of each feature — every rule holds the ``conditions``
+        on the reconstructed phonemes, the resulting ``phone`` and the
+        ``support`` (the number of training samples) — together with
+        the fitted classifier of each feature; the classifier is None
+        when the classes of fewer than two phones occur at least
+        twice and the rules reduce to a single majority phone.
+    """
+
+    phoneme_columns = [f"{feature}_phoneme" for feature in FEATURES]
+
+    # the reconstructed phonemes of every recorded phone; a character
+    # with several phones repeats once per phone
+    rows = reconstruction.reindex(samples["cid"].to_numpy())
+    rows.index = samples.index
+
+    rules = {}
+    classifiers: dict[str, Pipeline | None] = {}
+
+    for feature in FEATURES:
+        mask = (
+            samples[feature].notna().to_numpy()
+            & rows[phoneme_columns].notna().all(axis=1).to_numpy()
+        )
+        x = rows.loc[mask, phoneme_columns].astype(str)
+        y = samples.loc[mask, feature].astype(str)
+
+        if len(x) == 0:
+            rules[feature] = []
+            classifiers[feature] = None
+            continue
+
+        # samples with a singleton class are likely noise: they can
+        # never dominate a leaf of two or more samples and would only
+        # disturb the split selection, so they are excluded from
+        # training; the pruning strength is tuned on the classes with
+        # at least 5 samples, so that the stratified cross-validation
+        # keeps at least 5 folds, while the classes with 2 to 4 samples
+        # still participate in the final training
+        counts = y.value_counts()
+        common = y.isin(counts[counts >= 2].index)
+        x_fit, y_fit = x[common], y[common]
+        parameters = {}
+
+        fit_counts = y_fit.value_counts()
+        tune = y_fit.isin(fit_counts[fit_counts >= 5].index)
+        tune_counts = y_fit[tune].value_counts()
+        if len(tune_counts) >= 2:
+            # stratified folds cannot have more splits than the least
+            # populated class
+            folds = min(10, int(tune_counts.min()))
+            x_tune, y_tune = x_fit[tune], y_fit[tune]
+
+            # enumerate the distinct pruned trees along the
+            # cost-complexity pruning path instead of a blind grid:
+            # every candidate alpha induces a different subtree and the
+            # path is adaptive to the dataset
+            encoder = OneHotEncoder(handle_unknown="ignore")
+            x_encoded = encoder.fit_transform(x_tune)
+            path = DecisionTreeClassifier(
+                min_samples_leaf=2
+            ).cost_complexity_pruning_path(x_encoded, y_tune)
+            alphas = path.ccp_alphas
+            step = max(1, len(alphas) // 8)
+            candidates = alphas[::step].tolist()
+            logger.debug(
+                "%s: tuning ccp_alpha over %d candidates from a pruning "
+                "path of %d splits on %d of %d samples",
+                feature, len(candidates), len(alphas), len(y_tune),
+                len(y_fit),
+            )
+            search = GridSearchCV(
+                DecisionTreeClassifier(min_samples_leaf=2),
+                param_grid={"ccp_alpha": candidates},
+                cv=folds
+            ).fit(x_encoded, y_tune)
+            parameters = {"ccp_alpha": float(search.best_params_["ccp_alpha"])}
+            logger.debug(
+                "%s: best ccp_alpha=%.6g, cv accuracy %.3f over %d folds",
+                feature, parameters["ccp_alpha"], search.best_score_, folds,
+            )
+
+        if len(y_fit) >= 2:
+            classifier = make_pipeline(
+                OneHotEncoder(handle_unknown="ignore"),
+                DecisionTreeClassifier(
+                    min_samples_leaf=2, **parameters
+                ),
+            ).fit(x_fit, y_fit)
+            rules[feature] = extract_tree_rules(classifier)
+            classifiers[feature] = classifier
+            supports = sorted(rule["support"] for rule in rules[feature])
+            logger.info(
+                "%s: %d rules over %d of %d samples "
+                "(%d singleton samples excluded), support %d..%d",
+                feature, len(supports), len(y_fit), len(y),
+                len(y) - len(y_fit), supports[0], supports[-1],
+            )
+        else:
+            # every phone is a singleton (or none): a single rule
+            # with the majority phone covers the whole feature
+            rules[feature] = [{
+                "conditions": {},
+                "phone": y.mode().iloc[0],
+                "support": int(len(y)),
+            }]
+            classifiers[feature] = None
+
+    return rules, classifiers
+
+
+def build_inference_parser(
+    config: dict | None = None
+) -> argparse.ArgumentParser:
+    """Build the inference subcommand parser.
+
+    Parameters
+    ----------
+    config : dict, default=None
+        Configuration values applied as argument defaults; the
+        ``inference`` section applies to this subcommand only, the
+        other sections and top-level keys follow the reconstruct
+        command.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser for the inference subcommand.
+    """
+
+    parser = argparse.ArgumentParser(
+        prog="reconstruct inference",
+        description=(
+            "Infer the pronunciation rules of descendant dialects from the "
+            "reconstructed phonemes with decision trees"
+        )
+    )
+    parser.add_argument(
+        "--log-level",
+        default="WARNING",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="Logging verbosity for tracing the inference process."
+    )
+    parser.add_argument("--config", help="JSON configuration file")
+    parser.add_argument("--dataset", default="MCPDict")
+    parser.add_argument(
+        "--dialects",
+        nargs="+",
+        required=False,
+        help="Descendant dialects whose phones train the rules."
+    )
+    parser.add_argument(
+        "--reconstruction-file",
+        default="reconstruction.csv",
+        help=(
+            "Reconstruction result file as written by the reconstruct "
+            "command."
+        )
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="reconstruction",
+        help="Directory the rule files are written to."
+    )
+    if config is not None:
+        sections = {"defaults", "reconstruct", "evaluate", "inference"}
+        defaults = {
+            key: value for key, value in config.items()
+            if key not in sections
+        }
+        defaults.update(config.get("defaults", {}))
+        if not isinstance(defaults, dict):
+            raise ValueError(
+                "Configuration sections must contain JSON objects."
+            )
+        defaults.update(config.get("inference", {}))
+        parser.set_defaults(**defaults)
+    return parser
+
+
+def inference(argv: Sequence[str] | None = None) -> int:
+    """Run the inference command-line interface.
+
+    For every selected descendant dialect, a decision tree is trained
+    to predict the phones of the dialect from the reconstructed
+    phonemes. The rules of every dialect are written into
+    ``<output-dir>/rules.csv`` with leading ``did`` and ``feature``
+    columns marking the dialect and the initial, final and tone rules,
+    the predicted phones of every character of every dialect are
+    written into ``<output-dir>/predictions.csv``, and a run report
+    with the accuracy of the predictions against the recorded phones
+    is reported to the standard output.
+
+    Parameters
+    ----------
+    argv : Sequence[str], default=None
+        Command-line arguments; defaults to ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Exit code; the rule files and the prediction table are written
+        to the output directory.
+    """
+
+    preliminary_parser = argparse.ArgumentParser(add_help=False)
+    preliminary_parser.add_argument("--config")
+    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
+    config = None
+    if preliminary_args.config is not None:
+        config = load_config(preliminary_args.config)
+    parser = build_inference_parser(config)
+    args = parser.parse_args(argv)
+    if not args.dialects:
+        parser.error("the following arguments are required: --dialects")
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    reconstruction = pandas.read_csv(
+        args.reconstruction_file, index_col="cid"
+    )
+    dataset = datasets.get(args.dataset)
+    dialect_ids = select_dialects(dataset, args.dialects)
+    phoneme_columns = [f"{feature}_phoneme" for feature in FEATURES]
+    valid = reconstruction[phoneme_columns].notna().all(axis=1)
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if "name" in dataset.dialects.columns:
+        names = dataset.dialects["name"]
+    else:
+        names = pandas.Series(dialect_ids, index=dialect_ids)
+
+    predictions = []
+    accuracies = []
+    rule_frames = []
+    rule_table = []
+
+    for did in dialect_ids:
+        # iterate over the dialects; each dialect is selected once and
+        # every recorded phone is one row, so a character with
+        # several phones contributes one row per phone
+        samples = dataset.select([did]).data
+        if "cid" not in samples.columns:
+            # datasets without character IDs use the written form;
+            # unattested written forms (e.g. the placeholder □) have no
+            # character ID and cannot be predicted
+            samples = samples.assign(cid=samples["character"])
+        # phones without a character cannot be aligned with the
+        # reconstruction and are not predictable
+        samples = samples.dropna(subset=["cid"])
+
+        rules, classifiers = train_pronunciation_rules(
+            reconstruction, samples
+        )
+        rule_table.append({
+            "did": did,
+            "name": names.loc[did],
+            **{feature: len(rules[feature]) for feature in FEATURES},
+        })
+        logger.info(
+            "%s: %d phones, %d rules",
+            did,
+            len(samples),
+            sum(len(rules[feature]) for feature in FEATURES),
+        )
+
+        # one block of rules per dialect, with leading did and feature
+        # columns marking the dialect and the initial, final and tone
+        # rules; the condition columns hold the branch decisions on the
+        # reconstructed phonemes
+        for feature in FEATURES:
+            frame = pandas.DataFrame({
+                f"reconstructed_{reconstructed_feature}": [
+                    rule["conditions"].get(
+                        f"reconstructed_{reconstructed_feature}", ""
+                    )
+                    for rule in rules[feature]
+                ]
+                for reconstructed_feature in FEATURES
+            })
+            frame.insert(0, "feature", feature)
+            frame.insert(0, "did", did)
+            frame["phone"] = [rule["phone"] for rule in rules[feature]]
+            frame["support"] = [rule["support"] for rule in rules[feature]]
+            rule_frames.append(frame)
+
+        # predict the phones of every character from the reconstructed
+        # phonemes
+        predicted = pandas.DataFrame(
+            index=reconstruction.index, columns=FEATURES, dtype=object
+        )
+        for feature in FEATURES:
+            classifier = classifiers[feature]
+            if classifier is None:
+                predicted[feature] = rules[feature][0]["phone"]
+            else:
+                predicted.loc[valid, feature] = classifiers[feature].predict(
+                    reconstruction.loc[valid, phoneme_columns].astype(str)
+                )
+
+        # the recorded phones of the dialect for comparison, aligned
+        # with the reconstructed phonemes and the predicted phones
+        # through the character IDs
+        reconstructed = reconstruction.reindex(samples["cid"].to_numpy())
+        predicted_rows = predicted.reindex(samples["cid"].to_numpy())
+        characters = (
+            reconstructed["character"]
+            if "character" in reconstructed.columns
+            else pandas.Series(
+                samples["cid"].to_numpy(), index=samples.index
+            )
+        )
+        # the notes of the raw data, if the data provides a note column
+        notes = samples["note"].fillna("") if "note" in samples.columns else ""
+
+        # one row per recorded phone: the recorded phones first,
+        # then the reconstructed phonemes and the predicted phones,
+        # with the notes for manual checking
+        frame = pandas.DataFrame({
+            "did": did,
+            "name": names.loc[did],
+            "cid": samples["cid"].to_numpy(),
+            "character": characters.to_numpy(),
+            "initial": samples["initial"].to_numpy(),
+            "final": samples["final"].to_numpy(),
+            "tone": samples["tone"].to_numpy(),
+            "note": notes,
+            "reconstructed_initial": reconstructed[
+                "initial_phoneme"
+            ].to_numpy(),
+            "reconstructed_final": reconstructed[
+                "final_phoneme"
+            ].to_numpy(),
+            "reconstructed_tone": reconstructed[
+                "tone_phoneme"
+            ].to_numpy(),
+            "predicted_initial": predicted_rows["initial"].to_numpy(),
+            "predicted_final": predicted_rows["final"].to_numpy(),
+            "predicted_tone": predicted_rows["tone"].to_numpy(),
+        })
+        predictions.append(frame)
+
+        # report the accuracy against the recorded phones
+        accuracy = {"did": did}
+
+        for feature in FEATURES:
+            mask = (
+                samples[feature].notna().to_numpy()
+                & predicted_rows[feature].notna().to_numpy()
+            )
+            accuracy[feature] = (
+                float(
+                    (
+                        predicted_rows.loc[mask, feature].to_numpy()
+                        == samples.loc[mask, feature].to_numpy()
+                    ).mean()
+                )
+                if mask.any()
+                else float("nan")
+            )
+        accuracies.append(accuracy)
+
+    combined = pandas.concat(predictions, ignore_index=True)
+    predictions_file = os.path.join(args.output_dir, "predictions.csv")
+    combined.to_csv(predictions_file, index=False, encoding="utf-8")
+    logger.info("wrote %s", predictions_file)
+    rules_file = os.path.join(args.output_dir, "rules.csv")
+    pandas.concat(rule_frames, ignore_index=True).to_csv(
+        rules_file, index=False, encoding="utf-8"
+    )
+    logger.info("wrote %s", rules_file)
+    report = pandas.DataFrame(accuracies).set_index("did")
+    report.loc["mean"] = report.mean()
+    print(
+        f"Inferred pronunciation rules of {len(dialect_ids)} dialects "
+        f"into {args.output_dir}."
+    )
+    print(f"dialects: {len(dialect_ids)}")
+    print(f"characters: {combined['cid'].nunique()}")
+    print(f"samples: {len(combined)}")
+    print("rules per dialect:")
+    rule_frame = pandas.DataFrame(rule_table).set_index(["did", "name"])
+    rule_frame["all"] = rule_frame.sum(axis=1)
+    print(rule_frame.to_string())
+    print("phone prediction accuracy:")
+    print(report.to_string(float_format=lambda value: f"{value:.3f}"))
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Dispatch the reconstruction command-line interface.
+
+    The reconstruct subcommand is the default, so that the
+    human-friendly command line keeps working without a subcommand; the
+    inference subcommand infers the pronunciation rules of descendant dialects
+    from a reconstruction result.
+    """
+
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = list(argv)
+    if argv and argv[0] == "reconstruct":
+        argv = argv[1:]
+    if argv and argv[0] == "inference":
+        return inference(argv[1:])
+    return reconstruct(argv)
 
 
 if __name__ == "__main__":
