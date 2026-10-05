@@ -2,11 +2,39 @@
 
 """Command-line interface for proto-segment reconstruction.
 
-The command uses all selected data to learn character and segment
-embeddings, then clusters the segment embeddings.
+The reconstruction pipeline learns character and segment embeddings
+from the phones recorded in dialect data, clusters the embeddings into
+segment clusters per feature, assigns a phone to each cluster and
+merges clusters in complementary distribution into phonemes.
+Characters without enough dialect coverage or in too small clusters
+are assigned to clusters character by character after the merging.
 
-When no annotations are supplied, reconstruction also reports frequent modern
-dialect pronunciations for each cluster.
+Subcommands:
+
+reconstruct
+    Run the reconstruction pipeline (the default command). Writes the
+    cluster, phone and phoneme assignments of every character into
+    ``<output-dir>/reconstruction.csv`` and the phone and phoneme
+    tables of the clusters into ``clusters.csv`` and
+    ``cluster_phones.csv``.
+
+inference
+    Train one decision tree per segment type and descendant dialect on
+    a reconstruction result, and predict the phones of the dialect
+    from its reconstructed phonemes. Writes one rule CSV per dialect
+    with a leading ``feature`` column, ``predictions.csv`` and a
+    per-dialect accuracy report into ``<output-dir>``.
+
+evaluate
+    Evaluate the pipeline on k-fold splits of the dialect pool and the
+    characters: reconstruct from the training dialects with the
+    training characters only, then predict the phones of the held-out
+    characters in the test dialects. Prints the mean and the standard
+    deviation of the accuracies over all trials and test dialects.
+
+All commands accept a JSON ``--config`` file with top-level defaults
+and per-command sections (``reconstruct``, ``inference``,
+``evaluate``); command-line values take precedence over the config.
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
@@ -34,6 +62,13 @@ from .. import datasets, embedding, preprocess
 logger = logging.getLogger(__name__)
 
 FEATURES = ("initial", "final", "tone")
+
+
+class _HelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter
+):
+    """Format help texts showing defaults with verbatim descriptions."""
 
 
 def select_dialects(
@@ -1182,13 +1217,19 @@ def cluster(
     return result, feature_embeddings
 
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+def add_common_arguments(
+    parser: argparse.ArgumentParser,
+    annotation: bool = True
+) -> None:
     """Add the shared reconstruction arguments.
 
     Parameters
     ----------
     parser : argparse.ArgumentParser
         Parser to which the arguments are added.
+    annotation : bool, default=True
+        Whether to add the ``--annotation-file`` argument; the evaluate
+        command does not support annotations.
 
     Returns
     -------
@@ -1202,14 +1243,29 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help="Logging verbosity for tracing the reconstruction process."
     )
-    parser.add_argument("--dataset", default="MCPDict")
+    parser.add_argument(
+        "--dataset",
+        default="MCPDict",
+        help="Name of the pronunciation dataset to load."
+    )
     parser.add_argument(
         "--dialects",
         nargs="+",
         required=False,
         help="Dialect IDs to use; all selected dialect data are used."
     )
-    parser.add_argument("--annotation-file", default=None)
+    if annotation:
+        parser.add_argument(
+            "--annotation-file",
+            default=None,
+            help=(
+                "CSV file of manually assigned segment labels with a "
+                "``cid`` (or ``character``) index column and one "
+                "``initial``, ``final`` and ``tone`` label column; "
+                "labels may be partly empty, and unannotated features "
+                "are derived from data."
+            )
+        )
     parser.add_argument(
         "--min-dialect-coverage",
         type=float,
@@ -1301,11 +1357,27 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
         Parser for the reconstruction command.
     """
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=_HelpFormatter,
+        add_help=False,
+    )
     parser.add_argument("--config", help="JSON configuration file")
     add_common_arguments(parser)
-    parser.add_argument("--output-dir", default="reconstruction")
-    parser.add_argument("--embedding-size", type=int, default=128)
+    parser.add_argument(
+        "--output-dir",
+        default="reconstruction",
+        help=(
+            "Directory the reconstruction.csv, clusters.csv and "
+            "cluster_phones.csv output files are written to."
+        )
+    )
+    parser.add_argument(
+        "--embedding-size",
+        type=int,
+        default=128,
+        help="Maximum dimension of the character embedding."
+    )
 
     if config is not None:
         sections = {"defaults", "reconstruct", "evaluate"}
@@ -1351,13 +1423,13 @@ def load_annotations(path: str | None) -> pandas.DataFrame | None:
     return annotations
 
 
-def reconstruct_cmd(argv: Sequence[str] | None = None) -> int:
-    """Run the reconstruction command-line interface.
+def reconstruct_cmd(args: argparse.Namespace) -> int:
+    """Run the reconstruction command.
 
     Parameters
     ----------
-    argv : Sequence[str], default=None
-        Command-line arguments; defaults to ``sys.argv``.
+    args : argparse.Namespace
+        Parsed arguments of the reconstruct subcommand.
 
     Returns
     -------
@@ -1365,16 +1437,10 @@ def reconstruct_cmd(argv: Sequence[str] | None = None) -> int:
         Exit code; results are written to the selected output directory.
     """
 
-    preliminary_parser = argparse.ArgumentParser(add_help=False)
-    preliminary_parser.add_argument("--config")
-    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
-    config = None
-    if preliminary_args.config is not None:
-        config = load_config(preliminary_args.config)
-    parser = build_parser(config)
-    args = parser.parse_args(argv)
     if not args.dialects:
-        parser.error("the following arguments are required: --dialects")
+        raise SystemExit(
+            "error: the following arguments are required: --dialects"
+        )
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -1814,9 +1880,13 @@ def build_inference_parser(
     parser = argparse.ArgumentParser(
         prog="reconstruct inference",
         description=(
-            "Infer the pronunciation rules of descendant dialects from the "
-            "reconstructed phonemes with decision trees"
-        )
+            "Infer the pronunciation rules of descendant dialects from "
+            "the reconstructed phonemes with decision trees. Requires "
+            "a reconstruction result file first written by the "
+            "reconstruct command."
+        ),
+        formatter_class=_HelpFormatter,
+        add_help=False,
     )
     parser.add_argument(
         "--log-level",
@@ -1825,7 +1895,11 @@ def build_inference_parser(
         help="Logging verbosity for tracing the inference process."
     )
     parser.add_argument("--config", help="JSON configuration file")
-    parser.add_argument("--dataset", default="MCPDict")
+    parser.add_argument(
+        "--dataset",
+        default="MCPDict",
+        help="Name of the pronunciation dataset to load."
+    )
     parser.add_argument(
         "--dialects",
         nargs="+",
@@ -1861,8 +1935,8 @@ def build_inference_parser(
     return parser
 
 
-def inference_cmd(argv: Sequence[str] | None = None) -> int:
-    """Run the inference command-line interface.
+def inference_cmd(args: argparse.Namespace) -> int:
+    """Run the inference command.
 
     For every selected descendant dialect, a decision tree is trained
     to predict the phones of the dialect from the reconstructed
@@ -1876,8 +1950,8 @@ def inference_cmd(argv: Sequence[str] | None = None) -> int:
 
     Parameters
     ----------
-    argv : Sequence[str], default=None
-        Command-line arguments; defaults to ``sys.argv``.
+    args : argparse.Namespace
+        Parsed arguments of the inference subcommand.
 
     Returns
     -------
@@ -1886,16 +1960,10 @@ def inference_cmd(argv: Sequence[str] | None = None) -> int:
         to the output directory.
     """
 
-    preliminary_parser = argparse.ArgumentParser(add_help=False)
-    preliminary_parser.add_argument("--config")
-    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
-    config = None
-    if preliminary_args.config is not None:
-        config = load_config(preliminary_args.config)
-    parser = build_inference_parser(config)
-    args = parser.parse_args(argv)
     if not args.dialects:
-        parser.error("the following arguments are required: --dialects")
+        raise SystemExit(
+            "error: the following arguments are required: --dialects"
+        )
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -2155,11 +2223,13 @@ def build_evaluate_parser(
     parser = argparse.ArgumentParser(
         prog="reconstruct evaluate",
         description=(
-            "Evaluate the reconstruction pipeline on random splits of "
+            "Evaluate the reconstruction pipeline on k-fold splits of "
             "training and test dialects and characters"
-        )
+        ),
+        formatter_class=_HelpFormatter,
+        add_help=False,
     )
-    add_common_arguments(parser)
+    add_common_arguments(parser, annotation=False)
     parser.add_argument("--config", help="JSON configuration file")
     parser.add_argument(
         "--folds",
@@ -2206,17 +2276,17 @@ def build_evaluate_parser(
     return parser
 
 
-def evaluate_cmd(argv: Sequence[str] | None = None) -> int:
-    """Run the evaluation command-line interface.
+def evaluate_cmd(args: argparse.Namespace) -> int:
+    """Run the evaluation command.
 
     The dialect pool and the characters are each partitioned into
     ``folds`` folds — the requested fold count is truncated to each
     pool size with a warning, so the two sides may use different fold
     counts. The trials pair the dialect folds and the character folds
     like non-attacking rooks on a board: no dialect fold repeats
-    within every ``dialect-folds`` trials and no character fold within
-    every ``character-folds`` trials, and over the cycles every fold
-    is tested equally often. In every trial the reconstruction pipeline
+    within every dialect fold cycle and no character fold within every
+    character fold cycle, and over the cycles every fold is tested
+    equally often. In every trial the reconstruction pipeline
     runs on the remaining dialects with the remaining characters only,
     and for every dialect of the test fold a phone classifier is
     trained on the training characters and predicts the phones of the
@@ -2228,8 +2298,8 @@ def evaluate_cmd(argv: Sequence[str] | None = None) -> int:
 
     Parameters
     ----------
-    argv : Sequence[str], default=None
-        Command-line arguments; defaults to ``sys.argv``.
+    args : argparse.Namespace
+        Parsed arguments of the evaluate subcommand.
 
     Returns
     -------
@@ -2237,20 +2307,6 @@ def evaluate_cmd(argv: Sequence[str] | None = None) -> int:
         Exit code; the accuracy summary is printed to the standard
         output.
     """
-
-    preliminary_parser = argparse.ArgumentParser(add_help=False)
-    preliminary_parser.add_argument("--config")
-    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
-    config = None
-    if preliminary_args.config is not None:
-        config = load_config(preliminary_args.config)
-    parser = build_evaluate_parser(config)
-    args = parser.parse_args(argv)
-    if args.annotation_file:
-        parser.error(
-            "--annotation-file is not supported by the evaluate "
-            "subcommand."
-        )
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -2420,20 +2476,68 @@ def main(argv: Sequence[str] | None = None) -> int:
     human-friendly command line keeps working without a subcommand; the
     inference subcommand infers the pronunciation rules of descendant
     dialects from a reconstruction result, and the evaluate subcommand
-    measures the phone prediction accuracy on random splits of training
+    measures the phone prediction accuracy on k-fold splits of training
     and test dialects and characters.
     """
 
     if argv is None:
         argv = sys.argv[1:]
     argv = list(argv)
-    if argv and argv[0] == "reconstruct":
-        argv = argv[1:]
-    if argv and argv[0] == "inference":
-        return inference_cmd(argv[1:])
-    if argv and argv[0] == "evaluate":
-        return evaluate_cmd(argv[1:])
-    return reconstruct_cmd(argv)
+    commands = ("reconstruct", "inference", "evaluate")
+    if not argv or argv[0] not in commands + ("-h", "--help"):
+        # the reconstruct command is the default and may be omitted;
+        # a bare help flag shows the help of the main command
+        argv = ["reconstruct"] + argv
+
+    # the configuration file may appear before the subcommand and
+    # provides the defaults of the subcommand parsers
+    preliminary_parser = argparse.ArgumentParser(add_help=False)
+    preliminary_parser.add_argument("--config")
+    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
+    config = (
+        load_config(preliminary_args.config)
+        if preliminary_args.config is not None
+        else None
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="reconstruct",
+        description=__doc__,
+        formatter_class=_HelpFormatter,
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="<command>",
+        help="run `reconstruct <command> --help` for the details of "
+             "each command",
+    )
+    subparsers.add_parser(
+        "reconstruct",
+        prog="reconstruct",
+        parents=[build_parser(config)],
+        help="run the reconstruction pipeline (default)",
+        description=__doc__,
+        formatter_class=_HelpFormatter,
+    )
+    subparsers.add_parser(
+        "inference",
+        parents=[build_inference_parser(config)],
+        help="infer the pronunciation rules of descendant dialects",
+        formatter_class=_HelpFormatter,
+    )
+    subparsers.add_parser(
+        "evaluate",
+        parents=[build_evaluate_parser(config)],
+        help="evaluate the pipeline on held-out dialects and characters",
+        formatter_class=_HelpFormatter,
+    )
+    args = parser.parse_args(argv)
+    handler = {
+        "reconstruct": reconstruct_cmd,
+        "inference": inference_cmd,
+        "evaluate": evaluate_cmd,
+    }[args.command]
+    return handler(args)
 
 
 if __name__ == "__main__":
