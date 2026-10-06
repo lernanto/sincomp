@@ -709,7 +709,7 @@ class TestReconstructCli(unittest.TestCase):
             ],
             columns=["did", "cid", "initial", "final", "tone"],
         )
-        result, _ = reconstruct_cli.cluster(
+        result, _, _ = reconstruct_cli.cluster(
             data,
             data["cid"].unique(),
             annotations,
@@ -781,7 +781,7 @@ class TestReconstructCli(unittest.TestCase):
             {"initial": [None, None, None, "q"]},
             index=pandas.Index(["c0", "c1", "c2", "c3"], name="cid"),
         )
-        result, _ = reconstruct_cli.cluster(
+        result, _, _ = reconstruct_cli.cluster(
             data,
             covered,
             annotations,
@@ -1292,6 +1292,44 @@ class TestReconstructCli(unittest.TestCase):
                 list(clusters.columns),
                 ["feature", "cluster", "phone", "phoneme"],
             )
+
+            # the full clustering tree of every feature is exported as
+            # one file, with one node per row; leaves hold their
+            # character ID and cluster ID, merges hold the two child
+            # node IDs and only keep a cluster ID when both children
+            # belong to one cluster
+            for feature in ("initial", "final", "tone"):
+                sub = pandas.read_csv(
+                    os.path.join(tmp, f"{feature}_tree.csv")
+                )
+                self.assertListEqual(
+                    list(sub.columns),
+                    [
+                        "node", "parent", "left", "right",
+                        "distance", "size", "cid", "character",
+                        "cluster",
+                    ],
+                )
+                # the single root holds all fitted characters, and every
+                # other node has a parent
+                root = sub[sub["node"] == sub["node"].max()].iloc[0]
+                self.assertEqual(root["size"], sub["size"].max())
+                self.assertEqual(int(root["parent"]), -1)
+                self.assertTrue(pandas.isna(root["cid"]))
+                # leaves hold their character ID, merges hold none
+                leaves = sub[sub["left"].isna()]
+                self.assertEqual(len(leaves), int(sub["size"].max()))
+                self.assertTrue(leaves["cid"].notna().all())
+                self.assertTrue(sub[sub["left"].notna()]["cid"].isna().all())
+                # the cluster ID of every leaf matches the clustering
+                # result, and the root is the split point of the top
+                # clusters and holds none
+                merged = leaves.set_index("cid")["cluster"]
+                expected = result.loc[merged.index, f"{feature}_cluster"]
+                self.assertListEqual(
+                    merged.astype(int).tolist(), expected.astype(int).tolist()
+                )
+                self.assertTrue(pandas.isna(root["cluster"]))
 
             # the summary is printed as plain text and no report file
             # is written
