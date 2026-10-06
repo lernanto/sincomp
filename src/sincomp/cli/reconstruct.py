@@ -14,9 +14,10 @@ Subcommands:
 reconstruct
     Run the reconstruction pipeline (the default command). Writes the
     cluster, phone and phoneme assignments of every character into
-    ``<output-dir>/reconstruction.csv`` and the phone and phoneme
-    tables of the clusters into ``clusters.csv`` and
-    ``cluster_phones.csv``.
+    ``<output-dir>/reconstruction.csv``, the phone and phoneme tables
+    of the clusters into ``clusters.csv`` and ``cluster_phones.csv``,
+    and the full clustering tree of each feature into
+    ``<feature>_tree.csv``.
 
 inference
     Train one decision tree per segment type and descendant dialect on
@@ -1025,6 +1026,88 @@ def covered_characters(
     return coverage[coverage >= min_dialect_coverage].index
 
 
+def hierarchy_tree(
+    children: numpy.ndarray,
+    distances: numpy.ndarray,
+    characters: pandas.Series,
+    labels: numpy.ndarray
+) -> pandas.DataFrame:
+    """Build the node table of a full agglomerative clustering tree.
+
+    Each row is one node of the dendrogram. The first rows are the
+    leaves, one per fitted character holding its ``cid``, its written
+    form and cluster ID, and the last rows are the merges in increasing
+    distance order.
+    A merge whose two children belong to one cluster belongs to that
+    cluster, and a merge joining two different clusters is the split
+    point of the clusters and holds no cluster ID. The clusters kept at
+    the clustering threshold and the further splits of a cluster can
+    therefore be read off the table by following the ``left`` and
+    ``right`` child IDs down to the leaves.
+
+    Parameters
+    ----------
+    children : numpy.ndarray
+        The ``children_`` attribute of a fitted agglomerative
+        clustering: the two child node IDs of each merge, where the IDs
+        below ``len(characters)`` are leaves.
+    distances : numpy.ndarray
+        The ``distances_`` attribute: the cosine distance of each
+        merge.
+    characters : pandas.Series
+        The written form of each fitted character, indexed by character
+        ID, in the row order of the clustered data; a character without
+        a written form falls back to its ID.
+    labels : numpy.ndarray
+        The cluster ID of each fitted character, in the same row order,
+        i.e. the ``labels_`` attribute of the clustering.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The tree nodes with ``node``, ``parent``, ``left``, ``right``,
+        ``distance``, ``size``, ``cid``, ``character`` and ``cluster``
+        columns; leaves hold their character ID in ``cid`` and its
+        written form in ``character``, merges hold both empty, split
+        nodes hold an empty ``cluster``, and the root nodes hold an
+        empty ``parent``.
+    """
+
+    n = len(characters)
+    sizes = numpy.ones(n + len(children), dtype=int)
+    parents = numpy.full(n + len(children), -1)
+    clusters = list(labels)
+    for m, (left, right) in enumerate(children):
+        node = n + m
+        sizes[node] = sizes[left] + sizes[right]
+        parents[left] = parents[right] = node
+        clusters.append(
+            clusters[left] if clusters[left] == clusters[right] else None
+        )
+
+    rows = []
+    for i in range(n + len(children)):
+        leaf = i < n
+        cid = characters.index[i] if leaf else None
+        form = str(characters.iloc[i]) if leaf else ""
+        rows.append({
+            "node": i,
+            "parent": int(parents[i]),
+            "left": None if leaf else int(children[i - n][0]),
+            "right": None if leaf else int(children[i - n][1]),
+            "distance": None if leaf else float(distances[i - n]),
+            "size": int(sizes[i]),
+            "cid": cid,
+            "character": (
+                form if form.strip() else str(cid)
+            ) if leaf else None,
+            "cluster": clusters[i],
+        })
+    frame = pandas.DataFrame(rows)
+    frame["cluster"] = frame["cluster"].astype("Int64")
+    return frame
+
+
 def cluster(
     data: pandas.DataFrame,
     covered: pandas.Index,
@@ -1074,10 +1157,11 @@ def cluster(
 
     Returns
     -------
-    tuple[pandas.DataFrame, dict[str, numpy.ndarray]]
+    tuple[pandas.DataFrame, dict[str, numpy.ndarray], dict[str, pandas.DataFrame]]
         Cluster identifiers and, when available, mapped segment labels,
         indexed by character ID, together with the dense segment
-        embeddings of each character keyed by segment type.
+        embeddings of each character keyed by segment type and the full
+        clustering tree of each feature as a node table.
 
     Raises
     ------
@@ -1136,20 +1220,37 @@ def cluster(
 
     result = pandas.DataFrame(index=wide.index)
     fit_array = fit_mask.to_numpy()
+    # character of each character ID for the tree files
+    # without a character column, use the character ID instead
+    characters = (
+        data.groupby("cid")["character"].first()
+        if "character" in data.columns
+        else pandas.Series(wide.index, index=wide.index, dtype=object)
+    )
+    trees = {}
     for feature, values in feature_embeddings.items():
         logger.info(
             "clustering %s embeddings (%d segments)",
             feature, int(fit_array.sum())
         )
         # Average-linkage agglomerative clustering groups the characters
-        # whose segment embeddings are within the cosine distance
-        # threshold.
-        cluster_ids = AgglomerativeClustering(
+        # whose segment embeddings are within the distance threshold.
+        # The full linkage tree behind the labels is exported alongside,
+        # so the clusters kept at any other distance threshold and the
+        # further splits of a cluster can be examined afterwards.
+        clusterer = AgglomerativeClustering(
             n_clusters=None,
             metric="cosine",
+            compute_full_tree=True,
             linkage="average",
-            distance_threshold=max_cluster_distance
-        ).fit_predict(values[fit_array])
+            distance_threshold=max_cluster_distance,
+            compute_distances=True
+        ).fit(values[fit_array])
+        cluster_ids = clusterer.labels_
+        trees[feature] = hierarchy_tree(
+            clusterer.children_, clusterer.distances_,
+            characters.reindex(wide.index[fit_array]), cluster_ids
+        )
         if len(set(cluster_ids)) > max_clusters:
             # too many clusters; re-cluster into the maximum number
             logger.info(
@@ -1157,11 +1258,18 @@ def cluster(
                 "re-clustering into %d clusters",
                 feature, len(set(cluster_ids)), max_clusters, max_clusters
             )
-            cluster_ids = AgglomerativeClustering(
+            clusterer = AgglomerativeClustering(
                 n_clusters=max_clusters,
                 metric="cosine",
-                linkage="average"
-            ).fit_predict(values[fit_array])
+                compute_full_tree=True,
+                linkage="average",
+                compute_distances=True
+            ).fit(values[fit_array])
+            cluster_ids = clusterer.labels_
+            trees[feature] = hierarchy_tree(
+                clusterer.children_, clusterer.distances_,
+                characters.reindex(wide.index[fit_array]), cluster_ids
+            )
         logger.info(
             "%s: %d clusters at cosine distance %.2f",
             feature, len(set(cluster_ids)), max_cluster_distance
@@ -1214,7 +1322,7 @@ def cluster(
             feature, len(set(assigned)), result[feature].nunique()
         )
 
-    return result, feature_embeddings
+    return result, feature_embeddings, trees
 
 
 def add_common_arguments(
@@ -1466,7 +1574,7 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         len(covered), data["cid"].nunique(), args.min_dialect_coverage
     )
 
-    result, feature_embeddings = cluster(
+    result, feature_embeddings, trees = cluster(
         data,
         covered,
         annotations=annotations,
@@ -1475,6 +1583,10 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         max_cluster_distance=args.max_cluster_distance,
         max_clusters=args.max_clusters
     )
+    for feature, tree in trees.items():
+        tree_file = os.path.join(args.output_dir, f"{feature}_tree.csv")
+        tree.to_csv(tree_file, index=False, encoding="utf-8")
+        logger.info("wrote %s", tree_file)
 
     if has_character_ids:
         characters = (
@@ -2175,7 +2287,7 @@ def reconstruct(
         by character ID.
     """
 
-    result, feature_embeddings = cluster(
+    result, feature_embeddings, _ = cluster(
         data,
         covered,
         embedding_size=embedding_size,
