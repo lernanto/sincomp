@@ -1062,6 +1062,30 @@ class TestReconstructCli(unittest.TestCase):
         # readings with fewer than two samples are ignored
         self.assertEqual(assigned.loc[("initial", 0)], "p")
 
+    def test_claim_group_phones_keeps_most_frequent_below_threshold(self):
+        groups = {("initial", 0): {"p": 1}}
+
+        assigned = reconstruct_cli.claim_group_phones(
+            groups, [("initial", 0)], min_phone_proportion=0.9
+        )
+
+        self.assertEqual(assigned, {("initial", 0): "p"})
+
+    def test_assign_cluster_phones_keeps_most_frequent_below_threshold(self):
+        distributions = pandas.DataFrame(
+            {"sample_count": [1], "total": [1]},
+            index=pandas.MultiIndex.from_tuples(
+                [("initial", 0, "p")],
+                names=["feature", "cluster", "phone"],
+            ),
+        )
+
+        assigned = reconstruct_cli.assign_cluster_phones(
+            distributions, min_phone_proportion=0.9
+        )
+
+        self.assertEqual(assigned.loc[("initial", 0)], "p")
+
     def test_merge_cluster_phonemes(self):
         data = pandas.DataFrame(
             [
@@ -1179,6 +1203,38 @@ class TestReconstructCli(unittest.TestCase):
         self.assertNotIn(
             "n", phonemes[phonemes.index.get_level_values(0) == "final"]
         )
+
+    def test_merge_cluster_phonemes_includes_feature_only_clusters(self):
+        data = pandas.DataFrame(
+            [
+                ("d1", "c0", "p", "a", "55"),
+                ("d1", "c1", "t", "a", "55"),
+            ],
+            columns=["did", "cid", "initial", "final", "tone"],
+        )
+        result = pandas.DataFrame(
+            {
+                "initial_cluster": [0, 1],
+                "final_cluster": [0, -1],
+                "tone_cluster": [0, 0],
+            },
+            index=pandas.Index(["c0", "c1"], name="cid"),
+        )
+        distributions = reconstruct_cli.cluster_phone_distributions(
+            data, result
+        )
+        embeddings = {
+            "initial": numpy.array([[1.0, 0.0], [0.0, 1.0]]),
+            "final": numpy.array([[1.0, 0.0], [1.0, 0.0]]),
+            "tone": numpy.array([[1.0], [1.0]]),
+        }
+
+        phonemes = reconstruct_cli.merge_cluster_phonemes(
+            result, embeddings, distributions
+        )
+
+        self.assertEqual(phonemes[("initial", 0)], "p")
+        self.assertEqual(phonemes[("initial", 1)], "t")
 
     def test_merge_cluster_phonemes_greedy_across_features(self):
         # a tone pair (similarity 0.95) must be merged before an
