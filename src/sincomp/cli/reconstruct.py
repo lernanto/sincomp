@@ -305,9 +305,11 @@ def claim_group_phones(
     order, and each group claims its most frequent phone covering at
     least ``max(min_phone_proportion * total, 2)`` recorded samples —
     where ``total`` is the number of recorded samples of the group —
-    that has not been claimed by an earlier group. When every eligible
-    phone has already been claimed, the group shares its most frequent
-    phone, distinguished with a subscript digit.
+    that has not been claimed by an earlier group. The most frequent
+    phone remains eligible even when it falls below this threshold, so
+    every non-empty group receives a phone. When every eligible phone
+    has already been claimed, the group shares its most frequent phone,
+    distinguished with a subscript digit.
 
     Parameters
     ----------
@@ -333,11 +335,12 @@ def claim_group_phones(
         if not counts:
             continue
         threshold = max(min_phone_proportion * sum(counts.values()), 2)
+        most_frequent = max(counts.items(), key=lambda item: item[1])[0]
         eligible = [
             phone for phone, n in sorted(
                 counts.items(), key=lambda item: -item[1]
             )
-            if n >= threshold
+            if n >= threshold or phone == most_frequent
         ]
         for phone in eligible:
             if phone not in claims:
@@ -581,11 +584,13 @@ def merge_cluster_phonemes(
     other features whose character sets both contain characters beyond
     ``max_merge_tolerance`` — and the average cosine distance between
     the phone vectors of their characters is at most
-    ``max_merge_distance``. Only the characters of the kept clusters
-    participate in the merging; characters without a cluster (low
-    coverage characters and members of clusters that are too small to
-    keep) are assigned to clusters and inherit their phonemes after the
-    merging. Merging is greedy across all features: at every
+    ``max_merge_distance``. For each feature, all characters with a
+    kept cluster for that feature participate in its merging; missing
+    clusters in other features are retained as environment values.
+    Characters without a cluster for a feature (low coverage
+    characters and members of clusters that are too small to keep) are
+    assigned to clusters and inherit their phonemes after the merging.
+    Merging is greedy across all features: at every
     step the closest feasible pair among the clusters of all features
     is merged, so every choice is made against the latest environments
     and does not depend on the order of the features. After the
@@ -623,40 +628,46 @@ def merge_cluster_phonemes(
         Phoneme of each cluster, indexed by feature and cluster.
     """
 
-    # only characters whose clusters are kept for all features
-    # participate in the merging
-    cluster_columns = [f"{feature}_cluster" for feature in FEATURES]
-    clustered_mask = (
-        original[cluster_columns] >= 0
-    ).all(axis=1).to_numpy()
-    covered_positions = numpy.flatnonzero(clustered_mask)
-    covered_index = original.index[covered_positions]
-    covered_original = original.loc[covered_index]
-    if covered_index.empty:
+    feature_positions = {
+        feature: numpy.flatnonzero(
+            original[f"{feature}_cluster"].to_numpy() >= 0
+        )
+        for feature in FEATURES
+    }
+    if not any(len(positions) for positions in feature_positions.values()):
         raise ValueError(
-            "No character has all its features clustered; lower the "
-            "minimum cluster size or increase the data coverage."
+            "No character has a kept cluster for any feature; lower "
+            "the minimum cluster size or increase the data coverage."
         )
 
-    # environment of each cluster: the number of covered characters
+    # environment of each cluster: the number of characters with a
+    # cluster for this feature
     # belonging to each combination of the clusters of the other
-    # features; the character sets are determined by the cluster
-    # identifiers alone and do not depend on the dialect phones
+    # features; missing clusters in other features remain distinct
+    # environment values
     environments = {}
     for feature in FEATURES:
         others = [f"{g}_cluster" for g in FEATURES if g != feature]
-        counts = covered_original.groupby(
+        feature_original = original.iloc[feature_positions[feature]]
+        counts = feature_original.groupby(
             [f"{feature}_cluster"] + others
         ).size()
-        for (cluster_id, *rest), n in counts.items():
-            combo = ",".join(str(value) for value in rest)
+        for key, n in counts.items():
+            cluster_id, *rest = key
+            combo = tuple(int(value) for value in rest)
             environments.setdefault((feature, int(cluster_id)), {})[
                 combo
             ] = int(n)
 
     # one group per kept cluster to start with
     cluster_ids = {
-        feature: sorted(pandas.unique(covered_original[f"{feature}_cluster"]))
+        feature: sorted(
+            pandas.unique(
+                original.iloc[feature_positions[feature]][
+                    f"{feature}_cluster"
+                ]
+            )
+        )
         for feature in embeddings
     }
 
@@ -679,13 +690,13 @@ def merge_cluster_phonemes(
         for feature in FEATURES
     }
 
-    # unit phone vectors of the covered characters per feature; the
-    # average pairwise cosine distance between the covered characters
+    # unit phone vectors of the clustered characters per feature; the
+    # average pairwise cosine distance between the clustered characters
     # of two groups is 1 minus the cosine of the angle between the sums
     # of their unit vectors, so no pairwise matrix is needed
     unit_vectors = {}
     for feature, values in embeddings.items():
-        vectors = values[covered_positions]
+        vectors = values[feature_positions[feature]]
         norms = numpy.linalg.norm(vectors, axis=1, keepdims=True)
         unit_vectors[feature] = vectors / numpy.maximum(norms, 1e-12)
 
@@ -701,7 +712,9 @@ def merge_cluster_phonemes(
             for combo, n in environments.get((feature, cluster), {}).items():
                 counts[combo] = counts.get(combo, 0) + int(n)
         roots = sorted(members)
-        cluster_of = original.loc[covered_index, f"{feature}_cluster"]
+        cluster_of = original.iloc[
+            feature_positions[feature]
+        ][f"{feature}_cluster"]
         positions = {
             root: numpy.flatnonzero(cluster_of.to_numpy() == root)
             for root in roots
@@ -709,12 +722,17 @@ def merge_cluster_phonemes(
         sizes = numpy.array(
             [len(positions[root]) for root in roots], dtype=float
         )
-        # average pairwise distance between the covered characters of
+        # average pairwise distance between the clustered characters of
         # each pair of groups
-        sums = numpy.vstack([
-            unit_vectors[feature][positions[root]].sum(axis=0)
-            for root in roots
-        ])
+        if roots:
+            sums = numpy.vstack([
+                unit_vectors[feature][positions[root]].sum(axis=0)
+                for root in roots
+            ])
+        else:
+            sums = numpy.empty(
+                (0, unit_vectors[feature].shape[1]), dtype=float
+            )
         group_distances = 1.0 - sums @ sums.T / numpy.maximum(
             numpy.outer(sizes, sizes), 1e-12
         )
@@ -736,16 +754,16 @@ def merge_cluster_phonemes(
         {feature: len(cluster_ids[feature]) for feature in cluster_ids},
     )
 
-    def env_key(feature: str, combo: str) -> tuple:
+    def env_key(feature: str, combo: tuple[int, ...]) -> tuple:
         """Canonical environment key: roots of the other features."""
 
         return tuple(
-            find(g, int(cluster))
-            for g, cluster in zip(other_features[feature], combo.split(","))
+            find(g, cluster) if cluster >= 0 else cluster
+            for g, cluster in zip(other_features[feature], combo)
         )
 
     def conflicts(feature: str, root1: int, root2: int) -> int:
-        """Covered characters co-occurring with both groups."""
+        """Characters co-occurring with both groups."""
 
         env_counts = states[feature]["env_counts"]
         counts1 = {}
