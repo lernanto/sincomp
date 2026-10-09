@@ -15,7 +15,7 @@ import sklearn.impute
 import sklearn.linear_model
 import sklearn.pipeline
 
-from sincomp import cli
+from sincomp import cli, embedding
 from sincomp.cli import align as align_cli
 from sincomp.cli import classifier as classifier_cli
 from sincomp.cli import dataset as dataset_cli
@@ -393,6 +393,82 @@ def _make_stub_dataset() -> mock.Mock:
     return dataset
 
 
+def _build_vector_classifier_data() -> pandas.DataFrame:
+    """Build long-format pronunciations separable by pair features.
+
+    A dialects pronounce the characters 0-9 with the same initial and
+    the characters 10-19 with another one, while B dialects split the
+    characters 0-4 from 5-19, so the pairwise identity features of
+    the two classes differ. The character 20 is missing from a quarter
+    of the dialects, exercising the empty-phone fill of the missing
+    records.
+    """
+    rows = []
+    for label in ("A", "B"):
+        for i in range(8):
+            did = f"{label}{i}"
+            for cid in range(21):
+                if cid == 20 and i >= 6:
+                    # missing from 4 of the 16 dialects
+                    continue
+                if label == "A":
+                    initial = "x" if cid < 10 else "y"
+                else:
+                    initial = "x" if cid < 5 else "y"
+                rows.append(
+                    {"cid": str(cid), "did": did, "initial": initial}
+                )
+    return pandas.DataFrame(rows)
+
+
+def _make_vector_stub_dataset() -> mock.Mock:
+    """Build a dataset mock over the pairwise separable data."""
+    data = _build_vector_classifier_data()
+    dataset = mock.Mock()
+
+    def select(dids):
+        selected = mock.Mock()
+        selected.data = data[data["did"].isin(list(dids))]
+        return selected
+
+    dataset.select.side_effect = select
+    return dataset
+
+
+def _build_multiclass_vector_data() -> pandas.DataFrame:
+    """Build long-format pronunciations for 24 dialects in 3 classes.
+
+    The A, B and C dialects split the 20 characters at different
+    positions — 10, 5 and 15 — so the pairwise identity features of
+    the three classes differ.
+    """
+    rows = []
+    for label, split in (("A", 10), ("B", 5), ("C", 15)):
+        for i in range(8):
+            did = f"{label}{i}"
+            for cid in range(20):
+                rows.append({
+                    "cid": str(cid),
+                    "did": did,
+                    "initial": "x" if cid < split else "y",
+                })
+    return pandas.DataFrame(rows)
+
+
+def _make_multiclass_vector_dataset() -> mock.Mock:
+    """Build a dataset mock over the 3-class pairwise separable data."""
+    data = _build_multiclass_vector_data()
+    dataset = mock.Mock()
+
+    def select(dids):
+        selected = mock.Mock()
+        selected.data = data[data["did"].isin(list(dids))]
+        return selected
+
+    dataset.select.side_effect = select
+    return dataset
+
+
 class TestClassifierCli(unittest.TestCase):
     def test_subcommand_required(self):
         with self.assertRaises(SystemExit):
@@ -400,8 +476,11 @@ class TestClassifierCli(unittest.TestCase):
 
     def test_train_defaults(self):
         args = classifier_cli.build_parser().parse_args(
-            ["train", "rules.json", "annotations.csv"]
+            ["train", "annotations.csv"]
         )
+        self.assertIsNone(args.rule_file)
+        self.assertEqual(args.min_coverage, 0.5)
+        self.assertEqual(args.embedding_size, 128)
         self.assertEqual(args.resample, 5)
         self.assertEqual(args.output_file, "dialect_classifier.bz2")
 
@@ -421,7 +500,7 @@ class TestClassifierCli(unittest.TestCase):
                 classifier_cli.main([
                     "train",
                     "--resample", "0",
-                    rule_file,
+                    "--rule-file", rule_file,
                     annotation_file,
                     model_file,
                 ]),
@@ -451,14 +530,200 @@ class TestClassifierCli(unittest.TestCase):
                     classifier_cli.main([
                         "evaluate",
                         "--resample", "0",
-                        rule_file,
+                        "--rule-file", rule_file,
                         annotation_file,
                     ]),
                     0,
                 )
 
             # the compliance perfectly separates the two classes
+            self.assertIn("precision", output.getvalue())
+            self.assertIn("f1", output.getvalue())
+            self.assertIn("cross validation with 16 samples, "
+                          "accuracy = 1.0000", output.getvalue())
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_vector_stub_dataset(),
+    )
+    def test_train_vector_end_to_end(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            model_file = os.path.join(tmp, "classifier.bz2")
+            _write_annotations(annotation_file)
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "train",
+                    "--resample", "1",
+                    annotation_file,
+                    model_file,
+                ]),
+                0,
+            )
+            model = joblib.load(model_file)
+            vectorizer = model.steps[0][1]
+            self.assertIsInstance(vectorizer, embedding.DialectVectorizer)
+            # the character missing from a quarter of the dialects is
+            # kept, its missing phones filled with empty strings
+            self.assertIn("20_initial", vectorizer.feature_names_in_)
+        get_dataset.assert_called_with("stub")
+
+    def test_train_embedding_multiple_datasets(self):
+        # the dialect vector features are only comparable within one
+        # dataset
+        annotations = pandas.DataFrame(
+            [("stub", "A0", "A"), ("other", "B0", "B")],
+            columns=["dataset", "did", "label"],
+        )
+        with self.assertRaises(ValueError):
+            classifier_cli.train_embedding(annotations)
+
+    def test_resample_data_selects_dialects_individually(self):
+        data = pandas.DataFrame(
+            [
+                ("A", "a1"),
+                ("A", "a2"),
+                ("B", "b1"),
+                ("B", "b2"),
+            ],
+            columns=["did", "cid"],
+        )
+        dataset = mock.Mock()
+
+        def select(dids):
+            selected = mock.Mock()
+            selected.data = data[data["did"].isin(dids)]
+            return selected
+
+        dataset.select.side_effect = select
+        annotations = pandas.DataFrame(
+            {"did": ["A", "B"]},
+            index=[10, 20],
+        )
+
+        rounds = list(classifier_cli.resample_data(
+            dataset,
+            annotations,
+            resample=1,
+            samples=1,
+            min_rate=1,
+            max_rate=1,
+        ))
+
+        self.assertEqual(len(rounds), 1)
+        round_data, indices = rounds[0]
+        self.assertEqual(set(round_data["did"]), {"A_0", "B_0"})
+        self.assertEqual(list(indices), [10, 20])
+        self.assertEqual(
+            dataset.select.call_args_list,
+            [mock.call(["A"]), mock.call(["B"])],
+        )
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_vector_stub_dataset(),
+    )
+    def test_evaluate_vector_end_to_end(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            _write_annotations(annotation_file)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    classifier_cli.main([
+                        "evaluate",
+                        "--resample", "0",
+                        annotation_file,
+                    ]),
+                    0,
+                )
+
+            # the pairwise identity features separate the two classes
             self.assertIn("accuracy = 1.0000", output.getvalue())
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_multiclass_vector_dataset(),
+    )
+    def test_evaluate_multiclass(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            dids = [
+                f"{label}{i}"
+                for label in ("A", "B", "C")
+                for i in range(8)
+            ]
+            labels = [f"L{i // 8}" for i in range(24)]
+            pandas.DataFrame(
+                [("stub", did, label) for did, label in zip(dids, labels)],
+                columns=["dataset", "did", "label"],
+            ).to_csv(
+                annotation_file, index=False, encoding="utf-8",
+                lineterminator="\n",
+            )
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    classifier_cli.main([
+                        "evaluate",
+                        "--resample", "0",
+                        annotation_file,
+                    ]),
+                    0,
+                )
+
+            # the multiclass report holds the per-fold and average
+            # accuracy only
+            self.assertNotIn("precision", output.getvalue())
+            self.assertIn("mean", output.getvalue())
+            self.assertIn("std", output.getvalue())
+            self.assertIn("cross validation with 24 samples", output.getvalue())
+        get_dataset.assert_called_with("stub")
+
+    @mock.patch(
+        "sincomp.cli.classifier.datasets.get",
+        return_value=_make_vector_stub_dataset(),
+    )
+    def test_predict_vector_from_datasets(self, get_dataset):
+        with tempfile.TemporaryDirectory() as tmp:
+            annotation_file = os.path.join(tmp, "annotations.csv")
+            model_file = os.path.join(tmp, "classifier.bz2")
+            sample_file = os.path.join(tmp, "samples.csv")
+            output_file = os.path.join(tmp, "predictions.csv")
+            _write_annotations(annotation_file)
+
+            classifier_cli.main([
+                "train",
+                "--resample", "0",
+                annotation_file,
+                model_file,
+            ])
+            pandas.DataFrame(
+                [("stub", "A0"), ("stub", "B0")],
+                columns=["dataset", "did"],
+            ).to_csv(
+                sample_file, index=False, encoding="utf-8",
+                lineterminator="\n",
+            )
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "predict",
+                    "--model-file", model_file,
+                    sample_file,
+                    output_file,
+                ]),
+                0,
+            )
+
+            result = pandas.read_csv(output_file).set_index("did")
+            self.assertGreater(result.loc["A0", "A"], result.loc["A0", "B"])
+            self.assertGreater(result.loc["B0", "B"], result.loc["B0", "A"])
         get_dataset.assert_called_with("stub")
 
     def test_predict_precomputed(self):
@@ -521,7 +786,7 @@ class TestClassifierCli(unittest.TestCase):
             classifier_cli.main([
                 "train",
                 "--resample", "0",
-                rule_file,
+                "--rule-file", rule_file,
                 annotation_file,
                 model_file,
             ])

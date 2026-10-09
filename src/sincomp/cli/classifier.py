@@ -1,8 +1,56 @@
-"""Command-line interface for dialect classification."""
+"""Command-line interface for dialect classification.
+
+The classifier distinguishes the classes of dialects either by their
+compliance with a set of pronunciation rules or by their dialect
+vectors — the pairwise pronunciation similarities of the characters
+embedded into dense vectors with
+:class:`~sincomp.embedding.DialectEmbedding`.
+
+train
+    Train a dialect classifier on the annotated samples and save it
+    to a file. The features are the rule compliances of the dialects
+    when a rule file is given with ``--rule-file``, and the dialect
+    vectors otherwise; the characters whose dialect coverage falls
+    below ``--min-coverage`` are excluded from the vectors, and the
+    vectors are embedded into ``--embedding-size`` dimensions. Every
+    dialect may be resampled ``--resample`` times for augmentation,
+    and the best hyperparameters of the linear classifier are
+    selected by cross-validation.
+
+evaluate
+    Cross-validate the accuracy of the classifier on the annotated
+    samples: the annotations are split into stratified groups, every
+    fold trains a classifier on the training annotations and predicts
+    the test annotations from their dialect data, and the mean and the standard
+    deviation of the fold accuracies are printed to the standard
+    output.
+
+predict
+    Predict the classes of the dialect samples with a trained
+    classifier and write the class probabilities of every sample.
+    The features are computed from the raw data with ``--rule-file``
+    or the vectorizer stored in the model, or read from the input
+    directly with ``--precomputed`` in the rule mode.
+
+The annotated sample file is a CSV with one dialect per row and the
+columns ``dataset`` (name of the source dataset), ``did`` (dialect
+ID) and ``label`` (dialect class), plus the optional ``stratefy``
+(labels for stratified splitting) and ``group`` (groups for grouped
+splitting; samples of one group always fall in the same fold)
+columns.
+
+Usage::
+
+    classifier train --rule-file rules.json annotations.csv model.bz2
+    classifier evaluate annotations.csv
+    classifier predict --model-file model.bz2 samples.csv
+"""
+
+__author__ = "黄艺华 <lernanto@foxmail.com>"
 
 import argparse
 import logging
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import joblib
 import numpy
@@ -14,31 +62,163 @@ import sklearn.metrics
 import sklearn.model_selection
 import sklearn.pipeline
 
-from .. import compare, datasets, preprocess
+from .. import compare, datasets, embedding, preprocess
 
 
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():
     logger.addHandler(logging.StreamHandler())
 
+FEATURES = ("initial", "final", "tone")
 
-def train_classifier(
-    rules: pandas.DataFrame,
+
+def filter_coverage(
+    data: pandas.DataFrame,
+    min_coverage: float,
+) -> pandas.DataFrame:
+    """Filter the characters meeting the dialect coverage threshold.
+
+    The dialect coverage of one character is the proportion of the
+    dialects in the data that record a pronunciation of the character.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Long-format dialect data with ``did``, ``cid`` and segment
+        columns.
+    min_coverage : float
+        Minimum dialect coverage of the kept characters.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The rows of the data whose character meets the threshold.
+    """
+
+    feature_names = [f for f in FEATURES if f in data.columns]
+    recorded = data[data[feature_names].notna().any(axis=1)]
+    coverage = (
+        recorded.groupby("cid")["did"].nunique() / data["did"].nunique()
+    )
+    characters = coverage[coverage >= min_coverage].index
+    return data[data["cid"].isin(characters)]
+
+
+def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
+    """Build the wide phone table of the dialect vector features.
+
+    One row per dialect and one ``cid_feature`` column per character
+    and segment feature, as expected by
+    :class:`~sincomp.embedding.DialectVectorizer`.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame
+        Long-format dialect data with ``did``, ``cid`` and segment
+        columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The wide table with flattened ``cid_feature`` columns.
+    """
+
+    wide = preprocess.transform(
+        data,
+        index="did",
+        columns="cid",
+        values=[f for f in FEATURES if f in data.columns],
+        aggfunc=lambda values: " ".join(values.dropna()),
+    )
+    wide.columns = [f"{c}_{f}" for c, f in wide.columns.to_flat_index()]
+    # a character not recorded by a dialect holds an empty phone and
+    # contributes no pronunciation similarities
+    return wide.fillna("")
+
+
+def resample_data(
+    dataset: datasets.Dataset,
+    annotation: pandas.DataFrame,
+    resample: int,
+    samples: int = 500,
+    min_rate: float = 0.5,
+    max_rate: float = 0.8,
+    characters: pandas.Index | numpy.ndarray | None = None,
+) -> Iterator[tuple[pandas.DataFrame, pandas.Index]]:
+    """Yield the rounds of the resampled pronunciations.
+
+    Every round holds one resampled copy of each annotated dialect —
+    ``samples`` characters clipped to the ``min_rate`` and
+    ``max_rate`` proportions of the dialect, with the dialect ID
+    suffixed with the round number. Resampling improves the stability
+    of the model trained on few dialects.
+
+    Parameters
+    ----------
+    dataset : datasets.Dataset
+        Dataset containing the dialect pronunciations.
+    annotation : pandas.DataFrame
+        The annotated samples of the dialects to resample.
+    resample : int
+        Number of resampled copies per dialect.
+    samples : int, default=500
+        Number of characters sampled per dialect copy.
+    min_rate : float, default=0.5
+        Minimum sample size as a proportion of the character count of
+        the dialect.
+    max_rate : float, default=0.8
+        Maximum sample size as a proportion of the character count of
+        the dialect.
+    characters : pandas.Index, optional
+        Character IDs to retain in each copy, used when the training
+        data has already been filtered by character coverage.
+
+    Yields
+    ------
+    data : pandas.DataFrame
+        The resampled pronunciations of one round.
+    indices : pandas.Index
+        The annotation indexes of the dialects of the round, aligned
+        with the dialect order.
+    """
+
+    for i in range(resample):
+        copies = []
+        for did in annotation["did"].drop_duplicates():
+            dialect = dataset.select([did]).data
+            if "cid" not in dialect.columns:
+                dialect = dialect.rename(columns={"character": "cid"})
+                dialect = dialect.dropna(subset="cid")
+            if characters is not None:
+                dialect = dialect[dialect["cid"].isin(characters)]
+            n = int(numpy.clip(
+                samples,
+                min_rate * dialect.shape[0],
+                max_rate * dialect.shape[0],
+            ))
+            copies.append(dialect.sample(n).assign(did=f"{did}_{i}"))
+        yield (
+            pandas.concat(copies, axis=0, ignore_index=True),
+            annotation.index,
+        )
+
+
+def train_rule(
     annotations: pandas.DataFrame,
     resample: int = 0,
     samples: int = 500,
     min_rate: float = 0.5,
     max_rate: float = 0.8,
+    *,
+    rules: pandas.DataFrame,
 ) -> sklearn.pipeline.Pipeline:
-    """Train a dialect classifier.
+    """Train a dialect classifier on rule compliance features.
 
-    Dialect pronunciations are resampled for data augmentation, and the best
-    model hyperparameters are selected by cross-validation.
+    Dialect pronunciations are resampled for data augmentation, and the
+    best model hyperparameters are selected by cross-validation.
 
     Parameters
     ----------
-    rules : pandas.DataFrame
-        Pronunciation rules used to compute the rule compliance of dialects.
     annotations : pandas.DataFrame
         Annotated samples, one dialect per row, with columns:
 
@@ -58,6 +238,12 @@ def train_classifier(
     max_rate : float, default=0.8
         Maximum sample size as a proportion of the character count of a
         dialect.
+    rules : pandas.DataFrame
+        Pronunciation rules used to compute the rule compliance of
+        dialects.
+    rules : pandas.DataFrame
+        Pronunciation rules used to compute the rule compliance of
+        dialects.
 
     Returns
     -------
@@ -70,38 +256,35 @@ def train_classifier(
     compliances = []
     indices = []
     for name, annotation in annotations.groupby("dataset", sort=False):
-        data = datasets.get(name).select(annotation["did"]).data
+        dataset = datasets.get(name)
+        data = dataset.select(annotation["did"]).data
 
         if "cid" not in data.columns:
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        indices.extend(annotation.index)
-        expanded_data = [data]
-
-        if resample > 0:
-            # Resample dialect pronunciations for augmentation, improving
-            # model stability.
-            indices.extend(annotation.index.repeat(resample))
-            for did, dialect in data.groupby("did", sort=False):
-                n = int(numpy.clip(
-                    samples,
-                    min_rate * dialect.shape[0],
-                    max_rate * dialect.shape[0],
-                ))
-                for i in range(resample):
-                    expanded_data.append(
-                        dialect.sample(n).assign(did=f"{did}_{i}")
-                    )
-
         transformed = preprocess.transform(
-            pandas.concat(expanded_data, axis=0, ignore_index=True),
+            data,
             index="cid",
             columns="did",
             values=feature_names,
             aggfunc=lambda values: " ".join(values.dropna()),
         )
         compliances.append(compare.compliance(transformed, rules))
+        indices.extend(annotation.index)
+
+        for round_data, round_indices in resample_data(
+            dataset, annotation, resample, samples, min_rate, max_rate
+        ):
+            transformed = preprocess.transform(
+                round_data,
+                index="cid",
+                columns="did",
+                values=feature_names,
+                aggfunc=lambda values: " ".join(values.dropna()),
+            )
+            compliances.append(compare.compliance(transformed, rules))
+            indices.extend(round_indices)
 
     compliances = pandas.concat(compliances, axis=0)
     annotations = annotations.loc[indices]
@@ -134,8 +317,174 @@ def train_classifier(
     return classifier
 
 
+def train_embedding(
+    annotations: pandas.DataFrame,
+    resample: int = 0,
+    samples: int = 500,
+    min_rate: float = 0.5,
+    max_rate: float = 0.8,
+    min_coverage: float = 0.5,
+    embedding_size: int = 128,
+) -> sklearn.pipeline.Pipeline:
+    """Train a dialect classifier on dialect vector features.
+
+    The characters whose dialect coverage reaches ``min_coverage`` are
+    kept, the pairwise pronunciation similarity of the kept characters
+    is vectorized with :class:`~sincomp.embedding.DialectVectorizer`
+    and embedded into dense dialect vectors with
+    :class:`~sincomp.embedding.DialectEmbedding`, and the best model
+    hyperparameters are selected by cross-validation. Every dialect
+    may be resampled for augmentation; a resampled copy holds the
+    sampled characters only, and the pairs involving the characters
+    missing from a copy contribute no similarities. The annotated
+    samples must come from one dataset — the dialect vector features
+    are only comparable within one dataset. The vectorizer and the
+    embedding are fitted on the dialects before the resampling; every
+    round of the resampled dialects is transformed separately and the
+    resulting embeddings are concatenated into the training features,
+    so the memory footprint of the transformation stays low.
+
+    Parameters
+    ----------
+    annotations : pandas.DataFrame
+        Annotated samples, one dialect per row, with the same columns
+        as :func:`train_rule`.
+    resample : int, default=0
+        Number of resampled copies per dialect; 0 disables resampling.
+    samples : int, default=500
+        Number of characters sampled per dialect during resampling.
+    min_rate : float, default=0.5
+        Minimum sample size as a proportion of the character count of a
+        dialect.
+    max_rate : float, default=0.8
+        Maximum sample size as a proportion of the character count of a
+        dialect.
+    min_coverage : float, default=0.5
+        Minimum dialect coverage of the characters used by the dialect
+        vector features.
+    embedding_size : int, default=128
+        Dimension of the embedded dialect vectors.
+
+    Returns
+    -------
+    classifier : sklearn.pipeline.Pipeline
+        The fitted dialect classifier.
+    """
+
+    dataset_names = annotations["dataset"].unique()
+    if len(dataset_names) > 1:
+        raise ValueError(
+            "the dialect vector features are only comparable within "
+            "one dataset, but the samples cover "
+            f"{', '.join(map(str, dataset_names))}"
+        )
+    dataset = datasets.get(dataset_names[0])
+    data = dataset.select(annotations["did"]).data
+    if "cid" not in data.columns:
+        data = data.rename(columns={"character": "cid"})
+        data.dropna(subset="cid", inplace=True)
+    data = filter_coverage(data, min_coverage)
+    wide = build_wide(data)
+
+    vectorizer = embedding.DialectVectorizer(
+        column_selectors=list(FEATURES)
+    )
+    dialect_embedding = embedding.DialectEmbedding(
+        embedding_size=embedding_size
+    )
+    feature_pipeline = sklearn.pipeline.make_pipeline(
+        vectorizer,
+        dialect_embedding,
+    )
+
+    features = [feature_pipeline.fit_transform(wide)]
+    indices = []
+    indices.extend(annotations.index)
+    for round_data, round_indices in resample_data(
+        dataset,
+        annotations,
+        resample,
+        samples,
+        min_rate,
+        max_rate,
+        characters=data["cid"].unique(),
+    ):
+        round_wide = build_wide(round_data).reindex(
+            columns=vectorizer.feature_names_in_, fill_value=""
+        )
+        features.append(feature_pipeline.transform(round_wide))
+        indices.extend(round_indices)
+
+    features = numpy.concatenate(features, axis=0)
+    annotations = annotations.loc[indices]
+
+    splitter = sklearn.model_selection.StratifiedGroupKFold()
+    classifier = sklearn.pipeline.make_pipeline(
+        vectorizer,
+        dialect_embedding,
+        # fit a linear classifier, selecting the best hyperparameters
+        # with cross-validation
+        sklearn.linear_model.LogisticRegressionCV(
+            Cs=numpy.power(2.0, numpy.arange(-4, 5, 0.5)),
+            fit_intercept=False,
+            cv=list(splitter.split(
+                features,
+                annotations["stratefy"],
+                annotations["group"],
+            )),
+            penalty="l1",
+            solver="saga",
+        ),
+    )
+    # the vectorizer and the embedding are already fitted on the
+    # pre-resampling dialects, only the linear classifier is fitted
+    # on the features of the expanded data
+    classifier.steps[-1][1].fit(features, annotations["label"])
+
+    logger.debug(
+        f"best C = {classifier.steps[-1][1].C_[0]:.4f}"
+    )
+    return classifier
+
+
+def load_annotations(path: str) -> pandas.DataFrame:
+    """Load the annotated samples and fill the splitting columns.
+
+    Parameters
+    ----------
+    path : str
+        Annotated sample file (CSV).
+
+    Returns
+    -------
+    pandas.DataFrame
+        The annotated samples, one dialect per row, with the
+        ``stratefy`` and ``group`` columns filled with defaults when
+        missing.
+    """
+
+    annotations = pandas.read_csv(
+        path,
+        dtype=str,
+        comment="#",
+        encoding="utf-8",
+    )
+    if "stratefy" not in annotations.columns:
+        annotations["stratefy"] = annotations["label"]
+    if "group" not in annotations.columns:
+        annotations["group"] = (
+            annotations["dataset"] + "_" + annotations["did"]
+        )
+    return annotations
+
+
 def train(args: argparse.Namespace) -> None:
-    """Train a dialect classifier and save it to a file."""
+    """Train a dialect classifier and save it to a file.
+
+    The features are the rule compliances of the dialects when
+    ``args.rule_file`` is given, and the dialect vectors of
+    :func:`train_embedding` otherwise.
+    """
 
     logger.debug(
         f"train dialect classifier, rule file = {args.rule_file}, "
@@ -143,39 +492,60 @@ def train(args: argparse.Namespace) -> None:
         f"output file = {args.output_file}, resample = {args.resample}"
     )
 
-    rules = compare.load_rules(args.rule_file)
-    annotations = pandas.read_csv(
-        args.annotation_file,
-        dtype=str,
-        comment="#",
-        encoding="utf-8",
-    )
-    if "stratefy" not in annotations.columns:
-        annotations["stratefy"] = annotations["label"]
-    if "group" not in annotations.columns:
-        annotations["group"] = (
-            annotations["dataset"] + "_" + annotations["did"]
+    rules = compare.load_rules(args.rule_file) if args.rule_file else None
+    annotations = load_annotations(args.annotation_file)
+
+    if rules is None:
+        classifier = train_embedding(
+            annotations,
+            resample=args.resample,
+            min_coverage=args.min_coverage,
+            embedding_size=args.embedding_size,
+        )
+    else:
+        classifier = train_rule(
+            annotations,
+            resample=args.resample,
+            rules=rules,
         )
 
-    classifier = train_classifier(rules, annotations, args.resample)
-
-    # Use the standard deviation of model weights as feature importance.
-    weights = classifier.steps[-1][1].coef_
-    if weights.shape[0] < 2:
-        weights = numpy.concatenate(
-            [numpy.zeros_like(weights), weights], axis=0
+    if rules is None:
+        # report the variance explained by the dialect vector embedding
+        ratios = classifier.steps[1][1].explained_variance_ratio_
+        logger.info(
+            f"dialect vector embedding explains {numpy.sum(ratios):.4f} "
+            f"of the variance over {len(ratios)} components"
         )
-    importances = numpy.std(weights, axis=0)
-    order = numpy.argsort(importances)[::-1]
-    logger.info("feature importances:")
-    for i in order:
-        logger.info(f'{rules.iloc[i]["name"]}: {importances[i]:.4f}')
+    else:
+        # Use the standard deviation of model weights as feature importance.
+        weights = classifier.steps[-1][1].coef_
+        if weights.shape[0] < 2:
+            weights = numpy.concatenate(
+                [numpy.zeros_like(weights), weights], axis=0
+            )
+        importances = numpy.std(weights, axis=0)
+        order = numpy.argsort(importances)[::-1]
+        logger.info("feature importances:")
+        for i in order:
+            logger.info(f'{rules.iloc[i]["name"]}: {importances[i]:.4f}')
 
     joblib.dump(classifier, args.output_file)
 
 
 def evaluate(args: argparse.Namespace) -> None:
-    """Cross-validate the accuracy of the dialect classifier."""
+    """Cross-validate the accuracy of the dialect classifier.
+
+    The annotated samples are split into stratified groups, every fold
+    trains a classifier on the training samples with
+    :func:`train_rule` or :func:`train_embedding` and predicts the
+    classes of the test samples. The per-fold metrics and their mean
+    and standard deviation are printed to the standard output as a
+    table: the precision, the recall and the F1 macro-averaged over
+    the two classes for a binary classification, and the accuracy for
+    a multiclass classification. The features are the rule
+    compliances of the dialects when ``args.rule_file`` is given, and
+    the dialect vectors of :func:`train_embedding` otherwise.
+    """
 
     logger.debug(
         f"cross evaluate dialect classifier, rule file = {args.rule_file}, "
@@ -183,64 +553,192 @@ def evaluate(args: argparse.Namespace) -> None:
         f"resample = {args.resample}"
     )
 
-    rules = compare.load_rules(args.rule_file)
-    annotations = pandas.read_csv(
-        args.annotation_file,
-        dtype=str,
-        comment="#",
-        encoding="utf-8",
-    )
-    if "stratefy" not in annotations.columns:
-        annotations["stratefy"] = annotations["label"]
-    if "group" not in annotations.columns:
-        annotations["group"] = (
-            annotations["dataset"] + "_" + annotations["did"]
+    rules = compare.load_rules(args.rule_file) if args.rule_file else None
+    annotations = load_annotations(args.annotation_file)
+
+    splitter = sklearn.model_selection.StratifiedGroupKFold()
+    binary = annotations["label"].nunique() == 2
+    accuracies = []
+    precisions = []
+    recalls = []
+    f1s = []
+    for train_idx, test_idx in splitter.split(
+        annotations,
+        annotations["stratefy"],
+        annotations["group"],
+    ):
+        train_samples = annotations.iloc[train_idx]
+        test_samples = annotations.iloc[test_idx]
+        if rules is None:
+            classifier = train_embedding(
+                train_samples,
+                resample=args.resample,
+                min_coverage=args.min_coverage,
+                embedding_size=args.embedding_size,
+            )
+            probabilities = predict_embedding(classifier, test_samples)
+        else:
+            classifier = train_rule(
+                train_samples,
+                resample=args.resample,
+                rules=rules,
+            )
+            _, probabilities = predict_rule(
+                classifier,
+                test_samples,
+                rules,
+            )
+        predicted = probabilities.columns.to_numpy()[
+            probabilities.to_numpy().argmax(axis=1)
+        ]
+        expected = test_samples["label"]
+        accuracies.append(sklearn.metrics.accuracy_score(expected, predicted))
+        if binary:
+            # macro-averaged over the two classes, which are equally
+            # informative in the dialect classification
+            precisions.append(sklearn.metrics.precision_score(
+                expected, predicted, average="macro", zero_division=0
+            ))
+            recalls.append(sklearn.metrics.recall_score(
+                expected, predicted, average="macro", zero_division=0
+            ))
+            f1s.append(sklearn.metrics.f1_score(
+                expected, predicted, average="macro", zero_division=0
+            ))
+
+    if binary:
+        report = pandas.DataFrame(
+            {
+                "accuracy": accuracies,
+                "precision": precisions,
+                "recall": recalls,
+                "f1": f1s,
+            },
+            index=pandas.Index(range(1, len(accuracies) + 1), name="fold"),
         )
+    else:
+        report = pandas.DataFrame(
+            {"accuracy": accuracies},
+            index=pandas.Index(range(1, len(accuracies) + 1), name="fold"),
+        )
+    report.loc["mean"] = report.mean()
+    report.loc["std"] = report.iloc[:-1].std()
+    print(
+        f"cross validation with {annotations.shape[0]} samples, "
+        f"accuracy = {numpy.mean(accuracies):.4f}"
+    )
+    print(report.to_string(float_format=lambda value: f"{value:.4f}"))
+
+
+def predict_rule(
+    classifier: sklearn.pipeline.Pipeline,
+    annotations: pandas.DataFrame,
+    rules: pandas.DataFrame,
+) -> tuple[pandas.DataFrame, pandas.DataFrame]:
+    """Predict dialect classes with a rule mode classifier.
+
+    Rule compliance features are computed from the dialect data of the
+    annotated samples.
+
+    Parameters
+    ----------
+    classifier : sklearn.pipeline.Pipeline
+        The trained rule mode classifier.
+    annotations : pandas.DataFrame
+        Samples to classify, with ``dataset`` and ``did`` columns.
+    rules : pandas.DataFrame
+        Pronunciation rules used to compute the rule compliance.
+
+    Returns
+    -------
+    samples : pandas.DataFrame
+        The sample table without the feature columns.
+    probabilities : pandas.DataFrame
+        The class probability of each sample.
+    """
 
     feature_names = rules["feature"].unique().tolist()
     compliances = []
-    indices = []
-    for name, annotation in annotations.groupby("dataset", sort=False):
-        data = datasets.get(name).select(annotation["did"]).data
+    for name, items in annotations.groupby("dataset", sort=False):
+        data = datasets.get(name).select(items["did"]).data
         if "cid" not in data.columns:
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        data = preprocess.transform(
+        transformed = preprocess.transform(
             data,
             index="cid",
             columns="did",
             values=feature_names,
             aggfunc=lambda values: " ".join(values.dropna()),
         )
-        compliances.append(compare.compliance(data, rules))
-        indices.extend(annotation.index)
-
-    compliances = pandas.concat(compliances, axis=0)
-    annotations = annotations.loc[indices]
-
-    splitter = sklearn.model_selection.StratifiedGroupKFold()
-    accuracies = []
-    for train_idx, test_idx in splitter.split(
-        compliances, annotations["stratefy"], annotations["group"]
-    ):
-        classifier = train_classifier(
-            rules, annotations.iloc[train_idx], args.resample
+        compliances.append(
+            compare.compliance(transformed, rules).set_index(items.index)
         )
-        accuracies.append(sklearn.metrics.accuracy_score(
-            annotations.iloc[test_idx]["label"],
-            classifier.predict(compliances.iloc[test_idx]),
-        ))
+    features = pandas.concat(compliances, axis=0).loc[annotations.index]
+    probabilities = pandas.DataFrame(
+        classifier.predict_proba(features),
+        columns=classifier.steps[-1][1].classes_,
+        index=annotations.index,
+    )
+    return annotations, probabilities
 
-    print(
-        f"cross validation with {annotations.shape[0]} samples, "
-        f"accuracy = {numpy.mean(accuracies):.4f}"
-        f"±{numpy.std(accuracies, ddof=1):.4f}"
+
+def predict_embedding(
+    classifier: sklearn.pipeline.Pipeline,
+    annotations: pandas.DataFrame,
+) -> pandas.DataFrame:
+    """Predict the class probabilities of the samples with an
+    embedding mode classifier.
+
+    The dialect vectors of the samples are computed from the raw data
+    with the vectorizer stored in the classifier.
+
+    Parameters
+    ----------
+    classifier : sklearn.pipeline.Pipeline
+        The trained embedding mode classifier.
+    annotations : pandas.DataFrame
+        Samples to classify, with ``dataset`` and ``did`` columns.
+
+    Returns
+    -------
+    probabilities : pandas.DataFrame
+        The class probability of each sample, indexed like the
+        annotations.
+    """
+
+    dataset_names = annotations["dataset"].unique()
+    if len(dataset_names) > 1:
+        raise ValueError(
+            "the dialect vector features are only comparable within "
+            "one dataset, but the samples cover "
+            f"{', '.join(map(str, dataset_names))}"
+        )
+    data = datasets.get(dataset_names[0]).select(
+        annotations["did"]
+    ).data
+    if "cid" not in data.columns:
+        data = data.rename(columns={"character": "cid"})
+        data.dropna(subset="cid", inplace=True)
+    features = build_wide(data).reindex(
+        columns=classifier.steps[0][1].feature_names_in_,
+        fill_value="",
+    )
+    return pandas.DataFrame(
+        classifier.predict_proba(features),
+        columns=classifier.steps[-1][1].classes_,
+        index=annotations.index,
     )
 
 
 def predict(args: argparse.Namespace) -> None:
-    """Predict dialect classes with a trained classifier."""
+    """Predict dialect classes with a trained classifier.
+
+    Dispatches to :func:`predict_embedding` when the model was
+    trained on the dialect vector features and to
+    :func:`predict_rule` otherwise.
+    """
 
     logger.debug(
         f"predict dialect class, model file = {args.model_file}, "
@@ -249,137 +747,176 @@ def predict(args: argparse.Namespace) -> None:
     )
 
     classifier = joblib.load(args.model_file)
-    if args.precomputed:
-        # Load the precomputed rule compliance of dialects.
-        compliances = pandas.read_csv(
-            args.input, dtype={"dataset": str, "did": str}
-        )
-        samples = compliances.pop("did").to_frame()
-        if "dataset" in compliances.columns:
-            samples.insert(0, "dataset", compliances.pop("dataset"))
-
-    else:
-        # Compute the rule compliance of dialects from the raw data.
-        rules = compare.load_rules(args.rule_file)
-        samples = pandas.read_csv(
-            args.input,
-            dtype=str,
-            comment="#",
-            encoding="utf-8",
-        )
-
-        feature_names = rules["feature"].unique().tolist()
-        compliances = []
-        for name, items in samples.groupby("dataset", sort=False):
-            data = datasets.get(name).select(items["did"]).data
-            if "cid" not in data.columns:
-                data = data.rename(columns={"character": "cid"})
-                data.dropna(subset="cid", inplace=True)
-
-            data = preprocess.transform(
-                data,
-                index="cid",
-                columns="did",
-                values=feature_names,
-                aggfunc=lambda values: " ".join(values.dropna()),
-            )
-            compliances.append(
-                compare.compliance(data, rules).set_index(items.index)
-            )
-
-        compliances = pandas.concat(compliances, axis=0)
-        compliances = compliances.loc[samples.index]
-
-    probabilities = pandas.DataFrame(
-        classifier.predict_proba(compliances),
-        columns=classifier.steps[-1][1].classes_,
+    samples = pandas.read_csv(
+        args.input,
+        dtype=str,
+        comment="#",
+        encoding="utf-8",
     )
+    if isinstance(classifier.steps[0][1], embedding.DialectVectorizer):
+        probabilities = predict_embedding(classifier, samples)
+    else:
+        if args.precomputed:
+            features = samples
+            annotations = features.pop("did").to_frame()
+            if "dataset" in features.columns:
+                annotations.insert(0, "dataset", features.pop("dataset"))
+            probabilities = pandas.DataFrame(
+                classifier.predict_proba(features),
+                columns=classifier.steps[-1][1].classes_,
+                index=annotations.index,
+            )
+            samples = annotations
+        else:
+            if not args.rule_file:
+                raise SystemExit(
+                    "a rule file is required to compute the rule "
+                    "compliance features of the raw data"
+                )
+            rules = compare.load_rules(args.rule_file)
+            samples, probabilities = predict_rule(
+                classifier, samples, rules
+            )
+
     pandas.concat([samples, probabilities], axis=1).to_csv(
         args.output, index=False
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the dialect classifier command-line parser."""
+    """Build the dialect classifier command-line parser.
+
+    The top-level description reuses the module docstring, and every
+    subcommand reuses the docstring of its handler function as the
+    detailed description.
+    """
 
     parser = argparse.ArgumentParser(
-        description="根据指定的规则训练模型对方言分类"
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "-l", "--log-level", default="WARNING", help="日志级别"
+        "-l", "--log-level", default="WARNING",
+        help="Logging verbosity.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    train_parser = subparsers.add_parser("train", help="训练方言分类器")
+    train_parser = subparsers.add_parser(
+        "train",
+        help="Train the dialect classifier and save it to a file.",
+        description=train.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    train_parser.add_argument(
+        "-r", "--rule-file",
+        default=None,
+        help="Pronunciation rule file (JSON); the dialect vector "
+             "features are used when omitted.",
+    )
+    train_parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.5,
+        help="Minimum dialect coverage of the characters used by the "
+             "dialect vector features.",
+    )
+    train_parser.add_argument(
+        "--embedding-size",
+        type=int,
+        default=128,
+        help="Dimension of the embedded dialect vectors.",
+    )
     train_parser.add_argument(
         "--resample",
         type=int,
         default=5,
-        help="对每个方言样本重采样的次数，为 0 不重采样",
+        help="Number of resampled copies per dialect sample; 0 "
+             "disables resampling.",
     )
     train_parser.add_argument(
-        "rule_file", help="语音规则文件 (JSON)"
-    )
-    train_parser.add_argument(
-        "annotation_file", help="标注样本文件 (CSV)"
+        "annotation_file", help="Annotated sample file (CSV)."
     )
     train_parser.add_argument(
         "output_file",
         nargs="?",
         default="dialect_classifier.bz2",
-        help="模型输出文件",
+        help="Model output file.",
     )
     train_parser.set_defaults(func=train)
 
     evaluate_parser = subparsers.add_parser(
-        "evaluate", help="交叉验证方言分类器准确率"
+        "evaluate",
+        help="Cross-validate the accuracy of the dialect classifier.",
+        description=evaluate.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    evaluate_parser.add_argument(
+        "-r", "--rule-file",
+        default=None,
+        help="Pronunciation rule file (JSON); the dialect vector "
+             "features are used when omitted.",
+    )
+    evaluate_parser.add_argument(
+        "--min-coverage",
+        type=float,
+        default=0.5,
+        help="Minimum dialect coverage of the characters used by the "
+             "dialect vector features.",
+    )
+    evaluate_parser.add_argument(
+        "--embedding-size",
+        type=int,
+        default=128,
+        help="Dimension of the embedded dialect vectors.",
     )
     evaluate_parser.add_argument(
         "--resample",
         type=int,
         default=5,
-        help="对每个方言样本重采样的次数，为 0 不重采样",
+        help="Number of resampled copies per dialect sample; 0 "
+             "disables resampling.",
     )
     evaluate_parser.add_argument(
-        "rule_file", help="语音规则文件 (JSON)"
-    )
-    evaluate_parser.add_argument(
-        "annotation_file", help="标注样本文件 (CSV)"
+        "annotation_file", help="Annotated sample file (CSV)."
     )
     evaluate_parser.set_defaults(func=evaluate)
 
     predict_parser = subparsers.add_parser(
-        "predict", help="使用已训练的分类器预测方言分类"
+        "predict",
+        help="Predict dialect classes with a trained classifier.",
+        description=predict.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     predict_parser.add_argument(
         "-p",
         "--precomputed",
         action="store_true",
         default=False,
-        help="输入为预计算的规则符合度文件",
+        help="The input holds precomputed rule compliances instead "
+             "of raw dialect samples; only valid in the rule mode.",
     )
     predict_parser.add_argument(
         "-m",
         "--model-file",
         default="dialect_classifier.bz2",
-        help="模型文件",
+        help="Model file.",
     )
     predict_parser.add_argument(
-        "-r", "--rule-file", help="语音规则文件 (JSON)"
+        "-r", "--rule-file", help="Pronunciation rule file (JSON)."
     )
     predict_parser.add_argument(
         "input",
         nargs="?",
         default="-",
         type=argparse.FileType("r", encoding="utf-8"),
-        help="待分类方言样本文件 (CSV)",
+        help="Dialect sample file to classify (CSV).",
     )
     predict_parser.add_argument(
         "output",
         nargs="?",
         default="-",
         type=argparse.FileType("w", encoding="utf-8"),
-        help="预测结果输出文件 (CSV)",
+        help="Prediction output file (CSV).",
     )
     predict_parser.set_defaults(func=predict)
 
