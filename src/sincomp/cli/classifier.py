@@ -41,16 +41,25 @@ columns.
 
 Usage::
 
-    classifier train --rule-file rules.json annotations.csv model.bz2
-    classifier evaluate annotations.csv
-    classifier predict --model-file model.bz2 samples.csv
+    classifier train --rule-file rules.json --annotation-file annotations.csv
+    classifier evaluate --annotation-file annotations.csv
+    classifier predict --model-file model.bz2 --input-file samples.csv
+
+All subcommands accept a JSON ``--config`` file providing the
+command-line defaults; command-line values take precedence over the
+config. Use one flat object with option names (without leading dashes)
+and positional argument names as keys. Each subcommand uses only the
+keys matching its arguments and ignores the others.
 """
 
 __author__ = "黄艺华 <lernanto@foxmail.com>"
 
 import argparse
+import json
 import logging
-from typing import Iterator, Sequence
+import os
+import sys
+from typing import Iterator, Sequence, TextIO
 
 import joblib
 import numpy
@@ -140,7 +149,7 @@ def resample_data(
     dataset: datasets.Dataset,
     annotation: pandas.DataFrame,
     resample: int,
-    samples: int = 500,
+    samples: int = 1000,
     min_rate: float = 0.5,
     max_rate: float = 0.8,
     characters: pandas.Index | numpy.ndarray | None = None,
@@ -161,7 +170,7 @@ def resample_data(
         The annotated samples of the dialects to resample.
     resample : int
         Number of resampled copies per dialect.
-    samples : int, default=500
+    samples : int, default=1000
         Number of characters sampled per dialect copy.
     min_rate : float, default=0.5
         Minimum sample size as a proportion of the character count of
@@ -206,7 +215,7 @@ def resample_data(
 def train_rule(
     annotations: pandas.DataFrame,
     resample: int = 0,
-    samples: int = 500,
+    samples: int = 1000,
     min_rate: float = 0.5,
     max_rate: float = 0.8,
     *,
@@ -230,7 +239,7 @@ def train_rule(
         - ``label``: dialect class.
     resample : int, default=0
         Number of resampled copies per dialect; 0 disables resampling.
-    samples : int, default=500
+    samples : int, default=1000
         Number of characters sampled per dialect during resampling.
     min_rate : float, default=0.5
         Minimum sample size as a proportion of the character count of a
@@ -311,16 +320,30 @@ def train_rule(
         ),
     ).fit(compliances, annotations["label"])
 
-    logger.debug(
-        f"best C = {classifier.steps[-1][1].C_[0]:.4f}"
-    )
+    _log_best_cv_score(classifier.steps[-1][1])
     return classifier
+
+
+def _log_best_cv_score(
+    classifier: sklearn.linear_model.LogisticRegressionCV,
+) -> None:
+    """Log the cross-validation accuracy for the selected regularization."""
+
+    best_c = numpy.asarray(classifier.C_).flat[0]
+    best_index = numpy.abs(classifier.Cs_ - best_c).argmin()
+    scores = next(iter(classifier.scores_.values()))
+    best_scores = numpy.asarray(scores)[:, best_index]
+    logger.info(
+        "cross-validation accuracy = %.4f±%.4f",
+        best_scores.mean(),
+        best_scores.std(),
+    )
 
 
 def train_embedding(
     annotations: pandas.DataFrame,
     resample: int = 0,
-    samples: int = 500,
+    samples: int = 1000,
     min_rate: float = 0.5,
     max_rate: float = 0.8,
     min_coverage: float = 0.5,
@@ -351,7 +374,7 @@ def train_embedding(
         as :func:`train_rule`.
     resample : int, default=0
         Number of resampled copies per dialect; 0 disables resampling.
-    samples : int, default=500
+    samples : int, default=1000
         Number of characters sampled per dialect during resampling.
     min_rate : float, default=0.5
         Minimum sample size as a proportion of the character count of a
@@ -441,9 +464,7 @@ def train_embedding(
     # on the features of the expanded data
     classifier.steps[-1][1].fit(features, annotations["label"])
 
-    logger.debug(
-        f"best C = {classifier.steps[-1][1].C_[0]:.4f}"
-    )
+    _log_best_cv_score(classifier.steps[-1][1])
     return classifier
 
 
@@ -486,10 +507,12 @@ def train(args: argparse.Namespace) -> None:
     :func:`train_embedding` otherwise.
     """
 
+    model_file = args.model_file
     logger.debug(
         f"train dialect classifier, rule file = {args.rule_file}, "
         f"annotation file = {args.annotation_file}, "
-        f"output file = {args.output_file}, resample = {args.resample}"
+        f"model file = {model_file}, "
+        f"resample = {args.resample}"
     )
 
     rules = compare.load_rules(args.rule_file) if args.rule_file else None
@@ -499,6 +522,7 @@ def train(args: argparse.Namespace) -> None:
         classifier = train_embedding(
             annotations,
             resample=args.resample,
+            samples=args.samples,
             min_coverage=args.min_coverage,
             embedding_size=args.embedding_size,
         )
@@ -506,6 +530,7 @@ def train(args: argparse.Namespace) -> None:
         classifier = train_rule(
             annotations,
             resample=args.resample,
+            samples=args.samples,
             rules=rules,
         )
 
@@ -529,7 +554,11 @@ def train(args: argparse.Namespace) -> None:
         for i in order:
             logger.info(f'{rules.iloc[i]["name"]}: {importances[i]:.4f}')
 
-    joblib.dump(classifier, args.output_file)
+    os.makedirs(
+        os.path.dirname(os.path.abspath(model_file)),
+        exist_ok=True,
+    )
+    joblib.dump(classifier, model_file)
 
 
 def evaluate(args: argparse.Namespace) -> None:
@@ -573,6 +602,7 @@ def evaluate(args: argparse.Namespace) -> None:
             classifier = train_embedding(
                 train_samples,
                 resample=args.resample,
+                samples=args.samples,
                 min_coverage=args.min_coverage,
                 embedding_size=args.embedding_size,
             )
@@ -581,6 +611,7 @@ def evaluate(args: argparse.Namespace) -> None:
             classifier = train_rule(
                 train_samples,
                 resample=args.resample,
+                samples=args.samples,
                 rules=rules,
             )
             _, probabilities = predict_rule(
@@ -742,13 +773,14 @@ def predict(args: argparse.Namespace) -> None:
 
     logger.debug(
         f"predict dialect class, model file = {args.model_file}, "
-        f"rule file = {args.rule_file}, input file = {args.input.name}, "
-        f"output file = {args.output.name}"
+        f"rule file = {args.rule_file}, "
+        f"input file = {args.input_file.name}, "
+        f"prediction file = {args.prediction_file.name}"
     )
 
     classifier = joblib.load(args.model_file)
     samples = pandas.read_csv(
-        args.input,
+        args.input_file,
         dtype=str,
         comment="#",
         encoding="utf-8",
@@ -779,16 +811,49 @@ def predict(args: argparse.Namespace) -> None:
             )
 
     pandas.concat([samples, probabilities], axis=1).to_csv(
-        args.output, index=False
+        args.prediction_file, index=False
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+def _open_prediction_output(path: str) -> TextIO:
+    """Open the prediction output path, creating its parent directory."""
+
+    if path == "-":
+        return sys.stdout
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    return open(path, "w", encoding="utf-8")
+
+
+def load_config(path: str) -> dict:
+    """Load flat command-line defaults from a JSON configuration file."""
+
+    with open(path, encoding="utf-8") as config_file:
+        config = json.load(config_file)
+    if not isinstance(config, dict):
+        raise ValueError("Configuration must contain a JSON object.")
+    return config
+
+
+CONFIG_HELP = (
+    "JSON configuration file providing the command-line defaults; "
+    "command-line values take precedence over the config. Use a flat "
+    "JSON object with option names (without leading dashes) and "
+    "positional argument names as keys; unused keys are ignored."
+)
+
+
+def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     """Build the dialect classifier command-line parser.
 
     The top-level description reuses the module docstring, and every
     subcommand reuses the docstring of its handler function as the
     detailed description.
+
+    Parameters
+    ----------
+    config : dict, default=None
+        Flat configuration values applied as argument defaults.
+        Each subcommand uses only values matching its arguments.
     """
 
     parser = argparse.ArgumentParser(
@@ -801,12 +866,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    config_defaults = {
+        key.replace("-", "_"): value
+        for key, value in (config or {}).items()
+    }
+    if "log_level" in config_defaults:
+        parser.set_defaults(log_level=config_defaults["log_level"])
+
+    def apply_config_defaults(command_parser: argparse.ArgumentParser) -> None:
+        actions = {
+            action.dest: action for action in command_parser._actions
+        }
+        defaults = {}
+        for dest, value in config_defaults.items():
+            action = actions.get(dest)
+            if action is None or dest in {"help", "config"}:
+                continue
+            if not action.option_strings and action.nargs is None:
+                action.nargs = "?"
+            defaults[dest] = value
+        command_parser.set_defaults(**defaults)
+
     train_parser = subparsers.add_parser(
         "train",
         help="Train the dialect classifier and save it to a file.",
         description=train.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    train_parser.add_argument("--config", help=CONFIG_HELP)
     train_parser.add_argument(
         "-r", "--rule-file",
         default=None,
@@ -834,15 +921,23 @@ def build_parser() -> argparse.ArgumentParser:
              "disables resampling.",
     )
     train_parser.add_argument(
-        "annotation_file", help="Annotated sample file (CSV)."
+        "--samples",
+        type=int,
+        default=1000,
+        help="Number of characters sampled per dialect copy during "
+             "resampling.",
     )
     train_parser.add_argument(
-        "output_file",
-        nargs="?",
+        "--annotation-file", help="Annotated sample file (CSV)."
+    )
+    train_parser.add_argument(
+        "-m",
+        "--model-file",
         default="dialect_classifier.bz2",
         help="Model output file.",
     )
     train_parser.set_defaults(func=train)
+    apply_config_defaults(train_parser)
 
     evaluate_parser = subparsers.add_parser(
         "evaluate",
@@ -850,6 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=evaluate.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    evaluate_parser.add_argument("--config", help=CONFIG_HELP)
     evaluate_parser.add_argument(
         "-r", "--rule-file",
         default=None,
@@ -877,9 +973,17 @@ def build_parser() -> argparse.ArgumentParser:
              "disables resampling.",
     )
     evaluate_parser.add_argument(
-        "annotation_file", help="Annotated sample file (CSV)."
+        "--samples",
+        type=int,
+        default=1000,
+        help="Number of characters sampled per dialect copy during "
+             "resampling.",
+    )
+    evaluate_parser.add_argument(
+        "--annotation-file", help="Annotated sample file (CSV)."
     )
     evaluate_parser.set_defaults(func=evaluate)
+    apply_config_defaults(evaluate_parser)
 
     predict_parser = subparsers.add_parser(
         "predict",
@@ -887,6 +991,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=predict.__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    predict_parser.add_argument("--config", help=CONFIG_HELP)
     predict_parser.add_argument(
         "-p",
         "--precomputed",
@@ -905,28 +1010,50 @@ def build_parser() -> argparse.ArgumentParser:
         "-r", "--rule-file", help="Pronunciation rule file (JSON)."
     )
     predict_parser.add_argument(
-        "input",
-        nargs="?",
+        "--input-file",
         default="-",
         type=argparse.FileType("r", encoding="utf-8"),
         help="Dialect sample file to classify (CSV).",
     )
     predict_parser.add_argument(
-        "output",
-        nargs="?",
+        "--prediction-file",
         default="-",
-        type=argparse.FileType("w", encoding="utf-8"),
-        help="Prediction output file (CSV).",
+        type=_open_prediction_output,
+        help="Prediction file (CSV).",
     )
     predict_parser.set_defaults(func=predict)
+    apply_config_defaults(predict_parser)
 
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the dialect classifier command-line interface."""
+    """Run the dialect classifier command-line interface.
 
-    args = build_parser().parse_args(argv)
+    A flat JSON configuration file may be given with ``--config``
+    anywhere in the command line. Each subcommand uses only its
+    matching config values; command-line values take precedence.
+    """
+
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # the configuration file may appear anywhere in the command line
+    # and provides the defaults of the subcommand parsers
+    preliminary_parser = argparse.ArgumentParser(add_help=False)
+    preliminary_parser.add_argument("--config")
+    preliminary_args, _ = preliminary_parser.parse_known_args(argv)
+    config = (
+        load_config(preliminary_args.config)
+        if preliminary_args.config is not None
+        else None
+    )
+
+    args = build_parser(config).parse_args(argv)
+    if args.command in {"train", "evaluate"} and args.annotation_file is None:
+        raise SystemExit(
+            f"the {args.command} command requires --annotation-file"
+        )
     logger.setLevel(getattr(logging, args.log_level.upper()))
     args.func(args)
     return 0

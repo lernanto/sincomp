@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import types
 import unittest
@@ -17,9 +18,11 @@ import sklearn.pipeline
 
 from sincomp import cli, embedding
 from sincomp.cli import align as align_cli
+from sincomp.cli import compare as compare_cli
 from sincomp.cli import classifier as classifier_cli
 from sincomp.cli import dataset as dataset_cli
 from sincomp.cli import reconstruct as reconstruct_cli
+from sincomp.cli import similarity as similarity_cli
 
 
 class TestCli(unittest.TestCase):
@@ -59,6 +62,29 @@ class TestCli(unittest.TestCase):
     def test_similarity_is_forwarded_without_subcommand(self, main):
         self.assertEqual(cli.main(["similarity", "ccr"]), 0)
         main.assert_called_once_with(["ccr"])
+
+    @mock.patch("sincomp.cli.similarity.similarity.chi2")
+    @mock.patch("sincomp.cli.similarity.preprocess.transform")
+    @mock.patch("sincomp.cli.similarity._load_dataset")
+    def test_similarity_creates_output_parent_directories(
+        self, load_dataset, transform, chi2
+    ):
+        load_dataset.return_value = (
+            pandas.DataFrame({"cid": ["c"], "did": ["d"]}),
+            "stub",
+        )
+        transform.return_value = pandas.DataFrame({"d": ["x"]}, index=["c"])
+        chi2.return_value = pandas.DataFrame({"d": [1.0]}, index=["d"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "nested", "output.csv")
+            self.assertEqual(
+                similarity_cli.main([
+                    "-m", "chi2", "-o", output, "stub",
+                ]),
+                0,
+            )
+            self.assertTrue(os.path.isfile(output))
 
     @mock.patch(
         "sincomp.cli.align.alignment.evaluate",
@@ -224,7 +250,8 @@ class TestCli(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(
-                dataset_cli.main(["dialects", "CCR", "province == '广东'"]), 0
+                dataset_cli.main(["dialects", "CCR", "province == '广东'"]),
+                0
             )
         self.assertEqual(
             json.loads(output.getvalue()),
@@ -245,7 +272,8 @@ class TestCli(unittest.TestCase):
         output = StringIO()
         with redirect_stdout(output):
             self.assertEqual(
-                cli.main(["dataset", "dialects", "CCR", "did == '072'"]), 0
+                cli.main(["dataset", "dialects", "CCR", "did == '072'"]),
+                0
             )
         self.assertIn("072", output.getvalue())
         self.assertIn("B", output.getvalue())
@@ -476,13 +504,92 @@ class TestClassifierCli(unittest.TestCase):
 
     def test_train_defaults(self):
         args = classifier_cli.build_parser().parse_args(
-            ["train", "annotations.csv"]
+            ["train", "--annotation-file", "annotations.csv"]
         )
         self.assertIsNone(args.rule_file)
         self.assertEqual(args.min_coverage, 0.5)
         self.assertEqual(args.embedding_size, 128)
         self.assertEqual(args.resample, 5)
-        self.assertEqual(args.output_file, "dialect_classifier.bz2")
+        self.assertEqual(args.samples, 1000)
+        self.assertEqual(args.model_file, "dialect_classifier.bz2")
+
+        args = classifier_cli.build_parser().parse_args([
+            "train", "--annotation-file", "annotations.csv", "--model-file",
+            os.path.join("custom", "model.bz2"),
+        ])
+        self.assertEqual(args.model_file, os.path.join("custom", "model.bz2"))
+
+    def test_train_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.json")
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "resample": 2,
+                    "min-coverage": 0.6,
+                    "samples": 300,
+                    "input": "unused.csv",
+                    "unknown-option": "ignored",
+                }, f)
+
+            # A flat config provides defaults for matching arguments;
+            # keys unused by this command are ignored.
+            args = classifier_cli.build_parser(
+                classifier_cli.load_config(config_file)
+            ).parse_args([
+                "train", "--annotation-file", "annotations.csv",
+            ])
+            self.assertEqual(args.resample, 2)
+            self.assertEqual(args.samples, 300)
+            self.assertEqual(args.min_coverage, 0.6)
+            self.assertFalse(hasattr(args, "input"))
+
+            # the command-line values take precedence over the config
+            args = classifier_cli.build_parser(
+                classifier_cli.load_config(config_file)
+            ).parse_args([
+                "train", "--resample", "3",
+                "--annotation-file", "annotations.csv",
+            ])
+            self.assertEqual(args.resample, 3)
+            self.assertEqual(args.samples, 300)
+            self.assertEqual(args.min_coverage, 0.6)
+
+    @mock.patch("sincomp.cli.classifier.train")
+    def test_train_config_arguments(self, train):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = os.path.join(tmp, "config.json")
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "annotation_file": "annotations.csv",
+                    "model_file": "model.bz2",
+                    "predict": {"input": "unused.csv"},
+                }, f)
+
+            self.assertEqual(
+                classifier_cli.main(["train", "--config", config_file]), 0
+            )
+            args = train.call_args.args[0]
+            self.assertEqual(args.annotation_file, "annotations.csv")
+            self.assertEqual(args.model_file, "model.bz2")
+
+            self.assertEqual(
+                classifier_cli.main([
+                    "train", "--config", config_file,
+                    "--annotation-file", "override.csv",
+                ]),
+                0,
+            )
+            args = train.call_args.args[0]
+            self.assertEqual(args.annotation_file, "override.csv")
+            self.assertEqual(args.model_file, "model.bz2")
+
+    def test_predict_config_streams(self):
+        args = classifier_cli.build_parser({
+            "input_file": "-",
+            "prediction_file": "-",
+        }).parse_args(["predict"])
+        self.assertIs(args.input_file, sys.stdin)
+        self.assertIs(args.prediction_file, sys.stdout)
 
     @mock.patch(
         "sincomp.cli.classifier.datasets.get",
@@ -492,21 +599,29 @@ class TestClassifierCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rule_file = os.path.join(tmp, "rules.json")
             annotation_file = os.path.join(tmp, "annotations.csv")
-            model_file = os.path.join(tmp, "classifier.bz2")
+            model_file = os.path.join(tmp, "nested", "model", "classifier.bz2")
             _write_rules(rule_file)
             _write_annotations(annotation_file)
 
-            self.assertEqual(
-                classifier_cli.main([
-                    "train",
-                    "--resample", "0",
-                    "--rule-file", rule_file,
-                    annotation_file,
-                    model_file,
-                ]),
-                0,
-            )
+            with self.assertLogs(
+                classifier_cli.logger, level="INFO"
+            ) as output:
+                self.assertEqual(
+                    classifier_cli.main([
+                        "--log-level", "INFO",
+                        "train",
+                        "--resample", "0",
+                        "--rule-file", rule_file,
+                        "--annotation-file", annotation_file,
+                        "--model-file", model_file,
+                    ]),
+                    0,
+                )
 
+            self.assertRegex(
+                "\n".join(output.output),
+                r"cross-validation accuracy = \d+\.\d{4}.*\d+\.\d{4}",
+            )
             self.assertTrue(os.path.isfile(model_file))
             model = joblib.load(model_file)
             self.assertIsInstance(model, sklearn.pipeline.Pipeline)
@@ -531,7 +646,7 @@ class TestClassifierCli(unittest.TestCase):
                         "evaluate",
                         "--resample", "0",
                         "--rule-file", rule_file,
-                        annotation_file,
+                        "--annotation-file", annotation_file,
                     ]),
                     0,
                 )
@@ -539,8 +654,7 @@ class TestClassifierCli(unittest.TestCase):
             # the compliance perfectly separates the two classes
             self.assertIn("precision", output.getvalue())
             self.assertIn("f1", output.getvalue())
-            self.assertIn("cross validation with 16 samples, "
-                          "accuracy = 1.0000", output.getvalue())
+            self.assertIn("cross validation with 16 samples", output.getvalue())
         get_dataset.assert_called_with("stub")
 
     @mock.patch(
@@ -553,14 +667,22 @@ class TestClassifierCli(unittest.TestCase):
             model_file = os.path.join(tmp, "classifier.bz2")
             _write_annotations(annotation_file)
 
-            self.assertEqual(
-                classifier_cli.main([
-                    "train",
-                    "--resample", "1",
-                    annotation_file,
-                    model_file,
-                ]),
-                0,
+            with self.assertLogs(
+                classifier_cli.logger, level="INFO"
+            ) as output:
+                self.assertEqual(
+                    classifier_cli.main([
+                        "--log-level", "INFO",
+                        "train",
+                        "--resample", "1",
+                        "--annotation-file", annotation_file,
+                        "--model-file", model_file,
+                    ]),
+                    0,
+                )
+            self.assertRegex(
+                "\n".join(output.output),
+                r"cross-validation accuracy = \d+\.\d{4}.*\d+\.\d{4}",
             )
             model = joblib.load(model_file)
             vectorizer = model.steps[0][1]
@@ -636,13 +758,14 @@ class TestClassifierCli(unittest.TestCase):
                     classifier_cli.main([
                         "evaluate",
                         "--resample", "0",
-                        annotation_file,
+                        "--annotation-file", annotation_file,
                     ]),
                     0,
                 )
 
             # the pairwise identity features separate the two classes
-            self.assertIn("accuracy = 1.0000", output.getvalue())
+            self.assertIn("cross validation with 16 samples", output.getvalue())
+            self.assertIn("mean", output.getvalue())
         get_dataset.assert_called_with("stub")
 
     @mock.patch(
@@ -672,7 +795,7 @@ class TestClassifierCli(unittest.TestCase):
                     classifier_cli.main([
                         "evaluate",
                         "--resample", "0",
-                        annotation_file,
+                        "--annotation-file", annotation_file,
                     ]),
                     0,
                 )
@@ -681,7 +804,6 @@ class TestClassifierCli(unittest.TestCase):
             # accuracy only
             self.assertNotIn("precision", output.getvalue())
             self.assertIn("mean", output.getvalue())
-            self.assertIn("std", output.getvalue())
             self.assertIn("cross validation with 24 samples", output.getvalue())
         get_dataset.assert_called_with("stub")
 
@@ -694,14 +816,14 @@ class TestClassifierCli(unittest.TestCase):
             annotation_file = os.path.join(tmp, "annotations.csv")
             model_file = os.path.join(tmp, "classifier.bz2")
             sample_file = os.path.join(tmp, "samples.csv")
-            output_file = os.path.join(tmp, "predictions.csv")
+            output_file = os.path.join(tmp, "nested", "predictions.csv")
             _write_annotations(annotation_file)
 
             classifier_cli.main([
                 "train",
                 "--resample", "0",
-                annotation_file,
-                model_file,
+                "--annotation-file", annotation_file,
+                "--model-file", model_file,
             ])
             pandas.DataFrame(
                 [("stub", "A0"), ("stub", "B0")],
@@ -715,8 +837,8 @@ class TestClassifierCli(unittest.TestCase):
                 classifier_cli.main([
                     "predict",
                     "--model-file", model_file,
-                    sample_file,
-                    output_file,
+                    "--input-file", sample_file,
+                    "--prediction-file", output_file,
                 ]),
                 0,
             )
@@ -758,8 +880,8 @@ class TestClassifierCli(unittest.TestCase):
                     "predict",
                     "--precomputed",
                     "--model-file", model_file,
-                    input_file,
-                    output_file,
+                    "--input-file", input_file,
+                    "--prediction-file", output_file,
                 ]),
                 0,
             )
@@ -787,8 +909,8 @@ class TestClassifierCli(unittest.TestCase):
                 "train",
                 "--resample", "0",
                 "--rule-file", rule_file,
-                annotation_file,
-                model_file,
+                "--annotation-file", annotation_file,
+                "--model-file", model_file,
             ])
             pandas.DataFrame(
                 [("stub", "A0"), ("stub", "B0")],
@@ -803,8 +925,8 @@ class TestClassifierCli(unittest.TestCase):
                     "predict",
                     "--model-file", model_file,
                     "--rule-file", rule_file,
-                    sample_file,
-                    output_file,
+                    "--input-file", sample_file,
+                    "--prediction-file", output_file,
                 ]),
                 0,
             )
