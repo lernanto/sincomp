@@ -25,6 +25,43 @@ from sincomp.cli import reconstruct as reconstruct_cli
 from sincomp.cli import similarity as similarity_cli
 
 
+def _reconstruct_output_args(directory):
+    filenames = [
+        "reconstruction.csv",
+        "clusters.csv",
+        "cluster_phones.csv",
+        "initial_tree.csv",
+        "final_tree.csv",
+        "tone_tree.csv",
+    ]
+    options = [
+        "--reconstruction-file",
+        "--clusters-file",
+        "--cluster-phones-file",
+        "--initial-tree-file",
+        "--final-tree-file",
+        "--tone-tree-file",
+    ]
+    return [
+        value
+        for option, filename in zip(options, filenames)
+        for value in (option, os.path.join(directory, filename))
+    ]
+
+
+def _inference_output_args(directory, reconstruction_file=None):
+    if reconstruction_file is None:
+        reconstruction_file = os.path.join(directory, "reconstruction.csv")
+    return [
+        "--reconstruction-file",
+        reconstruction_file,
+        "--rules-file",
+        os.path.join(directory, "rules.csv"),
+        "--predictions-file",
+        os.path.join(directory, "predictions.csv"),
+    ]
+
+
 class TestCli(unittest.TestCase):
     def test_help(self):
         output = StringIO()
@@ -998,11 +1035,56 @@ def _write_segment_annotations(path: str) -> None:
 
 
 class TestReconstructCli(unittest.TestCase):
+    def test_subcommand_help_is_scoped(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                reconstruct_cli.main(["reconstruct", "--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        help_text = output.getvalue()
+        self.assertIn(
+            "Reconstruct proto-language phonemes from the selected dialects",
+            help_text,
+        )
+        self.assertNotIn("Subcommands:", help_text)
+        self.assertNotIn("infer the pronunciation rules", help_text)
+        self.assertNotIn("evaluate the pipeline on held-out", help_text)
+
+    def test_top_level_help_lists_all_subcommands(self):
+        output = StringIO()
+        with redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                reconstruct_cli.main(["--help"])
+
+        self.assertEqual(raised.exception.code, 0)
+        help_text = output.getvalue()
+        self.assertIn("Subcommands:", help_text)
+        self.assertIn("reconstruct", help_text)
+        self.assertIn("inference", help_text)
+        self.assertIn("evaluate", help_text)
+        self.assertIn("Reconstruct proto-language phonemes", help_text)
+        self.assertIn("produced by ``reconstruct``", help_text)
+        self.assertIn("held-out dialects and characters", help_text)
+
     def test_parser_defaults(self):
-        args = reconstruct_cli.build_parser().parse_args([])
+        parser = reconstruct_cli.build_parser()
+        args = parser.parse_args(["reconstruct"])
         self.assertEqual(args.dataset, "MCPDict")
         self.assertEqual(args.embedding_size, 128)
-        self.assertEqual(args.output_dir, "reconstruction")
+        self.assertEqual(args.reconstruction_file, "reconstruction.csv")
+        self.assertEqual(args.clusters_file, "clusters.csv")
+        self.assertEqual(args.cluster_phones_file, "cluster_phones.csv")
+        self.assertEqual(args.tone_tree_file, "tone_tree.csv")
+        self.assertFalse(hasattr(args, "output_dir"))
+        inference_args = parser.parse_args(["inference"])
+        self.assertEqual(
+            inference_args.reconstruction_file,
+            args.reconstruction_file,
+        )
+        self.assertEqual(inference_args.rules_file, "rules.csv")
+        self.assertEqual(inference_args.predictions_file, "predictions.csv")
+        self.assertFalse(hasattr(inference_args, "output_dir"))
         self.assertEqual(args.log_level, "WARNING")
         self.assertEqual(args.min_dialect_coverage, 0.5)
         self.assertEqual(args.min_cluster_size, 3)
@@ -1011,6 +1093,40 @@ class TestReconstructCli(unittest.TestCase):
         self.assertEqual(args.min_phone_proportion, 0.1)
         self.assertEqual(args.max_merge_tolerance, 0)
         self.assertEqual(args.max_merge_distance, 0.5)
+
+    def test_all_reconstruct_subcommands_use_options(self):
+        parser = reconstruct_cli.build_parser()
+        subparsers = next(
+            action for action in parser._actions
+            if action.dest == "command"
+        )
+        for name, command_parser in subparsers.choices.items():
+            with self.subTest(parser=command_parser.prog):
+                self.assertTrue(all(
+                    action.option_strings
+                    for action in command_parser._actions
+                    if action.dest != "help"
+                ))
+
+    def test_embedding_size_is_common_argument(self):
+        parser = reconstruct_cli.build_parser()
+        for command in ("reconstruct", "evaluate"):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    parser.parse_args([command]).embedding_size, 128
+                )
+                self.assertEqual(
+                    parser.parse_args([
+                        command, "--embedding-size", "64",
+                    ]).embedding_size,
+                    64,
+                )
+
+    def test_evaluate_accepts_annotation_file_without_loading_it(self):
+        args = reconstruct_cli.build_parser().parse_args([
+            "evaluate", "--annotation-file", "annotations.csv",
+        ])
+        self.assertEqual(args.annotation_file, "annotations.csv")
 
     def test_dialects_required(self):
         with self.assertRaises(SystemExit):
@@ -1619,7 +1735,6 @@ class TestReconstructCli(unittest.TestCase):
         phonemes = reconstruct_cli.merge_cluster_phonemes(
             result, embeddings, distributions
         )
-
         self.assertEqual(phonemes[("initial", 0)], "p")
         self.assertEqual(phonemes[("initial", 1)], "t")
 
@@ -1679,7 +1794,7 @@ class TestReconstructCli(unittest.TestCase):
                     reconstruct_cli.main([
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                         "--embedding-size", "4",
                     ]),
                     0,
@@ -1692,6 +1807,7 @@ class TestReconstructCli(unittest.TestCase):
                 sorted(result.columns),
                 [
                     "character",
+                    "dialect_count",
                     "final",
                     "final_cluster",
                     "final_phoneme",
@@ -1703,7 +1819,9 @@ class TestReconstructCli(unittest.TestCase):
                     "tone_phoneme",
                 ],
             )
+            self.assertEqual(result.columns[-1], "dialect_count")
             self.assertEqual(len(result), 20)
+            self.assertTrue((result["dialect_count"] == 2).all())
             # every character receives the pronunciation and phoneme of
             # its cluster
             self.assertFalse(
@@ -1776,8 +1894,8 @@ class TestReconstructCli(unittest.TestCase):
 
             # the summary is printed as plain text and no report file
             # is written
-            self.assertIn("20 characters", output.getvalue())
-            self.assertIn("2 dialects", output.getvalue())
+            self.assertIn("character_count: 20", output.getvalue())
+            self.assertIn("dialect_count: 2", output.getvalue())
             self.assertFalse(
                 os.path.isfile(os.path.join(tmp, "reconstruct.json"))
             )
@@ -1822,7 +1940,7 @@ class TestReconstructCli(unittest.TestCase):
                     reconstruct_cli.main([
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                         "--embedding-size", "4",
                         "--min-dialect-coverage", "0.8",
                     ]),
@@ -1835,6 +1953,8 @@ class TestReconstructCli(unittest.TestCase):
             # the sparse character stays in the output
             self.assertEqual(len(result), 21)
             self.assertEqual(result.loc["cx", "character"], "cx")
+            self.assertEqual(result.loc["cx", "dialect_count"], 1)
+            self.assertEqual(result.loc["c0", "dialect_count"], 2)
             # and it is still assigned to clusters
             for feature in ("initial", "final", "tone"):
                 self.assertFalse(
@@ -1854,7 +1974,7 @@ class TestReconstructCli(unittest.TestCase):
                     reconstruct_cli.main([
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                         "--embedding-size", "4",
                         "--min-cluster-size", "3",
                     ]),
@@ -1881,7 +2001,7 @@ class TestReconstructCli(unittest.TestCase):
                     "reconstruct",
                     "--dataset", "stub",
                     "--dialects", "d1", "d2",
-                    "--output-dir", tmp,
+                    *_reconstruct_output_args(tmp),
                     "--embedding-size", "4",
                 ]),
                 0,
@@ -1893,9 +2013,7 @@ class TestReconstructCli(unittest.TestCase):
                         "inference",
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
-                        "--reconstruction-file",
-                        os.path.join(tmp, "reconstruction.csv"),
-                        "--output-dir", tmp,
+                        *_inference_output_args(tmp),
                     ]),
                     0,
                 )
@@ -1973,16 +2091,22 @@ class TestReconstructCli(unittest.TestCase):
             # the run report and the prediction accuracy are reported,
             # with the average over the dialects at the end
             report = output.getvalue()
-            self.assertIn("Inferred pronunciation rules of 2 dialects", report)
-            self.assertIn("dialects: 2", report)
-            self.assertIn("characters:", report)
-            self.assertIn("samples: 40", report)
-            self.assertIn("rules per dialect:", report)
-            self.assertIn("phone prediction accuracy:", report)
+            self.assertIn("Data summary:", report)
+            self.assertIn("dialect_count: 2", report)
+            self.assertIn("character_count: 20", report)
+            self.assertIn("sample_count: 40", report)
+            self.assertIn("Rules per dialect:", report)
+            self.assertIn("Phone prediction accuracy:", report)
             self.assertIn("did", report)
+            self.assertIn("Alpha", report)
+            self.assertIn("Beta", report)
             for did in ("d1", "d2"):
                 self.assertIn(did, report)
             self.assertIn("mean", report)
+            self.assertRegex(
+                report,
+                r"(?m)^mean\s+\s+1\.0000\s+1\.0000\s+0\.4000",
+            )
             for feature in ("initial", "final", "tone"):
                 self.assertIn(feature, report)
         get_dataset.assert_called_with("stub")
@@ -1995,13 +2119,13 @@ class TestReconstructCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_file = os.path.join(tmp, "config.json")
             with open(config_file, "w", encoding="utf-8") as f:
-                json.dump({"inference": {"dialects": ["d1", "d2"]}}, f)
+                json.dump({"dialects": ["d1", "d2"]}, f)
             self.assertEqual(
                 reconstruct_cli.main([
                     "reconstruct",
                     "--dataset", "stub",
                     "--dialects", "d1", "d2",
-                    "--output-dir", tmp,
+                    *_reconstruct_output_args(tmp),
                     "--embedding-size", "4",
                 ]),
                 0,
@@ -2010,9 +2134,7 @@ class TestReconstructCli(unittest.TestCase):
                 "inference",
                 "--config", config_file,
                 "--dataset", "stub",
-                "--reconstruction-file",
-                os.path.join(tmp, "reconstruction.csv"),
-                "--output-dir", tmp,
+                *_inference_output_args(tmp),
             ]
             # the config file provides the descendant dialects
             self.assertEqual(reconstruct_cli.main(arguments), 0)
@@ -2023,8 +2145,11 @@ class TestReconstructCli(unittest.TestCase):
             override_dir = os.path.join(tmp, "override")
             self.assertEqual(
                 reconstruct_cli.main([
-                    *arguments, "--dialects", "d2", "--output-dir",
-                    override_dir,
+                    *arguments,
+                    "--dialects", "d2",
+                    "--rules-file", os.path.join(override_dir, "rules.csv"),
+                    "--predictions-file",
+                    os.path.join(override_dir, "predictions.csv"),
                 ]),
                 0,
             )
@@ -2046,20 +2171,30 @@ class TestReconstructCli(unittest.TestCase):
     )
     def test_evaluate_command(self, get_dataset):
         output = StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(
-                reconstruct_cli.main([
-                    "evaluate",
-                    "--dataset", "stub",
-                    "--dialects", "d1", "d2",
-                    "--folds", "5",
-                    "--repeat", "2",
-                    "--seed", "7",
-                    "--embedding-size", "4",
-                    "--min-cluster-size", "1",
-                ]),
-                0,
-            )
+        with self.assertLogs(
+            "sincomp.cli.reconstruct", level="DEBUG"
+        ) as logs:
+            with redirect_stdout(output):
+                self.assertEqual(
+                    reconstruct_cli.main([
+                        "evaluate",
+                        "--dataset", "stub",
+                        "--dialects", "d1", "d2",
+                        "--folds", "5",
+                        "--repeat", "2",
+                        "--seed", "7",
+                        "--embedding-size", "4",
+                        "--min-cluster-size", "1",
+                        "--log-level", "DEBUG",
+                    ]),
+                    0,
+                )
+        self.assertTrue(any("d1 accuracy" in message for message in logs.output))
+        self.assertTrue(any("d2 accuracy" in message for message in logs.output))
+        self.assertRegex(
+            "\n".join(logs.output),
+            r"accuracy: \{'initial': '[0-9]\.\d{4}'",
+        )
         # the summary reports the mean and the standard deviation of
         # every feature over all trial and dialect accuracies
         text = output.getvalue()
@@ -2068,6 +2203,42 @@ class TestReconstructCli(unittest.TestCase):
         self.assertIn("initial", text)
         self.assertIn("final", text)
         self.assertIn("tone", text)
+        self.assertIn("initial_clusters", text)
+        self.assertIn("initial_phonemes", text)
+        self.assertIn("final_clusters", text)
+        self.assertIn("final_phonemes", text)
+        self.assertIn("tone_clusters", text)
+        self.assertIn("tone_phonemes", text)
+        self.assertIn("Data summary:", text)
+        self.assertIn("min_dialect_coverage: 0.5", text)
+        cluster_report = text.split(
+            "Cluster and phoneme counts per trial:\n", 1
+        )[1].split(
+            "Phone prediction accuracy of held-out dialects and characters",
+            1,
+        )[0]
+        self.assertRegex(cluster_report, r"(?m)^0\s+\d+\s+\d+")
+        self.assertRegex(cluster_report, r"(?m)^mean\s")
+        self.assertRegex(cluster_report, r"(?m)^std\s")
+        self.assertRegex(cluster_report, r"(?m)^mean\s+\d+\.\d{2}")
+        self.assertRegex(cluster_report, r"(?m)^std\s+\d+\.\d{2}")
+        self.assertIn(
+            "(per-trial dialect mean, overall mean and std):", text
+        )
+        accuracy_report = text.split(
+            "(per-trial dialect mean, overall mean and std):\n", 1
+        )[1]
+        self.assertRegex(accuracy_report, r"(?m)^0\s+")
+        self.assertRegex(accuracy_report, r"(?m)^1\s+")
+        self.assertRegex(accuracy_report, r"(?m)^mean\s+")
+        self.assertRegex(accuracy_report, r"(?m)^std\s+")
+        self.assertRegex(accuracy_report, r"\d\.\d{4}")
+        self.assertLess(
+            text.index("Cluster and phoneme counts per trial:"),
+            text.index(
+                "Phone prediction accuracy of held-out dialects and characters"
+            ),
+        )
         get_dataset.assert_called_with("stub")
 
     @mock.patch(
@@ -2082,7 +2253,7 @@ class TestReconstructCli(unittest.TestCase):
                     reconstruct_cli.main([
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                         "--embedding-size", "4",
                         "--max-cluster-distance", "1000",
                     ]),
@@ -2115,7 +2286,7 @@ class TestReconstructCli(unittest.TestCase):
                         "--dataset", "stub",
                         "--dialects", "d1", "d2",
                         "--annotation-file", annotation_file,
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                         "--embedding-size", "4",
                     ]),
                     0,
@@ -2132,7 +2303,8 @@ class TestReconstructCli(unittest.TestCase):
                 self.assertTrue(result[feature].notna().all())
                 self.assertTrue(result[f"{feature}_phoneme"].notna().all())
 
-            self.assertIn("20 characters", output.getvalue())
+            self.assertIn("character_count: 20", output.getvalue())
+            self.assertIn("dialect_count: 2", output.getvalue())
 
             # no pronunciation summary is written when annotations exist
             self.assertFalse(
@@ -2159,7 +2331,7 @@ class TestReconstructCli(unittest.TestCase):
                 self.assertEqual(
                     reconstruct_cli.main([
                         "--config", config_file,
-                        "--output-dir", tmp,
+                        *_reconstruct_output_args(tmp),
                     ]),
                     0,
                 )
@@ -2167,7 +2339,8 @@ class TestReconstructCli(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(os.path.join(tmp, "reconstruction.csv"))
             )
-            self.assertIn("20 characters", output.getvalue())
+            self.assertIn("character_count: 20", output.getvalue())
+            self.assertIn("embedding_size: 4", output.getvalue())
             self.assertIn("stub", output.getvalue())
         get_dataset.assert_called_with("stub")
 

@@ -12,30 +12,32 @@ are assigned to clusters character by character after the merging.
 Subcommands:
 
 reconstruct
-    Run the reconstruction pipeline (the default command). Writes the
-    cluster, phone and phoneme assignments of every character into
-    ``<output-dir>/reconstruction.csv``, the phone and phoneme tables
-    of the clusters into ``clusters.csv`` and ``cluster_phones.csv``,
-    and the full clustering tree of each feature into
-    ``<feature>_tree.csv``.
+    Reconstruct proto-language phonemes from the selected dialects by
+    clustering their pronunciations. This is the default command. It
+    writes character-level cluster, phone and phoneme assignments to
+    ``--reconstruction-file``, cluster summaries to ``--clusters-file``
+    and ``--cluster-phones-file``, and clustering trees to
+    ``--initial-tree-file``, ``--final-tree-file`` and ``--tone-tree-file``.
 
 inference
-    Train one decision tree per segment type and descendant dialect on
-    a reconstruction result, and predict the phones of the dialect
-    from its reconstructed phonemes. Writes one rule CSV per dialect
-    with a leading ``feature`` column, ``predictions.csv`` and a
-    per-dialect accuracy report into ``<output-dir>``.
+    Use a reconstruction produced by ``reconstruct`` to infer each
+    descendant dialect's pronunciations from the proto-language
+    phonemes. Decision trees generate pronunciation rules and phone
+    predictions, written to ``--rules-file`` and ``--predictions-file``;
+    ``--reconstruction-file`` selects the input reconstruction.
 
 evaluate
-    Evaluate the pipeline on k-fold splits of the dialect pool and the
-    characters: reconstruct from the training dialects with the
-    training characters only, then predict the phones of the held-out
-    characters in the test dialects. Prints the mean and the standard
-    deviation of the accuracies over all trials and test dialects.
+    Evaluate reconstruction on held-out dialects and characters using
+    k-fold splits of the dialect pool and character set. Each trial
+    reconstructs from training dialects and characters, then predicts
+    phones for held-out samples. Reports per-trial cluster and phoneme
+    counts, per-trial dialect-averaged accuracies, and overall accuracy
+    means and standard deviations.
 
-All commands accept a JSON ``--config`` file with top-level defaults
-and per-command sections (``reconstruct``, ``inference``,
-``evaluate``); command-line values take precedence over the config.
+All commands accept a flat JSON ``--config`` file whose keys are
+command-line option names without leading dashes. Each command uses
+only the options it supports, and command-line values take precedence
+over the config.
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
@@ -817,7 +819,7 @@ def merge_cluster_phonemes(
         members = state["members"]
         env_counts = state["env_counts"]
         logger.debug(
-            "merge %s clusters %s and %s (conflict=%d, distance=%.3f)",
+            "merge %s clusters %s and %s (conflict=%d, distance=%.4f)",
             feature, members[r1], members[r2],
             conflicts(feature, r1, r2), distance,
         )
@@ -1343,120 +1345,24 @@ def cluster(
     return result, feature_embeddings, trees
 
 
-def add_common_arguments(
-    parser: argparse.ArgumentParser,
-    annotation: bool = True
+def print_run_summary(
+    dataset: str,
+    dialect_count: int,
+    character_count: int,
+    sample_count: int,
+    parameters: dict[str, object] = {}
 ) -> None:
-    """Add the shared reconstruction arguments.
+    """Print a data synopsis and the algorithm parameters."""
 
-    Parameters
-    ----------
-    parser : argparse.ArgumentParser
-        Parser to which the arguments are added.
-    annotation : bool, default=True
-        Whether to add the ``--annotation-file`` argument; the evaluate
-        command does not support annotations.
-
-    Returns
-    -------
-    None
-        The parser is modified in place.
-    """
-
-    parser.add_argument(
-        "--log-level",
-        default="WARNING",
-        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-        help="Logging verbosity for tracing the reconstruction process."
-    )
-    parser.add_argument(
-        "--dataset",
-        default="MCPDict",
-        help="Name of the pronunciation dataset to load."
-    )
-    parser.add_argument(
-        "--dialects",
-        nargs="+",
-        required=False,
-        help="Dialect IDs to use; all selected dialect data are used."
-    )
-    if annotation:
-        parser.add_argument(
-            "--annotation-file",
-            default=None,
-            help=(
-                "CSV file of manually assigned segment labels with a "
-                "``cid`` (or ``character``) index column and one "
-                "``initial``, ``final`` and ``tone`` label column; "
-                "labels may be partly empty, and unannotated features "
-                "are derived from data."
-            )
-        )
-    parser.add_argument(
-        "--min-dialect-coverage",
-        type=float,
-        default=0.5,
-        help=(
-            "Minimum proportion of dialects in which a character must "
-            "have data to be used for fitting; characters below the "
-            "threshold are still assigned to clusters and phones."
-        )
-    )
-    parser.add_argument(
-        "--min-cluster-size",
-        type=int,
-        default=3,
-        help=(
-            "Minimum number of characters per cluster; smaller clusters "
-            "are merged into other clusters unless their characters have "
-            "annotations."
-        )
-    )
-    parser.add_argument(
-        "--max-cluster-distance",
-        type=float,
-        default=0.1,
-        help=(
-            "Maximum cosine distance within a cluster for clustering."
-        )
-    )
-    parser.add_argument(
-        "--max-clusters",
-        type=int,
-        default=200,
-        help=(
-            "Maximum number of clusters per segment type; when the "
-            "distance-based clustering yields more clusters, the "
-            "embeddings are re-clustered into this number of clusters."
-        )
-    )
-    parser.add_argument(
-        "--min-phone-proportion",
-        type=float,
-        default=0.1,
-        help=(
-            "Minimum proportion of recorded samples covering a phone, "
-            "for assignment and display."
-        )
-    )
-    parser.add_argument(
-        "--max-merge-distance",
-        type=float,
-        default=0.5,
-        help=(
-            "Maximum cosine distance between the mean phone vectors "
-            "of two clusters to merge them into one phoneme."
-        )
-    )
-    parser.add_argument(
-        "--max-merge-tolerance",
-        type=int,
-        default=0,
-        help=(
-            "Maximum number of co-occurring characters tolerated for two "
-            "clusters to be considered complementary."
-        )
-    )
+    print("Data summary:")
+    print(f"dataset: {dataset}")
+    print(f"dialect_count: {dialect_count}")
+    print(f"character_count: {character_count}")
+    print(f"sample_count: {sample_count}")
+    print("")
+    print("Hyper parameters:")
+    for name, value in parameters.items():
+        print(f"{name}: {value}")
 
 
 def load_config(path: str) -> dict:
@@ -1467,57 +1373,6 @@ def load_config(path: str) -> dict:
     if not isinstance(config, dict):
         raise ValueError("Configuration must contain a JSON object.")
     return config
-
-
-def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
-    """Build the reconstruction command-line parser.
-
-    Parameters
-    ----------
-    config : dict, default=None
-        Configuration values applied as argument defaults.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser for the reconstruction command.
-    """
-
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=_HelpFormatter,
-        add_help=False,
-    )
-    parser.add_argument("--config", help="JSON configuration file")
-    add_common_arguments(parser)
-    parser.add_argument(
-        "--output-dir",
-        default="reconstruction",
-        help=(
-            "Directory the reconstruction.csv, clusters.csv and "
-            "cluster_phones.csv output files are written to."
-        )
-    )
-    parser.add_argument(
-        "--embedding-size",
-        type=int,
-        default=128,
-        help="Maximum dimension of the character embedding."
-    )
-
-    if config is not None:
-        sections = {"defaults", "reconstruct", "evaluate"}
-        defaults = {
-            key: value for key, value in config.items()
-            if key not in sections
-        }
-        defaults.update(config.get("defaults", {}))
-        if not isinstance(defaults, dict):
-            raise ValueError(
-                "Configuration sections must contain JSON objects."
-            )
-        parser.set_defaults(**defaults)
-    return parser
 
 
 def load_annotations(path: str | None) -> pandas.DataFrame | None:
@@ -1560,7 +1415,7 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
     Returns
     -------
     int
-        Exit code; results are written to the selected output directory.
+        Exit code; results are written to the selected output files.
     """
 
     if not args.dialects:
@@ -1573,11 +1428,18 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # absolute output paths, so the logs hold absolute paths too
+    reconstruction_file = os.path.abspath(args.reconstruction_file)
+    clusters_file = os.path.abspath(args.clusters_file)
+    cluster_phones_file = os.path.abspath(args.cluster_phones_file)
+    tree_files = {
+        feature: os.path.abspath(getattr(args, f"{feature}_tree_file"))
+        for feature in FEATURES
+    }
     logger.info(
         "dataset=%s dialects=%d", args.dataset, len(args.dialects)
     )
 
-    os.makedirs(args.output_dir, exist_ok=True)
     dataset = datasets.get(args.dataset)
     dialect_ids = select_dialects(dataset, args.dialects)
     data = dataset.select(dialect_ids).data
@@ -1602,7 +1464,8 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         max_clusters=args.max_clusters
     )
     for feature, tree in trees.items():
-        tree_file = os.path.join(args.output_dir, f"{feature}_tree.csv")
+        tree_file = tree_files[feature]
+        os.makedirs(os.path.dirname(tree_file), exist_ok=True)
         tree.to_csv(tree_file, index=False, encoding="utf-8")
         logger.info("wrote %s", tree_file)
 
@@ -1638,10 +1501,9 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         cluster_output = summarize_cluster_phones(
             distributions, args.min_phone_proportion
         ).reset_index()
+        os.makedirs(os.path.dirname(cluster_phones_file), exist_ok=True)
         cluster_output.to_csv(
-            clusters_file := os.path.join(
-                args.output_dir, "cluster_phones.csv"
-            ),
+            cluster_phones_file,
             columns=[
                 "feature",
                 "cluster",
@@ -1652,18 +1514,19 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
             index=False,
             encoding="utf-8"
         )
-        logger.info("wrote %s", clusters_file)
+        logger.info("wrote %s", cluster_phones_file)
         clusters = assignments.rename_axis(
             ["feature", "cluster"]
         ).reset_index()
         keys = clusters.set_index(["feature", "cluster"]).index
         clusters.insert(3, "phoneme", keys.map(phonemes))
+        os.makedirs(os.path.dirname(clusters_file), exist_ok=True)
         clusters.to_csv(
-            prons_file := os.path.join(args.output_dir, "clusters.csv"),
+            clusters_file,
             index=False,
             encoding="utf-8"
         )
-        logger.info("wrote %s", prons_file)
+        logger.info("wrote %s", clusters_file)
     else:
         # the annotations provide the cluster phones and act as already
         # merged phonemes; characters without a cluster are assigned
@@ -1675,20 +1538,40 @@ def reconstruct_cmd(args: argparse.Namespace) -> int:
         )
         result = predict_annotated_phonemes(result, annotations)
 
-    output = result
-    output.index.name = "cid"
-    output_file = os.path.join(args.output_dir, "reconstruction.csv")
-    output.to_csv(output_file, encoding="utf-8")
-    logger.info("wrote %s", output_file)
-    print(
-        f"Reconstructed {len(result)} characters "
-        f"from {len(dialect_ids)} dialects of {args.dataset}."
+    result.index.name = "cid"
+    result["dialect_count"] = (
+        data.groupby("cid")["did"]
+        .nunique()
+        .reindex(result.index, fill_value=0)
+        .astype(int)
     )
+    os.makedirs(os.path.dirname(reconstruction_file), exist_ok=True)
+    result.to_csv(reconstruction_file, encoding="utf-8")
+    logger.info("wrote %s", reconstruction_file)
+
+    print_run_summary(
+        args.dataset,
+        len(dialect_ids),
+        data["cid"].nunique(),
+        len(data),
+        {
+            "min_dialect_coverage": args.min_dialect_coverage,
+            "embedding_size": args.embedding_size,
+            "min_cluster_size": args.min_cluster_size,
+            "max_cluster_distance": args.max_cluster_distance,
+            "max_clusters": args.max_clusters,
+            "min_phone_proportion": args.min_phone_proportion,
+            "max_merge_tolerance": args.max_merge_tolerance,
+            "max_merge_distance": args.max_merge_distance,
+        },
+    )
+    print("Reconstruction summary:")
     for feature in FEATURES:
         print(
             f"{feature}: {result[feature + '_cluster'].nunique()} clusters / "
             f"{result[feature + '_phoneme'].nunique()} phonemes"
         )
+
     return 0
 
 
@@ -1905,7 +1788,7 @@ def train_pronunciation_rules(
             ).fit(x_encoded, y_tune)
             parameters = {"ccp_alpha": float(search.best_params_["ccp_alpha"])}
             logger.debug(
-                "%s: best ccp_alpha=%.6g, cv accuracy %.3f over %d folds",
+                "%s: best ccp_alpha=%.6g, cv accuracy %.4f over %d folds",
                 feature, parameters["ccp_alpha"], search.best_score_, folds,
             )
 
@@ -1988,95 +1871,15 @@ def inference(
     return rules, predicted
 
 
-def build_inference_parser(
-    config: dict | None = None
-) -> argparse.ArgumentParser:
-    """Build the inference subcommand parser.
-
-    Parameters
-    ----------
-    config : dict, default=None
-        Configuration values applied as argument defaults; the
-        ``inference`` section applies to this subcommand only, the
-        other sections and top-level keys follow the reconstruct
-        command.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser for the inference subcommand.
-    """
-
-    parser = argparse.ArgumentParser(
-        prog="reconstruct inference",
-        description=(
-            "Infer the pronunciation rules of descendant dialects from "
-            "the reconstructed phonemes with decision trees. Requires "
-            "a reconstruction result file first written by the "
-            "reconstruct command."
-        ),
-        formatter_class=_HelpFormatter,
-        add_help=False,
-    )
-    parser.add_argument(
-        "--log-level",
-        default="WARNING",
-        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
-        help="Logging verbosity for tracing the inference process."
-    )
-    parser.add_argument("--config", help="JSON configuration file")
-    parser.add_argument(
-        "--dataset",
-        default="MCPDict",
-        help="Name of the pronunciation dataset to load."
-    )
-    parser.add_argument(
-        "--dialects",
-        nargs="+",
-        required=False,
-        help="Descendant dialects whose phones train the rules."
-    )
-    parser.add_argument(
-        "--reconstruction-file",
-        default="reconstruction.csv",
-        help=(
-            "Reconstruction result file as written by the reconstruct "
-            "command."
-        )
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="reconstruction",
-        help="Directory the rule files are written to."
-    )
-    if config is not None:
-        sections = {"defaults", "reconstruct", "evaluate", "inference"}
-        defaults = {
-            key: value for key, value in config.items()
-            if key not in sections
-        }
-        defaults.update(config.get("defaults", {}))
-        if not isinstance(defaults, dict):
-            raise ValueError(
-                "Configuration sections must contain JSON objects."
-            )
-        defaults.update(config.get("inference", {}))
-        parser.set_defaults(**defaults)
-    return parser
-
-
 def inference_cmd(args: argparse.Namespace) -> int:
     """Run the inference command.
 
     For every selected descendant dialect, a decision tree is trained
     to predict the phones of the dialect from the reconstructed
-    phonemes. The rules of every dialect are written into
-    ``<output-dir>/rules.csv`` with leading ``did`` and ``feature``
-    columns marking the dialect and the initial, final and tone rules,
-    the predicted phones of every character of every dialect are
-    written into ``<output-dir>/predictions.csv``, and a run report
-    with the accuracy of the predictions against the recorded phones
-    is reported to the standard output.
+    phonemes. The rules of every dialect are written to ``--rules-file``
+    with leading ``did`` and ``feature`` columns, and predicted phones
+    are written to ``--predictions-file``. A run report includes
+    prediction accuracy against the recorded phones.
 
     Parameters
     ----------
@@ -2086,8 +1889,8 @@ def inference_cmd(args: argparse.Namespace) -> int:
     Returns
     -------
     int
-        Exit code; the rule files and the prediction table are written
-        to the output directory.
+        Exit code; the rules and predictions are written to the selected
+        output files.
     """
 
     if not args.dialects:
@@ -2099,13 +1902,14 @@ def inference_cmd(args: argparse.Namespace) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # absolute output paths, so the logs hold absolute paths too
+    rules_file = os.path.abspath(args.rules_file)
+    predictions_file = os.path.abspath(args.predictions_file)
     reconstruction = pandas.read_csv(
         args.reconstruction_file, index_col="cid"
     )
     dataset = datasets.get(args.dataset)
     dialect_ids = select_dialects(dataset, args.dialects)
-    os.makedirs(args.output_dir, exist_ok=True)
-
     if "name" in dataset.dialects.columns:
         names = dataset.dialects["name"]
     else:
@@ -2206,7 +2010,7 @@ def inference_cmd(args: argparse.Namespace) -> int:
         predictions.append(frame)
 
         # report the accuracy against the recorded phones
-        accuracy = {"did": did}
+        accuracy = {"did": did, "name": names.loc[did]}
 
         for feature in FEATURES:
             mask = (
@@ -2226,29 +2030,37 @@ def inference_cmd(args: argparse.Namespace) -> int:
         accuracies.append(accuracy)
 
     combined = pandas.concat(predictions, ignore_index=True)
-    predictions_file = os.path.join(args.output_dir, "predictions.csv")
+    os.makedirs(os.path.dirname(predictions_file), exist_ok=True)
     combined.to_csv(predictions_file, index=False, encoding="utf-8")
     logger.info("wrote %s", predictions_file)
-    rules_file = os.path.join(args.output_dir, "rules.csv")
+    os.makedirs(os.path.dirname(rules_file), exist_ok=True)
     pandas.concat(rule_frames, ignore_index=True).to_csv(
         rules_file, index=False, encoding="utf-8"
     )
     logger.info("wrote %s", rules_file)
-    report = pandas.DataFrame(accuracies).set_index("did")
-    report.loc["mean"] = report.mean()
-    print(
-        f"Inferred pronunciation rules of {len(dialect_ids)} dialects "
-        f"into {args.output_dir}."
+
+    accuracies = pandas.DataFrame(accuracies).set_index(["did", "name"])
+    accuracy_statistics = accuracies.agg(["mean", "std"])
+    accuracy_statistics.index = pandas.MultiIndex.from_tuples(
+        [("mean", ""), ("std", "")],
+        names=accuracies.index.names,
     )
-    print(f"dialects: {len(dialect_ids)}")
-    print(f"characters: {combined['cid'].nunique()}")
-    print(f"samples: {len(combined)}")
-    print("rules per dialect:")
+    accuracies = pandas.concat([accuracies, accuracy_statistics])
+    print_run_summary(
+        args.dataset,
+        len(dialect_ids),
+        combined["cid"].nunique(),
+        len(combined),
+    )
+    print("")
+    print("Rules per dialect:")
     rule_frame = pandas.DataFrame(rule_table).set_index(["did", "name"])
     rule_frame["all"] = rule_frame.sum(axis=1)
     print(rule_frame.to_string())
-    print("phone prediction accuracy:")
-    print(report.to_string(float_format=lambda value: f"{value:.3f}"))
+    print("")
+    print("Phone prediction accuracy:")
+    print(accuracies.to_string(float_format=lambda value: f"{value:.4f}"))
+
     return 0
 
 
@@ -2331,81 +2143,6 @@ def reconstruct(
     return result
 
 
-def build_evaluate_parser(
-    config: dict | None = None
-) -> argparse.ArgumentParser:
-    """Build the evaluate subcommand parser.
-
-    Parameters
-    ----------
-    config : dict, default=None
-        Configuration values applied as argument defaults; the
-        ``evaluate`` section applies to this subcommand only, the
-        other sections and top-level keys follow the reconstruct
-        command.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Parser for the evaluate subcommand.
-    """
-
-    parser = argparse.ArgumentParser(
-        prog="reconstruct evaluate",
-        description=(
-            "Evaluate the reconstruction pipeline on k-fold splits of "
-            "training and test dialects and characters"
-        ),
-        formatter_class=_HelpFormatter,
-        add_help=False,
-    )
-    add_common_arguments(parser, annotation=False)
-    parser.add_argument("--config", help="JSON configuration file")
-    parser.add_argument(
-        "--folds",
-        type=int,
-        default=10,
-        help=(
-            "Number of folds the dialect pool and the characters are "
-            "each partitioned into; each is truncated to the pool "
-            "size when larger."
-        )
-    )
-    parser.add_argument(
-        "--repeat",
-        type=int,
-        default=1,
-        help=(
-            "Number of dialect fold and character fold pairings drawn "
-            "for the evaluation."
-        )
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help=(
-            "Random seed for the dialect and character splits; the "
-            "splits are purely random by default."
-        )
-    )
-    parser.add_argument("--embedding-size", type=int, default=128)
-    if config is not None:
-        sections = {"defaults", "reconstruct", "evaluate", "inference"}
-        defaults = {
-            key: value for key, value in config.items()
-            if key not in sections
-        }
-        defaults.update(config.get("defaults", {}))
-        if not isinstance(defaults, dict):
-            raise ValueError(
-                "Configuration sections must contain JSON objects."
-            )
-        defaults.update(config.get("evaluate", {}))
-        parser.set_defaults(**defaults)
-    return parser
-
-
 def evaluate_cmd(args: argparse.Namespace) -> int:
     """Run the evaluation command.
 
@@ -2421,10 +2158,12 @@ def evaluate_cmd(args: argparse.Namespace) -> int:
     and for every dialect of the test fold a phone classifier is
     trained on the training characters and predicts the phones of the
     test characters from their reconstructed phonemes. Every trial and
-    dialect contributes one accuracy per feature; the mean and the
-    standard deviation over all of them are reported to the standard
-    output, and the accuracy of every trial and dialect is logged at
-    debug level.
+    dialect contributes one accuracy per feature. Per-trial means over
+    dialects and the mean and standard deviation over all trial-dialect
+    accuracies are reported to the standard output; individual
+    trial-dialect accuracies are logged at debug level. The number of
+    clusters and phonemes per feature is printed for every trial before
+    the accuracy summary.
 
     Parameters
     ----------
@@ -2512,6 +2251,7 @@ def evaluate_cmd(args: argparse.Namespace) -> int:
     )
 
     rows = []
+    cluster_counts = []
     for trial, (dialect_fold, character_fold) in enumerate(trials):
         test_dialects = dialect_test_folds[dialect_fold]
         test_characters = set(character_test_folds[character_fold])
@@ -2540,6 +2280,16 @@ def evaluate_cmd(args: argparse.Namespace) -> int:
             max_merge_tolerance=args.max_merge_tolerance,
             max_merge_distance=args.max_merge_distance,
         )
+        cluster_count = {"trial": trial}
+        for feature in FEATURES:
+            cluster_count[f"{feature}_clusters"] = reconstruction[
+                f"{feature}_cluster"
+            ].nunique()
+        for feature in FEATURES:
+            cluster_count[f"{feature}_phonemes"] = reconstruction[
+                f"{feature}_phoneme"
+            ].nunique()
+        cluster_counts.append(cluster_count)
 
         # for every test dialect, train the phone classifier on the
         # training characters and predict the test characters from
@@ -2570,33 +2320,322 @@ def evaluate_cmd(args: argparse.Namespace) -> int:
             rows.append(row)
             logger.debug(
                 "trial %d (dialect fold %d, character fold %d), "
-                "%s accuracy: %s", trial, dialect_fold, character_fold,
+                "%s accuracy: %s",
+                trial,
+                dialect_fold,
+                character_fold,
                 did,
                 {
-                    feature: f"{row[feature]:.3f}"
+                    feature: f"{row[feature]:.4f}"
                     for feature in FEATURES
                 },
             )
 
     # the mean and the standard deviation over all trial and dialect
     # accuracies
-    report = pandas.DataFrame(rows)
-    summary = report[list(FEATURES)].agg(["mean", "std"])
-    summary.columns.name = "feature"
-    print("Phone prediction accuracy of held-out characters:")
-    print(f"dataset: {args.dataset}")
-    print(
-        f"trials: {len(trials)} "
-        f"(dialect folds repeat every {dialect_folds} trials, "
-        f"character folds every {character_folds})"
+    accuracies = pandas.DataFrame(rows)
+    accuracy_summary = accuracies.groupby("trial")[list(FEATURES)].mean()
+    accuracy_summary.loc["mean"] = accuracies[list(FEATURES)].mean()
+    accuracy_summary.loc["std"] = accuracies[list(FEATURES)].std()
+    accuracy_summary.columns.name = "feature"
+    cluster_summary = pandas.DataFrame(cluster_counts).set_index("trial")
+    cluster_summary.loc["mean"] = cluster_summary.mean()
+    cluster_summary.loc["std"] = cluster_summary.iloc[:-1].std()
+    cluster_summary = cluster_summary.astype(object)
+    for trial in range(len(cluster_counts)):
+        cluster_summary.loc[trial] = cluster_summary.loc[trial].map(
+            lambda value: f"{value:.0f}"
+        )
+    for statistic in ("mean", "std"):
+        cluster_summary.loc[statistic] = cluster_summary.loc[
+            statistic
+        ].map(lambda value: f"{value:.2f}")
+
+    print_run_summary(
+        args.dataset,
+        len(pool),
+        len(character_ids),
+        len(data),
+        {
+            "folds": args.folds,
+            "repeat": args.repeat,
+            "seed": args.seed,
+            "min_dialect_coverage": args.min_dialect_coverage,
+            "embedding_size": args.embedding_size,
+            "min_cluster_size": args.min_cluster_size,
+            "max_cluster_distance": args.max_cluster_distance,
+            "max_clusters": args.max_clusters,
+            "min_phone_proportion": args.min_phone_proportion,
+            "max_merge_tolerance": args.max_merge_tolerance,
+            "max_merge_distance": args.max_merge_distance,
+        },
     )
-    print(f"dialects: {len(pool)} in {dialect_folds} folds")
-    print(f"characters: {len(character_ids)} in {character_folds} folds")
-    print(summary.to_string(float_format=lambda value: f"{value:.3f}"))
+    print("")
+    print("Cluster and phoneme counts per trial:")
+    print(cluster_summary.to_string())
+    print("")
     print(
-        f"{len(report)} trial dialect accuracies in total."
+        "Phone prediction accuracy of held-out dialects and characters "
+        "(per-trial dialect mean, overall mean and std):"
     )
+    print(accuracy_summary.to_string(float_format=lambda value: f"{value:.4f}"))
+
     return 0
+
+
+def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
+    """Build the command-line parser and its subcommands."""
+
+    common_parent = argparse.ArgumentParser(
+        add_help=False,
+        formatter_class=_HelpFormatter,
+    )
+    common_parent.add_argument("--config", help="JSON configuration file")
+    common_parent.add_argument(
+        "--log-level",
+        default="WARNING",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="Logging verbosity for tracing the reconstruction process."
+    )
+    common_parent.add_argument(
+        "--dataset",
+        default="MCPDict",
+        help="Name of the pronunciation dataset to load."
+    )
+    common_parent.add_argument(
+        "--dialects",
+        nargs="+",
+        required=False,
+        help="Dialect IDs to use; all selected dialect data are used."
+    )
+
+    reconstruct_parent = argparse.ArgumentParser(
+        add_help=False,
+        formatter_class=_HelpFormatter,
+    )
+    reconstruct_parent.add_argument(
+        "--annotation-file",
+        default=None,
+        help=(
+            "CSV file of manually assigned segment labels with a "
+            "``cid`` (or ``character``) index column and one "
+            "``initial``, ``final`` and ``tone`` label column; "
+            "labels may be partly empty, and unannotated features "
+            "are derived from data. Used by reconstruct and ignored "
+            "by evaluate."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--min-dialect-coverage",
+        type=float,
+        default=0.5,
+        help=(
+            "Minimum proportion of dialects in which a character must "
+            "have data to be used for fitting; characters below the "
+            "threshold are still assigned to clusters and phones."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--embedding-size",
+        type=int,
+        default=128,
+        help="Maximum dimension of the character embedding."
+    )
+    reconstruct_parent.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=3,
+        help=(
+            "Minimum number of characters per cluster; smaller clusters "
+            "are merged into other clusters unless their characters have "
+            "annotations."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--max-cluster-distance",
+        type=float,
+        default=0.1,
+        help="Maximum cosine distance within a cluster for clustering."
+    )
+    reconstruct_parent.add_argument(
+        "--max-clusters",
+        type=int,
+        default=200,
+        help=(
+            "Maximum number of clusters per segment type; when the "
+            "distance-based clustering yields more clusters, the "
+            "embeddings are re-clustered into this number of clusters."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--min-phone-proportion",
+        type=float,
+        default=0.1,
+        help=(
+            "Minimum proportion of recorded samples covering a phone, "
+            "for assignment and display."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--max-merge-distance",
+        type=float,
+        default=0.5,
+        help=(
+            "Maximum cosine distance between the mean phone vectors "
+            "of two clusters to merge them into one phoneme."
+        )
+    )
+    reconstruct_parent.add_argument(
+        "--max-merge-tolerance",
+        type=int,
+        default=0,
+        help=(
+            "Maximum number of co-occurring characters tolerated for two "
+            "clusters to be considered complementary."
+        )
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="reconstruct",
+        description=__doc__,
+        formatter_class=_HelpFormatter,
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="<command>",
+        help="run `reconstruct <command> --help` for the details of "
+             "each command",
+    )
+    reconstruct_parser = subparsers.add_parser(
+        "reconstruct",
+        prog="reconstruct",
+        parents=[common_parent, reconstruct_parent],
+        description=(
+            "Reconstruct proto-language phonemes from the selected dialects "
+            "by clustering their pronunciations. The pipeline learns "
+            "character and segment embeddings, clusters initials, finals "
+            "and tones, assigns phones to clusters, and merges complementary "
+            "clusters into phonemes. It writes character-level assignments, "
+            "cluster summaries and clustering trees to the selected files."
+        ),
+        help="reconstruct proto-language phonemes from selected dialects",
+        formatter_class=_HelpFormatter,
+    )
+    reconstruct_parser.add_argument(
+        "--reconstruction-file",
+        default="reconstruction.csv",
+        help="Reconstruction CSV output file.",
+    )
+    reconstruct_parser.add_argument(
+        "--clusters-file",
+        default="clusters.csv",
+        help="Cluster phone and phoneme assignments CSV output file.",
+    )
+    reconstruct_parser.add_argument(
+        "--cluster-phones-file",
+        default="cluster_phones.csv",
+        help="Cluster phone distributions CSV output file.",
+    )
+    for feature in FEATURES:
+        reconstruct_parser.add_argument(
+            f"--{feature}-tree-file",
+            default=f"{feature}_tree.csv",
+            help=f"{feature.capitalize()} clustering tree CSV output file.",
+        )
+
+    inference_parser = subparsers.add_parser(
+        "inference",
+        parents=[common_parent],
+        description=(
+            "Infer descendant dialect pronunciations from reconstructed "
+            "proto-language phonemes using decision trees, and generate "
+            "pronunciation rules. Requires a reconstruction result "
+            "produced by the reconstruct command."
+        ),
+        help=(
+            "infer descendant dialect pronunciations and generate "
+            "pronunciation rules"
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    inference_parser.add_argument(
+        "--reconstruction-file",
+        default="reconstruction.csv",
+        help="Reconstruction CSV input file.",
+    )
+    inference_parser.add_argument(
+        "--rules-file",
+        default="rules.csv",
+        help="Inferred pronunciation rules CSV output file.",
+    )
+    inference_parser.add_argument(
+        "--predictions-file",
+        default="predictions.csv",
+        help="Predicted dialect phones CSV output file.",
+    )
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        parents=[common_parent, reconstruct_parent],
+        description=(
+            "Evaluate the reconstruction pipeline on k-fold splits of "
+            "training and test dialects and characters."
+        ),
+        help=(
+            "evaluate reconstruction on held-out dialects and "
+            "characters"
+        ),
+        formatter_class=_HelpFormatter,
+    )
+    evaluate_parser.add_argument(
+        "--folds",
+        type=int,
+        default=10,
+        help=(
+            "Number of folds the dialect pool and the characters are "
+            "each partitioned into; each is truncated to the pool "
+            "size when larger."
+        )
+    )
+    evaluate_parser.add_argument(
+        "--repeat",
+        type=int,
+        default=10,
+        help=(
+            "Number of dialect fold and character fold pairings drawn "
+            "for the evaluation."
+        )
+    )
+    evaluate_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed for the dialect and character splits; the "
+            "splits are purely random by default."
+        )
+    )
+
+    if config is not None:
+        for command_parser in (
+            reconstruct_parser,
+            inference_parser,
+            evaluate_parser,
+        ):
+            option_names = {
+                action.dest
+                for action in command_parser._actions
+                if action.option_strings
+                and action.dest not in {"help", "config"}
+            }
+            defaults = {
+                key.replace("-", "_"): value
+                for key, value in config.items()
+                if key.replace("-", "_") in option_names
+            }
+            command_parser.set_defaults(**defaults)
+
+    return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2615,12 +2654,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     argv = list(argv)
     commands = ("reconstruct", "inference", "evaluate")
     if not argv or argv[0] not in commands + ("-h", "--help"):
-        # the reconstruct command is the default and may be omitted;
-        # a bare help flag shows the help of the main command
         argv = ["reconstruct"] + argv
 
-    # the configuration file may appear before the subcommand and
-    # provides the defaults of the subcommand parsers
     preliminary_parser = argparse.ArgumentParser(add_help=False)
     preliminary_parser.add_argument("--config")
     preliminary_args, _ = preliminary_parser.parse_known_args(argv)
@@ -2629,39 +2664,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if preliminary_args.config is not None
         else None
     )
-
-    parser = argparse.ArgumentParser(
-        prog="reconstruct",
-        description=__doc__,
-        formatter_class=_HelpFormatter,
-    )
-    subparsers = parser.add_subparsers(
-        dest="command",
-        metavar="<command>",
-        help="run `reconstruct <command> --help` for the details of "
-             "each command",
-    )
-    subparsers.add_parser(
-        "reconstruct",
-        prog="reconstruct",
-        parents=[build_parser(config)],
-        help="run the reconstruction pipeline (default)",
-        description=__doc__,
-        formatter_class=_HelpFormatter,
-    )
-    subparsers.add_parser(
-        "inference",
-        parents=[build_inference_parser(config)],
-        help="infer the pronunciation rules of descendant dialects",
-        formatter_class=_HelpFormatter,
-    )
-    subparsers.add_parser(
-        "evaluate",
-        parents=[build_evaluate_parser(config)],
-        help="evaluate the pipeline on held-out dialects and characters",
-        formatter_class=_HelpFormatter,
-    )
-    args = parser.parse_args(argv)
+    args = build_parser(config).parse_args(argv)
     handler = {
         "reconstruct": reconstruct_cmd,
         "inference": inference_cmd,
