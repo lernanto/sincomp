@@ -30,9 +30,9 @@ sincomp similarity [DATASET ...]
 sincomp compare DATASET [OUTPUT]
 sincomp align DATASET [DATASET ...]
 sincomp align evaluate DATASET
-sincomp classifier train RULE_FILE ANNOTATION_FILE [OUTPUT_FILE]
-sincomp classifier evaluate RULE_FILE ANNOTATION_FILE
-sincomp classifier predict [OPTIONS] [INPUT] [OUTPUT]
+sincomp classifier train --annotation-file ANNOTATION_FILE [OPTIONS]
+sincomp classifier evaluate --annotation-file ANNOTATION_FILE [OPTIONS]
+sincomp classifier predict [OPTIONS]
 sincomp reconstruct --dialects DIALECT [DIALECT ...]
 ```
 
@@ -46,11 +46,15 @@ sincomp.cli.similarity [DATASET ...]
 sincomp.cli.compare DATASET [OUTPUT]
 sincomp.cli.align DATASET [DATASET ...]
 sincomp.cli.align evaluate DATASET
-sincomp.cli.classifier train RULE_FILE ANNOTATION_FILE [OUTPUT_FILE]
-sincomp.cli.classifier evaluate RULE_FILE ANNOTATION_FILE
-sincomp.cli.classifier predict [OPTIONS] [INPUT] [OUTPUT]
+sincomp.cli.classifier train --annotation-file ANNOTATION_FILE [OPTIONS]
+sincomp.cli.classifier evaluate --annotation-file ANNOTATION_FILE [OPTIONS]
+sincomp.cli.classifier predict [OPTIONS]
 sincomp.cli.reconstruct --dialects DIALECT [DIALECT ...]
 ```
+
+分类器的输入和输出文件都通过选项指定。训练和预测时可使用相同的
+`--model-file` 选项指定模型文件；预测命令使用 `--input-file` 和
+`--prediction-file` 指定预测结果文件，默认分别从标准输入读取并写入标准输出。
 
 ### 检索数据集
 
