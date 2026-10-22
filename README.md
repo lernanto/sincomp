@@ -30,10 +30,10 @@ sincomp similarity [DATASET ...]
 sincomp compare DATASET [OUTPUT]
 sincomp align DATASET [DATASET ...]
 sincomp align evaluate DATASET
-sincomp classifier train --annotation-file ANNOTATION_FILE [OPTIONS]
-sincomp classifier evaluate --annotation-file ANNOTATION_FILE [OPTIONS]
-sincomp classifier predict [OPTIONS]
-sincomp reconstruct --dialects DIALECT [DIALECT ...]
+sincomp classifier train --config CONFIG [OPTIONS]
+sincomp classifier evaluate --config CONFIG [OPTIONS]
+sincomp classifier predict --config CONFIG [OPTIONS]
+sincomp reconstruct --config CONFIG [OPTIONS]
 ```
 
 面向智能体或其他程序调用时，可以使用带有模块命名空间的入口，参数与人类入口一致：
@@ -46,15 +46,19 @@ sincomp.cli.similarity [DATASET ...]
 sincomp.cli.compare DATASET [OUTPUT]
 sincomp.cli.align DATASET [DATASET ...]
 sincomp.cli.align evaluate DATASET
-sincomp.cli.classifier train --annotation-file ANNOTATION_FILE [OPTIONS]
-sincomp.cli.classifier evaluate --annotation-file ANNOTATION_FILE [OPTIONS]
-sincomp.cli.classifier predict [OPTIONS]
-sincomp.cli.reconstruct --dialects DIALECT [DIALECT ...]
+sincomp.cli.classifier train --config CONFIG [OPTIONS]
+sincomp.cli.classifier evaluate --config CONFIG [OPTIONS]
+sincomp.cli.classifier predict --config CONFIG [OPTIONS]
+sincomp.cli.reconstruct --config CONFIG [OPTIONS]
 ```
 
-分类器的输入和输出文件都通过选项指定。训练和预测时可使用相同的
-`--model-file` 选项指定模型文件；预测命令使用 `--input-file` 和
-`--prediction-file` 指定预测结果文件，默认分别从标准输入读取并写入标准输出。
+`classifier` 和 `reconstruct` 的参数主要通过 JSON 配置文件控制：`--config`
+指定一个扁平的 JSON 文件，其键为不带前导连字符的命令行选项名，如
+`annotation_file`、`model_file`、`dialects` 等。命令行选项仍然可用且优先
+于配置文件。例如 `classifier` 的输入和输出文件既可通过配置文件的
+`model_file` 键指定，也可用 `--model-file` 选项覆盖；`predict` 命令使用
+`input_file` 和 `prediction_file` 键指定预测结果文件，默认分别从标准输入
+读取并写入标准输出。
 
 ### 检索数据集
 
