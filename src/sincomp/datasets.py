@@ -13,6 +13,7 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
+import csv
 import functools
 import io
 import json
@@ -1216,9 +1217,9 @@ class MCPDictDataset(Dataset):
                     sep='\t',
                     usecols=[1],
                     dtype=str,
-                    engine='python',
+                    quoting=csv.QUOTE_NONE,
                     encoding='utf-8',
-                    on_bad_lines='skip'
+                    on_bad_lines='warn'
                 )
                 segments = data.iloc[:, 0].str.extract(
                     r'([^0-9]*)([0-9][0-9a-z]*)?',
@@ -1341,8 +1342,10 @@ class MCPDictDataset(Dataset):
             names=['character', 'ipa', 'note'],
             dtype=str,
             na_values={'character': '\u25a1'},   # 方框代表有音无字
+            quoting=csv.QUOTE_NONE,
             comment='#',
-            encoding='utf-8'
+            encoding='utf-8',
+            on_bad_lines='warn'
         )
 
         data['ipa'] = data['ipa'].str.translate({
