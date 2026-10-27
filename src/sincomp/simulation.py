@@ -10,30 +10,44 @@ inventories from Dirichlet distributions: for each feature, a
 value from that distribution.
 
 The simulation then runs ``n_iter`` generations. In each generation,
-every live dialect splits into a left and a right child, where the
-left child inherits the parent unchanged and the right child merges
-one value of one randomly selected feature into another (the
-inventory of that feature shrinks by one); both the merged values
-and the mutation targets are drawn from the values the dialect
-actually holds. After the split, every character of every child
-mutates every feature independently with probability
-``mutation_rate``, changing it with equal probability to one of the
-other values the child holds for that feature. The population is capped at
-``max_dialects``: every live dialect conceives a left and a right
-child, the conceived children are randomly cut down to the cap, and
-only the surviving children are actually generated and recorded.
-Each generated dialect has a global binary-tree number: the root is 0,
-and a node's left and right children are numbered
-``2 * number + 1`` and ``2 * number + 2``. Sound changes from parent
-to child are returned alongside the dialect records.
+every live dialect splits into a left and a right child. The left child
+inherits the parent unchanged and the right child applies
+one rule sound change: one value of one randomly selected feature is
+replaced with another value of the feature vocabulary. The feature
+is drawn with equal probability among all features, the replaced
+source value among the values the dialect actually holds, and the
+target either uniformly among the other vocabulary values or, when a
+transition matrix is given for the feature, with the probabilities
+of the matrix row of the source as given — the target never equals
+the source — and it may or may not merge two of the values the
+dialect holds into one. After the
+split, every character of every child mutates every feature
+independently with probability ``mutation_rate``, changing it to one
+of the other values the child holds for that feature — uniformly, or
+with the weights of the transition matrix row of the current value.
+The population is capped at ``max_dialects``: every live dialect
+conceives a left and a right child, and a random selection cuts the
+conceived children down to the cap when the population exceeds it.
+The lineages are settled first, and the values are generated
+afterwards in lineage order — only for the dialects with descendants
+surviving to the deepest level, the modern ones and their ancestors,
+so the cut children and the extinct lineages never carry values.
+Every generated right child draws its own rule change, e.g.
+``i5 > i2`` — the change it carries from its parent — while the root
+and the left children inherit unchanged; the tree records a node's
+change on the row of its parent.
 
-:func:`gen_dialects` returns the global binary-tree numbers of all
-generated dialects — a node's parent number follows from its own as
-``(number - 1) // 2`` —, their values, and their incoming sound changes.
-:func:`gen_dataset` rebuilds the phylogenetic tree from this metadata,
-then samples character coverage for the modern dialects, mimicking
-real dialect data whose recorded counts differ across dialects and
-whose occurrences concentrate on a few characters.
+:func:`gen_dialects` returns the global binary-tree numbers of every
+dialect conceived in every generation — cut children included — as one
+ordered array, plus the numbers of the dialects whose lineages survive
+to the deepest level, their values, and their incoming sound changes;
+a node's parent number and generation follow from its own number as
+``(number - 1) // 2`` and ``(number + 1).bit_length() - 1``.
+:func:`gen_dataset`
+rebuilds the phylogenetic tree from this metadata, then samples
+character coverage for the modern dialects, mimicking real dialect
+data whose recorded counts differ across dialects and whose
+occurrences concentrate on a few characters.
 
 The vocabulary values may be given explicit names through the
 ``vocabularies`` argument; unnamed ones auto-encode per feature as
@@ -50,9 +64,10 @@ Usage::
     dataset.get_data("d4_3")
     tree[tree["changed_feature"].notna()]
 
-    numbers, values, changes = gen_dialects(
-        100, n_vocabularies=[4, 3], seed=42
-    )
+    (
+        dialect_numbers, survived_numbers,
+        survived_values, survived_changes,
+    ) = gen_dialects(100, n_vocabularies=[4, 3], seed=42)
 """
 
 __author__ = "黄艺华 <lernanto@foxmail.com>"
@@ -70,6 +85,8 @@ logger = logging.getLogger(__name__)
 
 # the features of the initial-final-tone wrapper
 FEATURES = ("initial", "final", "tone")
+
+
 def _as_rng(seed: int | numpy.random.Generator | None) -> numpy.random.Generator:
     """Return a random generator from a seed or a generator itself.
 
@@ -97,7 +114,7 @@ def _init_ancestor(
     rng: numpy.random.Generator,
     values: numpy.ndarray | None = None,
 ) -> dict:
-    """Initialize the ancestor dialect.
+    """Initialize the value indices of the ancestor dialect.
 
     The values are either given outright through ``values`` or,
     when it is omitted, sampled from a Dirichlet-drawn value
@@ -125,9 +142,8 @@ def _init_ancestor(
     Returns
     -------
     dict
-        The ancestor dialect with the value index of each character
-        per feature, the current inventory sizes, global number zero,
-        parent number -1 and no sound change.
+        The value index of every character per feature, keyed by the
+        feature position.
 
     Raises
     ------
@@ -161,43 +177,37 @@ def _init_ancestor(
                 "the corresponding vocabulary"
             ) from None
 
-    return {
-        "values": indices,
-        "sizes": [len(names) for names in vocabularies],
-        "number": 0, "parent": -1, "change": (None, None, None),
-    }
+    return indices
 
 
 def _mutate(
     indices: numpy.ndarray,
     rate: float,
     rng: numpy.random.Generator,
+    matrix: numpy.ndarray | None = None,
 ) -> numpy.ndarray:
     """Mutate the value of each character in place.
 
     Each character keeps its value with probability ``1 - rate`` and
-    changes it with equal probability to one of the other values the
-    dialect actually holds, so a mutation never introduces a value
-    that the dialect does not use.
-
-    The characters are selected as mutation candidates with
-    probability ``k * rate / (k - 1)`` — slightly more than ``rate``
-    — where ``k`` is the number of values the dialect holds, and
-    every candidate redraws its value uniformly from those ``k``
-    values; the redraws that hit the current value leave the
-    character unchanged. A character therefore changes with
-    probability ``rate`` to a value drawn uniformly from the other
-    ``k - 1`` present values.
+    changes it with probability ``rate`` to one of the other values
+    the dialect holds, so a mutation never introduces a value that
+    the dialect does not use. The new value is drawn uniformly from
+    the other present values, or, when a transition matrix is given,
+    with the weights of the matrix row of the current value
+    restricted to the other present values; the rows without any
+    weight on another present value cannot mutate.
 
     Parameters
     ----------
     indices : numpy.ndarray
         The value indices of the characters, mutated in place.
     rate : float
-        Mutation probability of each character; must not exceed
-        ``(k - 1) / k`` for the ``k`` values the dialect holds.
+        Mutation probability of each character.
     rng : numpy.random.Generator
         The random generator.
+    matrix : numpy.ndarray | None
+        The transition probability matrix of the feature over its
+        vocabulary; ``None`` redraws uniformly.
 
     Returns
     -------
@@ -207,28 +217,46 @@ def _mutate(
     Raises
     ------
     ValueError
-        If the present values cannot support the mutation rate.
+        If the mutation rate is outside ``[0, 1]``.
     """
 
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError("the mutation rate must be within [0, 1]")
     used = numpy.unique(indices)
     if len(used) < 2:
         # a single present value has nothing to change into
         return indices
-    p = len(used) * rate / (len(used) - 1)
-    if p > 1:
-        raise ValueError(
-            f"the mutation rate exceeds what the {len(used)} present "
-            "values support"
-        )
-    mask = rng.random(indices.shape[0]) < p
-    count = int(numpy.count_nonzero(mask))
+    mask = rng.random(indices.shape[0]) < rate
+    positions = numpy.flatnonzero(mask)
+    count = len(positions)
     changed = 0
     if count:
-        draws = rng.choice(used, size=count)
-        current = indices[mask]
-        # fresh draws hitting the current value change nothing
+        current = indices[positions]
+        if matrix is None:
+            weights = numpy.ones((count, len(used)))
+        else:
+            # every candidate redraws from the other present values
+            # with the weights of the matrix row of its current
+            # value; the rows without mass on another present value
+            # cannot mutate
+            weights = matrix[current[:, None], used]
+        # the current value itself is never the target
+        weights[
+            numpy.arange(count), numpy.searchsorted(used, current)
+        ] = 0.0
+        totals = weights.sum(axis=1)
+        draws = current.copy()
+        valid = totals > 0
+        if valid.any():
+            rows = weights[valid]
+            rows = rows / totals[valid, None]
+            boundaries = numpy.cumsum(rows, axis=1)
+            picks = (
+                boundaries < rng.random(int(valid.sum()))[:, None]
+            ).sum(axis=1)
+            draws[valid] = used[numpy.minimum(picks, len(used) - 1)]
         hits = draws != current
-        indices[numpy.flatnonzero(mask)[hits]] = draws[hits]
+        indices[positions[hits]] = draws[hits]
         changed = int(numpy.count_nonzero(hits))
     logger.debug(
         "mutated %d of %d characters over %d present values",
@@ -237,134 +265,92 @@ def _mutate(
     return indices
 
 
-def _pick_feature(dialect: dict, rng: numpy.random.Generator) -> tuple:
-    """Draw a feature of the dialect for a sound change.
-
-    Only the features where the dialect still distinguishes at least
-    two values take part — a feature with a single value has no room
-    for a change — and the more values a feature still distinguishes,
-    the more room a change has, so the feature is drawn with
-    probability proportional to the number of values it holds.
-
-    Parameters
-    ----------
-    dialect : dict
-        The dialect whose features are drawn from.
-    rng : numpy.random.Generator
-        The random generator.
-
-    Returns
-    -------
-    tuple
-        The drawn feature and the values it currently holds.
-
-    Raises
-    ------
-    ValueError
-        If no feature distinguishes two values any more.
-    """
-
-    eligible = []
-    present = []
-    for f, values_f in dialect["values"].items():
-        used = numpy.unique(values_f)
-        if len(used) >= 2:
-            eligible.append(f)
-            present.append(used)
-    if not eligible:
-        raise ValueError(
-            "no feature distinguishes two values any more; the "
-            "vocabularies cannot support another generation"
-        )
-    counts = numpy.array([len(used) for used in present], dtype=float)
-    index = int(rng.choice(len(eligible), p=counts / counts.sum()))
-    return eligible[index], present[index]
-
-
 def _generate(
-    dialect: dict,
+    values: dict,
     vocabularies: list[numpy.ndarray],
+    transition_matrices: list[numpy.ndarray],
     rate: float,
     rng: numpy.random.Generator,
-    merge: bool,
-) -> dict:
-    """Generate one child of a split dialect.
+    change: bool,
+) -> tuple[dict, int | None, int | None, int | None]:
+    """Generate the values of one child of a split dialect.
 
-    The child copies the parent. When ``merge`` is set it applies the
-    rule sound change of the split — one value of one randomly
-    selected feature merges into another, and the inventory of that
-    feature shrinks by one. Independently of the rule change, every
-    character of every feature then mutates with probability ``rate``
-    into another value that the feature holds. The rule-change
-    feature is drawn among the features where the dialect still
-    distinguishes at least two values, with probability proportional
-    to the number of values each one still distinguishes, and the
-    source, the target and the mutation targets are drawn from the
-    values the dialect actually holds, so a change never idles. The
-    child carries its global binary-tree number and its parent's
-    global number.
+    The child copies the parent. When ``change`` is set — the child is
+    the right one of the split — it applies one rule sound change:
+    the feature is drawn with equal probability among all features,
+    the replaced source value among the values the dialect actually
+    holds, and the target with the probabilities of the transition
+    matrix row of the source — the target never equals the source —
+    and it may or may not merge two of the values the dialect
+    holds into one. Independently of the rule change, every character
+    of every feature then mutates with probability ``rate`` into
+    another value that the feature holds.
+
 
     Parameters
     ----------
-    dialect : dict
-        The parent dialect.
+    values : dict
+        The value index of every character of the parent per feature.
     vocabularies : list[numpy.ndarray]
         The value names of each feature.
+    transition_matrices : list[numpy.ndarray]
+        The transition probability matrix of each feature, with the
+        rows summing to one; the caller fills the missing ones with
+        the uniform distribution over the other values.
     rate : float
         Mutation probability of each character for each feature.
     rng : numpy.random.Generator
         The random generator.
-    merge : bool
+    change : bool
         Whether the child applies the rule sound change.
 
     Returns
     -------
-    dict
-        The child dialect with its incoming sound change in
-        ``child["change"]`` as a tuple of the feature index and the
-        source and target value names, or all ``None`` when the child
-        inherits unchanged.
+    tuple[dict, int | None, int | None, int | None]
+        The value index of every character of the child per feature
+        and, when the child applies a rule change, the feature, the
+        source value and the target value of the change; all three
+        are ``None`` when it does not.
 
     Raises
     ------
     ValueError
-        If no feature distinguishes two values any more.
+        If the mutation rate is outside ``[0, 1]`` or the drawn
+        target of the rule change equals its source.
     """
 
-    # Heap indexing uniquely identifies nodes, even when some nodes
-    # were not generated under the population cap.
-    child = {
-        "values": {g: v.copy() for g, v in dialect["values"].items()},
-        "sizes": list(dialect["sizes"]),
-        "number": 2 * dialect["number"] + 1 + int(merge),
-        "parent": dialect["number"],
-        "change": (None, None, None),
-    }
-
-    if merge:
-        f, used = _pick_feature(dialect, rng)
-        # the source and the target are values the dialect actually
-        # holds, so the merge never idles
+    child = {f: v.copy() for f, v in values.items()}
+    f = source = target = None
+    if change:
+        # the feature of the rule change is drawn with equal
+        # probability among all features
+        f = int(rng.integers(len(vocabularies)))
+        used = numpy.unique(child[f])
+        # the source is a value the dialect actually holds
         source = int(used[rng.integers(0, len(used))])
-        others = used[used != source]
-        target = int(others[rng.integers(0, len(others))])
-        child["values"][f][child["values"][f] == source] = target
-        child["sizes"][f] = dialect["sizes"][f] - 1
-        child["change"] = (
-            f, vocabularies[f][source], vocabularies[f][target],
-        )
-        logger.debug(
-            "d%d: rule change %s > %s",
-            child["number"], vocabularies[f][source],
-            vocabularies[f][target],
-        )
-
+        # the target is any value of the vocabulary, drawn with the
+        # row as given, so the change may or may not merge two
+        # present values
+        target = int(rng.choice(
+            len(vocabularies[f]), p=transition_matrices[f][source]
+        ))
+        if target == source:
+            raise ValueError(
+                "the drawn target of the rule change equals its source"
+            )
+        child[f][child[f] == source] = target
+        if len(used) >= 2 and len(numpy.unique(child[f])) == 1:
+            logger.warning(
+                "the rule change %s > %s leaves feature %s with a single "
+                "value, which later rule changes may still shift "
+                "but mutations cannot touch any more",
+                vocabularies[f][source], vocabularies[f][target], f,
+            )
     # every character of every feature mutates independently into
     # another value that the feature holds
-    for values_f in child["values"].values():
-        _mutate(values_f, rate, rng)
-
-    return child
+    for feature, values_f in child.items():
+        _mutate(values_f, rate, rng, transition_matrices[feature])
+    return child, f, source, target
 
 
 def _build_tree(
@@ -447,6 +433,7 @@ def gen_dialects(
     max_dialects: int = 10,
     mutation_rate: float = 0.01,
     alpha: float = 1.0,
+    transition_matrices: list[numpy.ndarray | None] | None = None,
     seed: int | numpy.random.Generator | None = None,
 ) -> tuple[numpy.ndarray, numpy.ndarray, list[tuple]]:
     """Simulate dialect formation from a common ancestor.
@@ -455,21 +442,30 @@ def gen_dialects(
     character — either given outright through ``values`` or sampled
     from a Dirichlet-drawn value distribution. Over ``n_iter``
     generations the dialects split into children of which the right
-    one carries one rule sound change (a value merge) and each child
-    carries per-character mutations that touch every feature
-    independently, while the population is
-    capped at ``max_dialects``: every live dialect conceives two
-    children, a random selection keeps ``max_dialects`` of the
-    conceived children, and only the selected ones are actually
-    generated and recorded.
+    one carries one rule sound change — one value of one randomly
+    selected feature is replaced with another value of the feature
+    vocabulary, which may or may not merge two of the values the
+    dialect holds into one — and each child carries per-character
+    mutations that touch every feature independently, while the
+    population is capped at ``max_dialects``: every live dialect
+    conceives two children, and a random selection keeps
+    ``max_dialects`` of the conceived children when the population
+    exceeds the cap.
 
-    The returned arrays cover every dialect that was generated.
-    ``numbers`` holds the global binary-tree number of each node —
-    the parent number follows from the node's own as
-    ``(number - 1) // 2``, and nodes omitted by the population cap
-    are represented by gaps in the numbers. ``changes`` records the
-    sound change from each node's parent, or all ``None`` for the
-    root and unchanged branches.
+    The lineages are settled first: ``dialect_numbers`` records the
+    global binary-tree number of every dialect conceived in every
+    generation, cut children included, as one ordered array — the
+    generation of a dialect follows from its number, so no
+    per-generation information is lost. The values are generated
+    afterwards, only for the lineages surviving to the deepest level —
+    the modern ones and their ancestors. ``survived_numbers`` holds
+    the global binary-tree number of each surviving node — the parent
+    number follows from the node's own as ``(number - 1) // 2``.
+    ``survived_changes`` records the sound change each node carries
+    from its parent as a tuple of the feature index and the source and
+    target value names, or all ``None`` for the root and unchanged
+    branches. Use :func:`sample_chars` to draw the incomplete
+    character coverage of real dialect data.
 
     One of ``n_vocabularies``, ``vocabularies`` and ``values`` must
     be given; the vocabulary values may be named explicitly through
@@ -500,32 +496,49 @@ def gen_dialects(
         when ``vocabularies`` is omitted it is inferred from the
         observed values.
     n_iter : int, default=5
-        Number of generations; must be smaller than the smallest
-        value vocabulary so that the vocabularies never run out.
+        Number of generations.
     max_dialects : int, default=10
         Maximum number of live dialects per generation.
     mutation_rate : float, default=0.01
-        Probability that one character mutates the selected feature
-        in one split; the probability that a character keeps its
-        ancestral value decays as ``(1 - mutation_rate) ** n_iter``,
+        Probability that one character mutates one feature in one
+        split; the probability that a character keeps its ancestral
+        value decays as ``(1 - mutation_rate) ** n_iter``,
         so keep the rate small for simulations of many generations.
     alpha : float, default=1.0
         Concentration of the Dirichlet distribution of the ancestor
         value distribution; smaller values concentrate the characters
         on fewer values. Unused when ``values`` is given.
+    transition_matrices : list[numpy.ndarray | None] | None
+        Transition probability matrix of each feature as an array of
+        shape ``(len(vocabulary), len(vocabulary))``, where entry
+        ``(i, j)`` is the probability that a change of the value
+        ``i`` draws the value ``j`` as its target. The rows must sum
+        to one and are used exactly as given: a non-zero diagonal
+        warns, and a draw that hits the source itself raises
+        ``ValueError``. The whole argument or any single
+        matrix may be ``None``, which fills it with the uniform
+        distribution over the other values of the vocabulary before
+        the simulation starts. The matrices steer both the rule
+        sound changes, whose targets may be any value of the
+        vocabulary, and the mutations, whose targets are restricted
+        to the values the dialect holds.
     seed : int | numpy.random.Generator | None
         Seed of the random generator, or the generator itself, for
         reproducibility.
 
     Returns
     -------
-    tuple[numpy.ndarray, numpy.ndarray, list[tuple]]
-        The global binary-tree number of each generated dialect as a
-        one-dimensional integer array, its values as an array of
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, list[tuple]]
+        The global binary-tree number of every dialect conceived in
+        every generation, cut children included, as one ordered
+        one-dimensional integer array, the numbers of the dialects
+        whose lineages survive to the deepest level as one ordered
+        one-dimensional integer array, their values as an array of
         shape ``(n_dialects, n_characters, n_features)``, and the
-        incoming sound change of each node as a tuple of the feature
-        index and the source and target value names, all ``None``
-        for the root and unchanged branches.
+        incoming sound change of each surviving node as a tuple of the
+        feature index and the source and target value names, all
+        ``None`` for the root and unchanged branches. The three
+        surviving arrays align by position.
 
     Raises
     ------
@@ -533,8 +546,10 @@ def gen_dialects(
         If a structural argument is out of range, if the vocabulary
         and value arguments disagree with ``n_features`` or
         ``n_characters``, if the number of features or the
-        vocabularies cannot be inferred from anywhere, or if the
-        given arguments disagree about the number of features.
+        vocabularies cannot be inferred from anywhere, if the given
+        arguments disagree about the number of features, or if a
+        transition matrix does not match its feature or its rows do
+        not sum to one.
     """
 
     # the number of features is inferred from whichever argument
@@ -614,22 +629,54 @@ def gen_dialects(
         raise ValueError("max_dialects must be at least 1")
     if n_iter < 1:
         raise ValueError("n_iter must be at least 1")
-    if n_iter >= min(sizes):
-        raise ValueError(
-            "n_iter must be smaller than the smallest value inventory"
-        )
     if not 0.0 < mutation_rate < 1.0:
         raise ValueError("mutation_rate must be within (0, 1)")
     if n_characters < 1:
         raise ValueError("n_characters must be at least 1")
 
-    if min(sizes) - n_iter <= 2:
-        logger.warning(
-            "the smallest value inventory of %d values is only %d "
-            "above the %d generations and may run out in deep "
-            "lineages",
-            min(sizes), min(sizes) - n_iter, n_iter,
+    if transition_matrices is None:
+        transition_matrices = [None] * n_features
+    if len(transition_matrices) != n_features:
+        raise ValueError(
+            "transition_matrices must hold one matrix per feature"
         )
+    # the missing matrices are filled with the uniform distribution
+    # over the other values of the vocabulary before the simulation
+    # starts, so the generation never samples a distribution on the
+    # fly
+    checked = []
+    for f, matrix in enumerate(transition_matrices):
+        if matrix is None:
+            matrix = numpy.full((sizes[f], sizes[f]), 1.0 / (sizes[f] - 1))
+            numpy.fill_diagonal(matrix, 0.0)
+        else:
+            matrix = numpy.asarray(matrix, dtype=float)
+            if matrix.shape != (sizes[f], sizes[f]):
+                raise ValueError(
+                    f"the transition matrix of the feature "
+                    f"{f} must be of shape "
+                    f"({sizes[f]}, {sizes[f]})"
+                )
+            if not numpy.isfinite(matrix).all() or (matrix < 0).any():
+                raise ValueError(
+                    f"the transition matrix of the feature "
+                    f"{f} must be finite and non-negative"
+                )
+            if not numpy.isclose(matrix.sum(axis=1), 1.0).all():
+                raise ValueError(
+                    f"the rows of the transition matrix of the "
+                    f"feature {f} must sum to one"
+                )
+            if (numpy.diag(matrix) != 0).any():
+                logger.warning(
+                    "the transition matrix of the feature %s assigns "
+                    "probability to the source itself; such a draw "
+                    "of a rule change is rejected",
+                    f,
+                )
+        checked.append(matrix)
+    transition_matrices = checked
+
     if 1.0 - (1.0 - mutation_rate) ** n_iter > 0.5:
         logger.warning(
             "only %.0f%% of the characters keep their ancestral "
@@ -644,79 +691,78 @@ def gen_dialects(
         "inventories %s, population cap %d, mutation rate %s",
         n_iter, n_characters, sizes, max_dialects, mutation_rate,
     )
-    dialects = [
+    # phase 1: settle the lineages — every live dialect of a
+    # generation conceives the left and the right child 2n+1 and 2n+2;
+    # when the children outnumber max_dialects, a random selection of
+    # the numbers survives and the rest die out without conceiving
+    # children of their own. The relation of the dialects is fully
+    # determined by their numbers, so this phase operates on numbers
+    # alone
+    numbers = numpy.zeros(1, dtype=numpy.int64)
+    generations = [numbers]
+    for gen in range(n_iter):
+        children = numpy.concatenate((2 * numbers + 1, 2 * numbers + 2))
+        if len(children) > max_dialects:
+            children = rng.choice(children, size=max_dialects, replace=False)
+        generations.append(children)
+        numbers = generations[-1]
+        logger.debug(
+            "generation %d: %d children survive the cap",
+            gen + 1, len(numbers),
+        )
+    # the generation of a dialect follows from its number, so the
+    # conceived dialects of every generation fold into one ordered
+    # array without losing the per-generation information
+    dialect_numbers = numpy.sort(numpy.concatenate(generations))
+
+    # phase 2: generate values only for the lineages surviving to the
+    # deepest level and their ancestors; the parent number of a
+    # dialect is always (number - 1) // 2, so every generation's
+    # surviving numbers derive from the one below
+    survived_numbers = [generations[-1]]
+    for numbers in reversed(generations[:-1]):
+        survived_numbers.append(numpy.unique((survived_numbers[-1] - 1) // 2))
+    survived_numbers = numpy.sort(numpy.concatenate(survived_numbers))
+
+    # the first surviving dialect is the ancestor
+    generated = [
         _init_ancestor(n_characters, vocabularies, alpha, rng, values)
     ]
-    # live stores dialect-list positions; each node's global number is
-    # independent of list position and follows binary-heap indexing.
-    live = [0]
-
-    for step in range(n_iter):
-        # every live dialect conceives a left and a right child; the
-        # children are only booked until a random selection keeps
-        # max_dialects of them, and only the surviving children are
-        # actually generated and recorded — the deleted ones are
-        # implied by the gaps in the dialect IDs of the recorded tree
-        booked = []
-        for parent in live:
-            booked.extend(((parent, False), (parent, True)))
-        if len(booked) > max_dialects:
-            chosen = set(
-                rng.choice(len(booked), size=max_dialects,
-                           replace=False).tolist()
+    changes = [(None, None, None)]
+    for i in range(1, len(survived_numbers)):
+        number = int(survived_numbers[i])
+        parent = int(
+            numpy.searchsorted(survived_numbers, (number - 1) // 2)
+        )
+        (
+            val, f, source, target,
+        ) = _generate(
+            generated[parent], vocabularies,
+            transition_matrices, mutation_rate, rng,
+            change=number % 2 == 0,
+        )
+        if f is not None:
+            change = (f, vocabularies[f][source], vocabularies[f][target])
+            logger.debug(
+                "%s: rule change %s > %s",
+                _dialect_id(number),
+                vocabularies[f][source], vocabularies[f][target],
             )
         else:
-            chosen = set(range(len(booked)))
-        logger.debug(
-            "generation %d: %d live dialects conceive %d children, "
-            "%d survive the cap",
-            step + 1, len(live), len(booked), len(chosen),
-        )
+            change = (None, None, None)
+        generated.append(val)
+        changes.append(change)
 
-        # generate the surviving children only, grouped by parent;
-        # the children of every parent stay consecutive in booked
-        children = {}
-        for i, (parent, is_right) in enumerate(booked):
-            if i in chosen:
-                children.setdefault(parent, []).append(is_right)
-        live = []
-        for parent, flags in children.items():
-            if len(flags) == 2:
-                left = _generate(
-                    dialects[parent], vocabularies, mutation_rate, rng,
-                    merge=False,
-                )
-                right = _generate(
-                    dialects[parent], vocabularies, mutation_rate, rng,
-                    merge=True,
-                )
-                dialects.extend((left, right))
-                live.extend((len(dialects) - 2, len(dialects) - 1))
-            else:
-                # one child of the split was cut by the population cap
-                # before generation: the survivor applies the rule
-                # change exactly when it is the right child
-                child = _generate(
-                    dialects[parent], vocabularies, mutation_rate, rng,
-                    merge=flags[0],
-                )
-                dialects.append(child)
-                live.append(len(dialects) - 1)
-
-    logger.info("%d dialects generated in %d generations",
-                len(dialects), n_iter)
-    numbers = numpy.asarray(
-        [dialect["number"] for dialect in dialects], dtype=int
+    # the generated value dictionaries align with the surviving
+    # numbers by position, so they fold into the values array in order
+    survived_values = numpy.empty(
+        (len(generated), n_characters, n_features), dtype=object
     )
-    changes = [dialect["change"] for dialect in dialects]
-    dialect_values = numpy.empty(
-        (len(dialects), n_characters, n_features), dtype=object
-    )
-    for i, dialect in enumerate(dialects):
+    for i, val in enumerate(generated):
         for f, vocabulary in enumerate(vocabularies):
-            dialect_values[i, :, f] = vocabulary[dialect["values"][f]]
-    logger.info("generated values for %d dialects", len(numbers))
-    return numbers, dialect_values, changes
+            survived_values[i, :, f] = vocabulary[val[f]]
+    logger.info("generated values for %d dialects", len(survived_numbers))
+    return dialect_numbers, survived_numbers, survived_values, changes
 
 
 def sample_chars(
@@ -842,6 +888,7 @@ def gen_dataset(
     n_iter: int = 4,
     mutation_rate: float = 0.01,
     alpha: float = 1.0,
+    transition_matrices: list[numpy.ndarray | None] | None = None,
     sample_beta_alpha: float = 5.0,
     sample_beta_beta: float = 5.0,
     sample_dirichlet_alpha: float = 1.0,
@@ -892,8 +939,7 @@ def gen_dataset(
         dialects afterwards. When it exceeds the number of modern
         dialects, all of them are kept and a warning is logged.
     n_iter : int, default=4
-        Number of generations; must be smaller than the smallest
-        phone inventory so that the inventories never run out.
+        Number of generations.
     mutation_rate : float, default=0.01
         Probability that one character mutates the selected feature
         in one split; the probability that a character keeps its
@@ -903,6 +949,10 @@ def gen_dataset(
         Concentration of the Dirichlet distribution of the ancestor
         phone distribution; smaller values concentrate the characters
         on fewer phones.
+    transition_matrices : list[numpy.ndarray | None] | None
+        Transition probability matrices for the initial, final and
+        tone inventories, in that order. Each matrix follows the
+        format described by :func:`gen_dialects`.
     sample_beta_alpha : float, default=5.0
         First shape parameter of the coverage beta distribution of
         :func:`sample_chars`; the mean coverage of every modern
@@ -991,7 +1041,10 @@ def gen_dataset(
         raise ValueError("n_dialects must be at least 1")
 
     rng = _as_rng(seed)
-    numbers, dialect_values, changes = gen_dialects(
+    (
+        dialect_numbers, survived_numbers,
+        survived_values, survived_changes,
+    ) = gen_dialects(
         n_characters,
         len(FEATURES),
         vocabularies=values,
@@ -999,16 +1052,29 @@ def gen_dataset(
         max_dialects=max_dialects,
         mutation_rate=mutation_rate,
         alpha=alpha,
+        transition_matrices=transition_matrices,
         seed=rng,
     )
-    tree = _build_tree(numbers, changes, list(FEATURES))
+    # the tree covers every dialect conceived in every generation,
+    # but only the surviving ones carry a sound change and values
+    changes_by_number = dict(zip(
+        survived_numbers.tolist(), survived_changes,
+    ))
+    tree = _build_tree(
+        dialect_numbers,
+        [
+            changes_by_number.get(number, (None, None, None))
+            for number in dialect_numbers.tolist()
+        ],
+        list(FEATURES),
+    )
     levels = numpy.asarray([
         (int(number) + 1).bit_length() - 1
-        for number in numbers
+        for number in survived_numbers
     ])
     modern_mask = levels == n_iter
-    modern_numbers = numbers[modern_mask]
-    modern_values = dialect_values[modern_mask]
+    modern_numbers = survived_numbers[modern_mask]
+    modern_values = survived_values[modern_mask]
     if n_dialects is not None:
         if n_dialects > len(modern_numbers):
             logger.warning(
