@@ -128,7 +128,7 @@ class GenerateTest(unittest.TestCase):
         matrices = [numpy.array([[0.0, 1.0], [1.0, 0.0]])]
 
         child, f, source, target = _generate(
-            values, [["a", "b"]], matrices, 0.0,
+            values, [2], matrices, 0.0,
             numpy.random.default_rng(42), change=False,
         )
 
@@ -142,7 +142,7 @@ class GenerateTest(unittest.TestCase):
         matrices = [numpy.array([[0.0, 1.0], [1.0, 0.0]])]
 
         child, f, source, target = _generate(
-            values, [["a", "b"]], matrices, 0.0,
+            values, [2], matrices, 0.0,
             numpy.random.default_rng(42), change=True,
         )
 
@@ -158,7 +158,7 @@ class GenerateTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _generate(
-                values, [["a", "b"]], matrices, 0.0,
+                values, [2], matrices, 0.0,
                 numpy.random.default_rng(42), change=True,
             )
 
@@ -169,7 +169,7 @@ class GenDialectsTest(unittest.TestCase):
             (
                 dialect_numbers, numbers, values, changes,
             ) = gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 n_iter=3, max_dialects=4, seed=seed,
             )
 
@@ -203,9 +203,10 @@ class GenDialectsTest(unittest.TestCase):
             self.assertTrue(4 <= len(numbers) <= 11)
             self.assertEqual(values.shape, (len(numbers), 100, 2))
             self.assertTrue(numpy.issubdtype(numbers.dtype, numpy.integer))
-            self.assertEqual(len(changes), len(numbers))
+            self.assertEqual(changes.shape, (len(numbers), 3))
+            self.assertTrue(numpy.issubdtype(changes.dtype, numpy.integer))
             self.assertEqual(numbers[0], 0)
-            self.assertEqual(changes[0], (None, None, None))
+            self.assertListEqual(changes[0].tolist(), [-1, -1, -1])
 
             number_set = set(numbers.tolist())
             self.assertEqual(len(number_set), len(numbers))
@@ -222,12 +223,12 @@ class GenDialectsTest(unittest.TestCase):
                 if (number + 1).bit_length() - 1 == 3
             ]
             self.assertEqual(len(modern), 4)
-            for number, change in zip(numbers.tolist(), changes):
+            for number, change in zip(numbers.tolist(), changes.tolist()):
                 if number > 0 and number % 2 == 0:
-                    self.assertIsInstance(change[0], int, number)
+                    self.assertGreaterEqual(change[0], 0, number)
                     self.assertNotEqual(change[1], change[2], number)
                 else:
-                    self.assertEqual(change, (None, None, None), number)
+                    self.assertEqual(change, [-1, -1, -1], number)
 
     def test_population_per_level(self):
         # only the lineages surviving to the deepest level are
@@ -235,25 +236,24 @@ class GenDialectsTest(unittest.TestCase):
         # dialects, and the deepest level fills the cap
         for seed in SEEDS:
             _, numbers, _, _ = gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 n_iter=3, max_dialects=4, seed=seed,
             )
 
-            levels = [
-                (number + 1).bit_length() - 1
-                for number in numbers.tolist()
-            ]
-            for level in range(3):
-                self.assertLessEqual(levels.count(level), min(2 ** level, 4))
-            self.assertEqual(levels.count(3), 4)
+            levels = numpy.floor(numpy.log2(numbers + 1)).astype(int)
+            for level in range(4):
+                self.assertLessEqual(
+                    (levels == level).sum(), min(2 ** level, 4)
+                )
+            self.assertEqual((levels == 3).sum(), 4)
 
     def test_reproducible_with_seed(self):
         first = gen_dialects(
-            100, 2, n_vocabularies=[5, 4],
+            100, 2, n_categories=[5, 4],
             n_iter=3, max_dialects=4, seed=42,
         )
         second = gen_dialects(
-            100, 2, n_vocabularies=[5, 4],
+            100, 2, n_categories=[5, 4],
             n_iter=3, max_dialects=4, seed=42,
         )
 
@@ -261,31 +261,37 @@ class GenDialectsTest(unittest.TestCase):
             numpy.testing.assert_array_equal(first_array, second_array)
 
     def test_explicit_values(self):
+        # the caller owns the code translation: the generated value
+        # codes decode into the names of the caller's own vocabulary
+        vocabularies = [["x", "y", "z"], ["1", "2", "3"]]
         for seed in SEEDS:
             _, _, values, _ = gen_dialects(
-                100, 2, vocabularies=[["x", "y", "z"], ["1", "2", "3"]],
+                100, 2, n_categories=[3, 3],
                 n_iter=2, max_dialects=4, seed=seed,
             )
+            decoded = [
+                numpy.asarray(vocab)[values[:, :, f]]
+                for f, vocab in enumerate(vocabularies)
+            ]
 
-            self.assertTrue(set(values[:, :, 0].reshape(-1)) <= {"x", "y", "z"})
-            self.assertTrue(set(values[:, :, 1].reshape(-1)) <= {"1", "2", "3"})
+            self.assertTrue(set(decoded[0].reshape(-1)) <= {"x", "y", "z"})
+            self.assertTrue(set(decoded[1].reshape(-1)) <= {"1", "2", "3"})
 
     def test_values_seed_the_ancestor(self):
-        # the given values are the ancestor values: the root dialect
+        # the given codes are the ancestor values: the root dialect
         # holds exactly them, whatever the seed is
         values = numpy.array([
-            ["x", "1"],
-            ["y", "2"],
-            ["x", "1"],
-            ["z", "3"],
+            [0, 0],
+            [1, 1],
+            [0, 0],
+            [2, 2],
         ])
         for seed in SEEDS:
-            _, numbers, survived, _ = gen_dialects(
+            _, _, survived, _ = gen_dialects(
                 4, 2, values=values,
                 n_iter=2, max_dialects=4, seed=seed,
             )
 
-            self.assertEqual(numbers[0], 0)
             numpy.testing.assert_array_equal(survived[0], values)
 
     def test_values_may_not_cover_the_vocabulary(self):
@@ -293,63 +299,64 @@ class GenDialectsTest(unittest.TestCase):
         # two features hold two distinct values each, so one merge
         # can never exhaust both of them
         values = numpy.array([
-            ["x", "1"],
-            ["y", "2"],
-            ["x", "1"],
-            ["y", "2"],
+            [0, 0],
+            [1, 1],
+            [0, 0],
+            [1, 1],
         ])
         for seed in SEEDS:
             _, _, survived, _ = gen_dialects(
-                4, 2,
-                vocabularies=[["x", "y", "z", "w"], ["1", "2", "3", "4"]],
+                4, 2, n_categories=[4, 4],
                 values=values, n_iter=2, max_dialects=4, seed=seed,
             )
 
-            self.assertTrue(set(survived[:, :, 0].reshape(-1)) <= {"x", "y", "z", "w"})
-            self.assertTrue(set(survived[:, :, 1].reshape(-1)) <= {"1", "2", "3", "4"})
+            for f in range(2):
+                self.assertTrue(
+                    ((survived[:, :, f] >= 0)
+                     & (survived[:, :, f] < 4)).all()
+                )
 
     def test_infer_from_values(self):
         # every structural argument is inferred from the values: the
-        # number of features, the vocabularies and the character count
+        # number of features and the vocabulary sizes, and the root
+        # holds the given codes exactly
         values = numpy.array([
-            ["x", "1"],
-            ["y", "2"],
-            ["z", "3"],
-            ["w", "4"],
+            [0, 0],
+            [1, 1],
+            [2, 2],
+            [3, 3],
         ])
         _, numbers, survived, _ = gen_dialects(
             4, values=values, n_iter=1, max_dialects=4, seed=42,
         )
 
-        self.assertEqual(numbers[0], 0)
         self.assertEqual(survived.shape[1:], (4, 2))
         numpy.testing.assert_array_equal(survived[0], values)
 
     def test_n_features_inferred(self):
         # n_features is inferred from whichever argument carries it
         _, _, survived, _ = gen_dialects(
-            100, n_vocabularies=[5, 4],
+            100, n_categories=[5, 4],
             n_iter=2, max_dialects=4, seed=42,
         )
         self.assertEqual(survived.shape[2], 2)
         _, _, survived, _ = gen_dialects(
-            100, vocabularies=[["x", "y", "z"], ["1", "2", "3"]],
+            100, n_categories=[3, 3],
             n_iter=2, max_dialects=4, seed=42,
         )
         self.assertEqual(survived.shape[2], 2)
 
     def test_n_features_mismatch_raises(self):
         with self.assertRaises(ValueError):
-            gen_dialects(100, 3, n_vocabularies=[3, 4], seed=42)
+            gen_dialects(100, 3, n_categories=[3, 4], seed=42)
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 3, vocabularies=[["x", "y"], ["1", "2"]], seed=42,
+                100, 3, values=numpy.array([[0, 1], [1, 0]]), seed=42,
             )
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 2, values=numpy.array(
-                    [["x", "1", "a"], ["y", "2", "b"]]
-                ),
+                100, 2,
+                values=numpy.array([[0, 1, 2], [1, 0, 1]]),
                 seed=42,
             )
 
@@ -359,8 +366,8 @@ class GenDialectsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen_dialects(
                 100,
-                values=numpy.array([["x", "1", "a"], ["y", "2", "b"]]),
-                n_vocabularies=[3, 4],
+                values=numpy.array([[0, 1, 2], [1, 0, 1]]),
+                n_categories=[3, 4],
                 seed=42,
             )
 
@@ -368,13 +375,13 @@ class GenDialectsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen_dialects(
                 5, 1,
-                values=numpy.array([["x"], ["y"]]),
+                values=numpy.array([[0], [1]]),
                 n_iter=1, max_dialects=4, seed=42,
             )
         with self.assertRaises(ValueError):
             gen_dialects(
-                2, 1, vocabularies=[["x", "y"]],
-                values=numpy.array([["x"], ["q"]]),
+                2, 1, n_categories=[1],
+                values=numpy.array([[0], [1]]),
                 n_iter=1, max_dialects=4, seed=42,
             )
 
@@ -385,14 +392,14 @@ class GenDialectsTest(unittest.TestCase):
         # never reintroduce the source
         for seed in SEEDS:
             _, numbers, values, changes = gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 n_iter=3, max_dialects=4, seed=seed,
             )
             positions = {
                 number: i for i, number in enumerate(numbers.tolist())
             }
             for i, (f, source, target) in enumerate(changes):
-                if f is None:
+                if f < 0:
                     continue
                 number = int(numbers[i])
                 parent = positions[(number - 1) // 2]
@@ -409,24 +416,23 @@ class GenDialectsTest(unittest.TestCase):
     def test_max_dialects_cap(self):
         for seed in SEEDS:
             _, numbers, _, _ = gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 n_iter=3, max_dialects=5, seed=seed,
             )
 
             # only the surviving lineages are generated, so level k
             # holds at most min(2^k, max_dialects) of them, and the
             # deepest level fills the cap
-            levels = [
-                (number + 1).bit_length() - 1
-                for number in numbers.tolist()
-            ]
+            levels = numpy.floor(numpy.log2(numbers + 1)).astype(int)
+            self.assertEqual((levels == 3).sum(), 5)
             for level in range(3):
-                self.assertLessEqual(levels.count(level), min(2 ** level, 5))
-            self.assertEqual(levels.count(3), 5)
+                self.assertLessEqual(
+                    (levels == level).sum(), min(2 ** level, 5)
+                )
 
     def test_cap_extinction_keeps_population(self):
         _, numbers, _, _ = gen_dialects(
-            100, 2, n_vocabularies=[7, 5],
+            100, 2, n_categories=[7, 5],
             n_iter=4, max_dialects=6, seed=42,
         )
 
@@ -434,28 +440,25 @@ class GenDialectsTest(unittest.TestCase):
         # settled, so the deepest level always holds 6 modern
         # dialects whatever the earlier lineages do, and the upper
         # levels hold their surviving ancestors only
-        levels = [
-            (number + 1).bit_length() - 1
-            for number in numbers.tolist()
-        ]
-        self.assertEqual(levels.count(4), 6)
+        levels = numpy.floor(numpy.log2(numbers + 1)).astype(int)
+        self.assertEqual((levels == 4).sum(), 6)
         for level in range(4):
-            self.assertLessEqual(levels.count(level), min(2 ** level, 6))
+            self.assertLessEqual(
+                (levels == level).sum(), min(2 ** level, 6)
+            )
 
     def test_single_dialect(self):
-        _, numbers, _, _ = gen_dialects(
-            100, 2, n_vocabularies=[5, 4],
+        _, numbers, survived, _ = gen_dialects(
+            100, 2, n_categories=[5, 4],
             n_iter=3, max_dialects=1, seed=42,
         )
 
         # with a population cap of one, a single lineage continues
-        # and one of the two children of every split dies out
-        levels = [
-            (number + 1).bit_length() - 1
-            for number in numbers.tolist()
-        ]
+        # and one of the two children of every split dies out; only
+        # the surviving lineage is generated, holding the full
+        # character set once per ancestor level plus the modern one
         self.assertEqual(len(numbers), 4)
-        self.assertEqual(levels.count(3), 1)
+        self.assertEqual(survived.shape, (4, 100, 2))
 
     def test_requires_inventories(self):
         # the number of features and the vocabularies must be given
@@ -465,23 +468,23 @@ class GenDialectsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen_dialects(100, 2, seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[3, 4, 5], seed=42)
+            gen_dialects(100, 2, n_categories=[3, 4, 5], seed=42)
 
     def test_validation(self):
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[1, 4], seed=42)
+            gen_dialects(100, 2, n_categories=[1, 4], seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[5, 4], max_dialects=0, seed=42)
+            gen_dialects(100, 2, n_categories=[5, 4], max_dialects=0, seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[5, 4], n_iter=0, seed=42)
+            gen_dialects(100, 2, n_categories=[5, 4], n_iter=0, seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[5, 4], mutation_rate=0.0,
+            gen_dialects(100, 2, n_categories=[5, 4], mutation_rate=0.0,
                          seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(100, 2, n_vocabularies=[5, 4], mutation_rate=1.0,
+            gen_dialects(100, 2, n_categories=[5, 4], mutation_rate=1.0,
                          seed=42)
         with self.assertRaises(ValueError):
-            gen_dialects(0, 2, n_vocabularies=[5, 4], seed=42)
+            gen_dialects(0, 2, n_categories=[5, 4], seed=42)
 
     def test_matrices_validation(self):
         # one matrix per feature is required, square with the
@@ -489,22 +492,22 @@ class GenDialectsTest(unittest.TestCase):
         # a non-zero diagonal only warns
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 transition_matrices=[numpy.eye(5)], seed=42,
             )
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 transition_matrices=[numpy.eye(5), numpy.eye(3)], seed=42,
             )
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 transition_matrices=[numpy.eye(5), -numpy.eye(4)], seed=42,
             )
         with self.assertRaises(ValueError):
             gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 transition_matrices=[numpy.eye(5), numpy.full((4, 4), 0.2)],
                 seed=42,
             )
@@ -515,7 +518,7 @@ class GenDialectsTest(unittest.TestCase):
         with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
             with self.assertRaises(ValueError):
                 gen_dialects(
-                    100, 2, n_vocabularies=[5, 4],
+                    100, 2, n_categories=[5, 4],
                     n_iter=3, max_dialects=4,
                     transition_matrices=[numpy.eye(5), numpy.eye(4)],
                     seed=42,
@@ -530,38 +533,36 @@ class GenDialectsTest(unittest.TestCase):
         # vocabulary, so a change may replace one present value with
         # another one the dialect does not hold yet and leave the
         # number of distinct values untouched
-        values = numpy.array([["x"], ["y"], ["x"], ["y"]])
+        values = numpy.array([[0], [1], [0], [1]])
         matrices = [numpy.array([
             [0.0, 0.0, 1.0],
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
         ])]
-        _, _, survived, changes = gen_dialects(
-            4, 1, vocabularies=[["x", "y", "z"]],
+        _, numbers, survived, changes = gen_dialects(
+            4, 1, n_categories=[3],
             values=values, n_iter=1, max_dialects=2,
             mutation_rate=0.001, transition_matrices=matrices, seed=42,
         )
 
-        self.assertTrue(
-            set(survived[:, :, 0].reshape(-1)) <= {"x", "y", "z"}
-        )
-        self.assertTrue(any(change[0] is not None for change in changes))
+        self.assertTrue(((survived >= 0) & (survived < 3)).all())
+        self.assertTrue((changes[:, 0] >= 0).any())
         for i, (f, source, target) in enumerate(changes):
-            if f is None:
+            if f < 0:
                 continue
-            # the forced matrix only allows x > z and y > x, and the
-            # carrying dialect applies the change, so it holds the
+            # the forced matrix only allows 0 > 2 and 1 > 0, and the
+            # carrying node applies the change, so it holds the
             # target value
             self.assertEqual(f, 0)
-            self.assertIn((source, target), (("x", "z"), ("y", "x")))
-            self.assertIn(target, set(survived[i, :, f].tolist()))
+            self.assertIn((source, target), ((0, 2), (1, 0)))
+            self.assertIn(target, survived[i, :, f].tolist())
 
     def test_merge_down_to_one_value_warns(self):
         # a rule change may merge a feature down to a single value,
         # which is logged instead of raising
         with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
             gen_dialects(
-                100, 2, n_vocabularies=[2, 4],
+                100, 2, n_categories=[2, 4],
                 n_iter=3, max_dialects=4, seed=0,
             )
 
@@ -573,7 +574,7 @@ class GenDialectsTest(unittest.TestCase):
         # most characters lose their ancestral values
         with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
             gen_dialects(
-                100, 2, n_vocabularies=[5, 4],
+                100, 2, n_categories=[5, 4],
                 n_iter=2, mutation_rate=0.3, seed=42,
             )
         self.assertTrue(

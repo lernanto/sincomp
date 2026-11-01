@@ -35,7 +35,7 @@ so the cut children and the extinct lineages never carry values.
 Every generated right child draws its own rule change, e.g.
 ``i5 > i2`` — the change it carries from its parent — while the root
 and the left children inherit unchanged; the tree records a node's
-change on the row of its parent.
+change on its own row.
 
 :func:`gen_dialects` returns the global binary-tree numbers of every
 dialect conceived in every generation — cut children included — as one
@@ -49,9 +49,11 @@ character coverage for the modern dialects, mimicking real dialect
 data whose recorded counts differ across dialects and whose
 occurrences concentrate on a few characters.
 
-The vocabulary values may be given explicit names through the
-``vocabularies`` argument; unnamed ones auto-encode per feature as
-``f<feature number>_<n>`` (e.g. ``f1_1 ...``). Dataset dialect IDs
+The values are simulated as integer codes, one vocabulary of the
+codes ``0 ... size - 1`` per feature; translating the codes to and
+from actual value names is the caller's responsibility.
+:func:`gen_dataset` wraps this translation around :func:`gen_dialects`.
+Dataset dialect IDs
 keep the legacy ``d<level>_<n>`` format, where ``n`` is the node's
 zero-based position within its level, derived from the global
 binary-tree index.
@@ -67,7 +69,7 @@ Usage::
     (
         dialect_numbers, survived_numbers,
         survived_values, survived_changes,
-    ) = gen_dialects(100, n_vocabularies=[4, 3], seed=42)
+    ) = gen_dialects(100, n_categories=[4, 3], seed=42)
 """
 
 __author__ = "黄艺华 <lernanto@foxmail.com>"
@@ -109,23 +111,23 @@ def _as_rng(seed: int | numpy.random.Generator | None) -> numpy.random.Generator
 
 def _init_ancestor(
     n_characters: int,
-    vocabularies: list[numpy.ndarray],
+    n_categories: list[int],
     alpha: float,
     rng: numpy.random.Generator,
     values: numpy.ndarray | None = None,
 ) -> dict:
-    """Initialize the value indices of the ancestor dialect.
+    """Initialize the value codes of the ancestor dialect.
 
-    The values are either given outright through ``values`` or,
-    when it is omitted, sampled from a Dirichlet-drawn value
-    distribution of each feature.
+    The codes are either given outright through ``values`` or, when
+    it is omitted, sampled from a Dirichlet-drawn value distribution
+    of each feature.
 
     Parameters
     ----------
     n_characters : int
         Number of characters of the dialect.
-    vocabularies : list[numpy.ndarray]
-        The value names of each feature.
+    n_categories : list[int]
+        Number of value categories of each feature.
     alpha : float
         Concentration of the Dirichlet distribution the 1-of-m value
         distribution of each feature is drawn from; unused when
@@ -133,51 +135,28 @@ def _init_ancestor(
     rng : numpy.random.Generator
         The random generator.
     values : numpy.ndarray | None
-        The real value of every character for every feature as a 2-D
-        array of shape ``(n_characters, n_features)`` that seeds the
-        ancestor dialect directly; the values need not cover the
-        whole vocabulary, so a value that is never observed simply
-        never merges.
+        The value code of every character for every feature as a 2-D
+        integer array of shape ``(n_characters, n_features)`` that
+        seeds the ancestor dialect directly; the codes need not cover
+        the whole vocabulary, so a value that is never observed
+        simply never merges.
 
     Returns
     -------
     dict
-        The value index of every character per feature, keyed by the
+        The value code of every character per feature, keyed by the
         feature position.
-
-    Raises
-    ------
-    ValueError
-        If the given values contain a value that is missing from the
-        corresponding vocabulary.
     """
 
     if values is None:
-        indices = {}
-        for f, names in enumerate(vocabularies):
-            distribution = rng.dirichlet(numpy.full(len(names), alpha))
-            indices[f] = rng.choice(
-                len(names), size=n_characters, p=distribution
+        return {
+            f: rng.choice(
+                size, size=n_characters,
+                p=rng.dirichlet(numpy.full(size, alpha)),
             )
-    else:
-        positions = [
-            {v: i for i, v in enumerate(vocab)}
-            for vocab in vocabularies
-        ]
-        try:
-            indices = {
-                f: numpy.array(
-                    [position[v] for v in values[:, f]], dtype=int
-                )
-                for f, position in enumerate(positions)
-            }
-        except KeyError as error:
-            raise ValueError(
-                f"the values contain {error} which is missing from "
-                "the corresponding vocabulary"
-            ) from None
-
-    return indices
+            for f, size in enumerate(n_categories)
+        }
+    return {f: values[:, f].astype(int) for f in range(len(n_categories))}
 
 
 def _mutate(
@@ -267,7 +246,7 @@ def _mutate(
 
 def _generate(
     values: dict,
-    vocabularies: list[numpy.ndarray],
+    n_categories: list[int],
     transition_matrices: list[numpy.ndarray],
     rate: float,
     rng: numpy.random.Generator,
@@ -290,9 +269,9 @@ def _generate(
     Parameters
     ----------
     values : dict
-        The value index of every character of the parent per feature.
-    vocabularies : list[numpy.ndarray]
-        The value names of each feature.
+        The value code of every character of the parent per feature.
+    n_categories : list[int]
+        Number of value categories of each feature.
     transition_matrices : list[numpy.ndarray]
         The transition probability matrix of each feature, with the
         rows summing to one; the caller fills the missing ones with
@@ -307,10 +286,10 @@ def _generate(
     Returns
     -------
     tuple[dict, int | None, int | None, int | None]
-        The value index of every character of the child per feature
-        and, when the child applies a rule change, the feature, the
-        source value and the target value of the change; all three
-        are ``None`` when it does not.
+        The value code of every character of the child per feature
+        and, when the child applies a rule change, the feature index
+        and the source and target value codes of the change; all
+        three are ``None`` when it does not.
 
     Raises
     ------
@@ -324,16 +303,16 @@ def _generate(
     if change:
         # the feature of the rule change is drawn with equal
         # probability among all features
-        f = int(rng.integers(len(vocabularies)))
+        f = int(rng.integers(len(n_categories)))
         used = numpy.unique(child[f])
         # the source is a value the dialect actually holds
         source = int(used[rng.integers(0, len(used))])
         # the target is any value of the vocabulary, drawn with the
         # row as given, so the change may or may not merge two
         # present values
-        target = int(rng.choice(
-            len(vocabularies[f]), p=transition_matrices[f][source]
-        ))
+        target = int(
+            rng.choice(n_categories[f], p=transition_matrices[f][source])
+        )
         if target == source:
             raise ValueError(
                 "the drawn target of the rule change equals its source"
@@ -341,10 +320,10 @@ def _generate(
         child[f][child[f] == source] = target
         if len(used) >= 2 and len(numpy.unique(child[f])) == 1:
             logger.warning(
-                "the rule change %s > %s leaves feature %s with a single "
+                "the rule change %d > %d leaves feature %d with a single "
                 "value, which later rule changes may still shift "
                 "but mutations cannot touch any more",
-                vocabularies[f][source], vocabularies[f][target], f,
+                source, target, f,
             )
     # every character of every feature mutates independently into
     # another value that the feature holds
@@ -353,81 +332,38 @@ def _generate(
     return child, f, source, target
 
 
-def _build_tree(
-    numbers: numpy.ndarray,
-    changes: list[tuple],
-    features: list[str],
-) -> pandas.DataFrame:
-    """Rebuild the phylogenetic tree from global dialect numbers.
+def _dialect_ids(numbers: numpy.ndarray) -> numpy.ndarray:
+    """Return the legacy level-local ID of every global tree number.
+
+    The ID is ``d<level>_<n>``, where the level is the generation of
+    the dialect — ``floor(log2(number + 1))``, computed exactly from
+    the exponent of the floating-point representation — and ``n`` is
+    the zero-based position of the dialect within its level.
 
     Parameters
     ----------
     numbers : numpy.ndarray
         Global binary-tree number of each dialect.
-    changes : list[tuple]
-        Incoming sound change of each dialect as a tuple of the
-        feature index and the source and target value names, or all
-        ``None`` for the root and unchanged branches, in the same row
-        order as ``numbers``.
-    features : list[str]
-        Name of each feature, filling the ``changed_feature`` column.
 
     Returns
     -------
-    pandas.DataFrame
-        Tree table in creation order, holding the ``did`` of every
-        dialect, the dialect IDs of its ``parent``, ``left`` and
-        ``right``, and the ``changed_feature``, ``source`` and
-        ``target`` of the sound change it carries from its parent,
-        all ``None`` for the root and unchanged branches. The legacy
-        ``d<level>_<n>`` IDs are derived from the global numbers,
-        where ``n`` is the node's zero-based position within its
-        level; children not generated under the population cap are
-        absent.
+    numpy.ndarray
+        One object-dtype ID string per number.
     """
 
-    number_set = set(numbers.tolist())
-
-    rows = []
-    changes_by_number = dict(zip(numbers.tolist(), changes))
-    for number in numbers:
-        number = int(number)
-        change = changes_by_number.get(number)
-        rows.append({
-            "did": _dialect_id(number),
-            "parent": None if number == 0
-            else _dialect_id((number - 1) // 2),
-            "left": _dialect_id(2 * number + 1)
-            if 2 * number + 1 in number_set else None,
-            "right": _dialect_id(2 * number + 2)
-            if 2 * number + 2 in number_set else None,
-            "changed_feature": None if change is None or change[0] is None
-            else features[change[0]],
-            "source": None if change is None else change[1],
-            "target": None if change is None else change[2],
-        })
-    return pandas.DataFrame(
-        rows,
-        columns=[
-            "did", "parent", "left", "right",
-            "changed_feature", "source", "target",
-        ],
-    )
-
-
-def _dialect_id(number: int) -> str:
-    """Return the legacy level-local ID for a global tree number."""
-
-    level = (number + 1).bit_length() - 1
-    pos = number + 1 - 2 ** level
-    return f"d{level}_{pos}"
+    numbers = numpy.asarray(numbers)
+    _, exponents = numpy.frexp(numbers + 1)
+    levels = exponents - 1
+    return numpy.char.add(
+        numpy.char.add("d", levels.astype(str)),
+        numpy.char.add("_", (numbers + 1 - (1 << levels)).astype(str)),
+    ).astype(object)
 
 
 def gen_dialects(
     n_characters: int,
     n_features: int | None = None,
-    n_vocabularies: list[int] | None = None,
-    vocabularies: list[numpy.ndarray] | None = None,
+    n_categories: list[int] | None = None,
     values: numpy.ndarray | None = None,
     n_iter: int = 5,
     max_dialects: int = 10,
@@ -462,39 +398,36 @@ def gen_dialects(
     the global binary-tree number of each surviving node — the parent
     number follows from the node's own as ``(number - 1) // 2``.
     ``survived_changes`` records the sound change each node carries
-    from its parent as a tuple of the feature index and the source and
-    target value names, or all ``None`` for the root and unchanged
+    from its parent as one row of the feature index and the source and
+    target value codes, or all ``-1`` for the root and unchanged
     branches. Use :func:`sample_chars` to draw the incomplete
     character coverage of real dialect data.
 
-    One of ``n_vocabularies``, ``vocabularies`` and ``values`` must
-    be given; the vocabulary values may be named explicitly through
-    ``vocabularies``, and unnamed ones auto-encode per feature as
-    ``f<feature number>_<n>`` (e.g. ``f1_1 ...``).
+    The values are simulated as integer codes, one vocabulary of the
+    codes ``0 ... size - 1`` per feature; translating the codes to
+    and from actual value names is the caller's responsibility.
 
     Parameters
     ----------
     n_characters : int
         Number of characters of the ancestor dialect.
     n_features : int | None
-        Number of features; inferred from ``n_vocabularies``,
-        ``vocabularies`` or ``values`` when omitted.
-    n_vocabularies : list[int] | None
-        Value vocabulary size of each feature. One of
-        ``n_vocabularies``, ``vocabularies`` and ``values`` must be
-        given or inferable.
-    vocabularies : list[numpy.ndarray] | None
-        The value vocabulary of each feature as an array of value
-        names; sequences of names are converted, and it defaults to
-        the auto-encoded names.
+        Number of features; inferred from ``n_categories`` or
+        ``values`` when omitted.
+    n_categories : list[int] | None
+        Number of value categories of each feature. One of
+        ``n_categories`` and ``values`` must be given or
+        inferable.
     values : numpy.ndarray | None
-        The real value of every character for every feature as a 2-D
-        array of shape ``(n_characters, n_features)``; it seeds the
-        ancestor dialect directly instead of sampling the values
-        from the Dirichlet distribution, in which case ``alpha`` is
-        unused. The values need not cover the whole vocabulary, and
-        when ``vocabularies`` is omitted it is inferred from the
-        observed values.
+        The value code of every character for every feature as a 2-D
+        integer array of shape ``(n_characters, n_features)`` with
+        the codes ``0 ... size - 1`` of each feature vocabulary; it
+        seeds the ancestor dialect directly instead of sampling the
+        values from the Dirichlet distribution, in which case
+        ``alpha`` is unused. The values need not cover the whole
+        vocabulary, and when ``n_categories`` is omitted the
+        vocabulary size of a feature is inferred as the largest
+        observed code plus one.
     n_iter : int, default=5
         Number of generations.
     max_dialects : int, default=10
@@ -528,16 +461,18 @@ def gen_dialects(
 
     Returns
     -------
-    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, list[tuple]]
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
         The global binary-tree number of every dialect conceived in
         every generation, cut children included, as one ordered
         one-dimensional integer array, the numbers of the dialects
         whose lineages survive to the deepest level as one ordered
-        one-dimensional integer array, their values as an array of
-        shape ``(n_dialects, n_characters, n_features)``, and the
-        incoming sound change of each surviving node as a tuple of the
-        feature index and the source and target value names, all
-        ``None`` for the root and unchanged branches. The three
+        one-dimensional integer array, their value codes as an
+        integer array of shape
+        ``(n_dialects, n_characters, n_features)``, and the
+        incoming sound change of each surviving node as one row of
+        the 2-D integer array of shape ``(n_dialects, 3)`` holding
+        the feature index and the source and target value codes, all
+        ``-1`` for the root and unchanged branches. The three
         surviving arrays align by position.
 
     Raises
@@ -545,85 +480,86 @@ def gen_dialects(
     ValueError
         If a structural argument is out of range, if the vocabulary
         and value arguments disagree with ``n_features`` or
-        ``n_characters``, if the number of features or the
-        vocabularies cannot be inferred from anywhere, if the given
-        arguments disagree about the number of features, or if a
+        ``n_characters``, if the number of features or the number of
+        categories cannot be inferred from anywhere, if the given
+        arguments disagree about the number of features, if
+        ``values`` is not a non-negative integer array or holds a
+        code that is out of its feature vocabulary, or if a
         transition matrix does not match its feature or its rows do
         not sum to one.
     """
 
     # the number of features is inferred from whichever argument
     # carries it and never sampled
-    counts = {}
-    if n_vocabularies is not None:
-        counts["n_vocabularies"] = len(n_vocabularies)
-    if vocabularies is not None:
-        counts["vocabularies"] = len(vocabularies)
+    n_categories_size = None if n_categories is None else len(n_categories)
+    values_size = None
     if values is not None:
-        values = numpy.asarray(values).astype(str)
+        values = numpy.asarray(values)
         if values.ndim != 2:
             raise ValueError(
                 "values must be a 2-D array of shape "
                 "(n_characters, n_features)"
             )
-        counts["values"] = values.shape[1]
+        if not numpy.issubdtype(values.dtype, numpy.integer):
+            raise ValueError("values must hold integer value codes")
+        if (values < 0).any():
+            raise ValueError("value codes must be non-negative")
+        values_size = values.shape[1]
     if n_features is None:
-        if not counts:
+        if n_categories_size is None and values_size is None:
             raise ValueError(
                 "cannot infer the number of features; give one of "
-                "n_features, n_vocabularies, vocabularies or values"
+                "n_features, n_categories or values"
             )
-        if len(set(counts.values())) > 1:
+        if (
+            n_categories_size is not None
+            and values_size is not None
+            and n_categories_size != values_size
+        ):
             raise ValueError(
                 "the given vocabulary or value arguments disagree "
                 "about the number of features"
             )
-        n_features = next(iter(counts.values()))
-    elif any(n != n_features for n in counts.values()):
+        n_features = (
+            n_categories_size
+            if n_categories_size is not None else values_size
+        )
+    elif (
+        n_categories_size is not None and n_categories_size != n_features
+    ) or (values_size is not None and values_size != n_features):
         raise ValueError(
             "n_features disagrees with the given vocabulary or "
             "value arguments"
         )
 
-    if vocabularies is not None:
-        vocabularies = [
-            numpy.asarray(vocab, dtype=str) for vocab in vocabularies
-        ]
-        if n_vocabularies is not None and (
-            len(n_vocabularies) != n_features
-            or any(
-                size != len(vocab)
-                for size, vocab in zip(n_vocabularies, vocabularies)
-            )
-        ):
+    if n_categories is None:
+        if values is None:
             raise ValueError(
-                "n_vocabularies disagrees with vocabularies"
+                "cannot infer the number of categories; give one of "
+                "n_categories or values"
             )
-    elif n_vocabularies is not None:
-        # unnamed values auto-encode per feature as f1_1 ...
-        vocabularies = [
-            numpy.asarray(
-                [f"f{f + 1}_{i + 1}" for i in range(size)], dtype=str
-            )
-            for f, size in enumerate(n_vocabularies)
+        # the vocabulary of a feature covers exactly the codes up to
+        # the largest observed one
+        n_categories = [
+            int(values[:, f].max()) + 1 for f in range(n_features)
         ]
-    elif values is not None:
-        # the vocabulary is inferred from the observed values and
-        # covers exactly them
-        vocabularies = [
-            numpy.unique(values[:, f]) for f in range(n_features)
-        ]
-    else:
+    elif len(n_categories) != n_features:
         raise ValueError(
-            "cannot infer the vocabularies; give one of "
-            "vocabularies, n_vocabularies or values"
+            "n_categories disagrees with the number of features"
         )
-    sizes = [len(vocab) for vocab in vocabularies]
 
-    if values is not None and values.shape[0] != n_characters:
-        raise ValueError("n_characters disagrees with values")
+    if values is not None:
+        if values.shape[0] != n_characters:
+            raise ValueError("n_characters disagrees with values")
+        # every code must fall into its feature vocabulary
+        for f, size in enumerate(n_categories):
+            if (values[:, f] >= size).any():
+                raise ValueError(
+                    f"the values of the feature {f} hold a code "
+                    f"outside its vocabulary of {size} values"
+                )
 
-    if min(sizes) < 2:
+    if min(n_categories) < 2:
         raise ValueError("every feature needs at least 2 values")
     if max_dialects < 1:
         raise ValueError("max_dialects must be at least 1")
@@ -647,15 +583,18 @@ def gen_dialects(
     checked = []
     for f, matrix in enumerate(transition_matrices):
         if matrix is None:
-            matrix = numpy.full((sizes[f], sizes[f]), 1.0 / (sizes[f] - 1))
+            matrix = numpy.full(
+                (n_categories[f], n_categories[f]),
+                1.0 / (n_categories[f] - 1),
+            )
             numpy.fill_diagonal(matrix, 0.0)
         else:
             matrix = numpy.asarray(matrix, dtype=float)
-            if matrix.shape != (sizes[f], sizes[f]):
+            if matrix.shape != (n_categories[f], n_categories[f]):
                 raise ValueError(
                     f"the transition matrix of the feature "
                     f"{f} must be of shape "
-                    f"({sizes[f]}, {sizes[f]})"
+                    f"({n_categories[f]}, {n_categories[f]})"
                 )
             if not numpy.isfinite(matrix).all() or (matrix < 0).any():
                 raise ValueError(
@@ -689,7 +628,7 @@ def gen_dialects(
     logger.info(
         "simulating %d generations of %d characters, value "
         "inventories %s, population cap %d, mutation rate %s",
-        n_iter, n_characters, sizes, max_dialects, mutation_rate,
+        n_iter, n_characters, n_categories, max_dialects, mutation_rate,
     )
     # phase 1: settle the lineages — every live dialect of a
     # generation conceives the left and the right child 2n+1 and 2n+2;
@@ -724,11 +663,12 @@ def gen_dialects(
         survived_numbers.append(numpy.unique((survived_numbers[-1] - 1) // 2))
     survived_numbers = numpy.sort(numpy.concatenate(survived_numbers))
 
-    # the first surviving dialect is the ancestor
+    # the first surviving dialect is the ancestor; a node without an
+    # incoming change holds -1 in all three columns
     generated = [
-        _init_ancestor(n_characters, vocabularies, alpha, rng, values)
+        _init_ancestor(n_characters, n_categories, alpha, rng, values)
     ]
-    changes = [(None, None, None)]
+    changes = numpy.full((len(survived_numbers), 3), -1, dtype=int)
     for i in range(1, len(survived_numbers)):
         number = int(survived_numbers[i])
         parent = int(
@@ -737,30 +677,25 @@ def gen_dialects(
         (
             val, f, source, target,
         ) = _generate(
-            generated[parent], vocabularies,
+            generated[parent], n_categories,
             transition_matrices, mutation_rate, rng,
             change=number % 2 == 0,
         )
         if f is not None:
-            change = (f, vocabularies[f][source], vocabularies[f][target])
+            changes[i] = (f, source, target)
             logger.debug(
-                "%s: rule change %s > %s",
-                _dialect_id(number),
-                vocabularies[f][source], vocabularies[f][target],
+                "%d: rule change %d > %d", number, source, target,
             )
-        else:
-            change = (None, None, None)
         generated.append(val)
-        changes.append(change)
 
     # the generated value dictionaries align with the surviving
     # numbers by position, so they fold into the values array in order
     survived_values = numpy.empty(
-        (len(generated), n_characters, n_features), dtype=object
+        (len(generated), n_characters, n_features), dtype=int
     )
     for i, val in enumerate(generated):
-        for f, vocabulary in enumerate(vocabularies):
-            survived_values[i, :, f] = vocabulary[val[f]]
+        for f in range(n_features):
+            survived_values[i, :, f] = val[f]
     logger.info("generated values for %d dialects", len(survived_numbers))
     return dialect_numbers, survived_numbers, survived_values, changes
 
@@ -994,7 +929,7 @@ def gen_dataset(
         else n_characters,
     )
 
-    values = []
+    inventories = []
     for size, names, feature in (
         (n_initial, initials, FEATURES[0]),
         (n_final, finals, FEATURES[1]),
@@ -1019,7 +954,7 @@ def gen_dataset(
             names = [
                 f"{feature[0]}{i + 1}" for i in range(size)
             ]
-        values.append(names)
+        inventories.append(names)
 
     if characters is not None:
         characters = [str(c) for c in characters]
@@ -1047,7 +982,7 @@ def gen_dataset(
     ) = gen_dialects(
         n_characters,
         len(FEATURES),
-        vocabularies=values,
+        n_categories=[len(names) for names in inventories],
         n_iter=n_iter,
         max_dialects=max_dialects,
         mutation_rate=mutation_rate,
@@ -1055,23 +990,54 @@ def gen_dataset(
         transition_matrices=transition_matrices,
         seed=rng,
     )
+    # the value codes are decoded back to the phone names: the
+    # vocabulary of gen_dialects shares the index order with the
+    # phone inventory of each feature
+    survived_values = numpy.stack([
+        numpy.asarray(inventories[f])[survived_values[:, :, f]]
+        for f in range(len(FEATURES))
+    ], axis=2)
     # the tree covers every dialect conceived in every generation,
     # but only the surviving ones carry a sound change and values
-    changes_by_number = dict(zip(
-        survived_numbers.tolist(), survived_changes,
-    ))
-    tree = _build_tree(
-        dialect_numbers,
-        [
-            changes_by_number.get(number, (None, None, None))
-            for number in dialect_numbers.tolist()
-        ],
-        list(FEATURES),
+    changes = numpy.full((len(dialect_numbers), 3), None, dtype=object)
+    position = numpy.searchsorted(dialect_numbers, survived_numbers)
+    # the change codes decode into the feature names and the phone
+    # names of the inventories, gathered from one 2-D name table that
+    # shares the code order of the vocabularies
+    changed = survived_changes[:, 0] >= 0
+    f = survived_changes[changed, 0]
+    names = numpy.full(
+        (len(FEATURES), max(map(len, inventories))), None, dtype=object
     )
-    levels = numpy.asarray([
-        (int(number) + 1).bit_length() - 1
-        for number in survived_numbers
-    ])
+    for i, inventory in enumerate(inventories):
+        names[i, :len(inventory)] = inventory
+    changes[position[changed], 0] = numpy.asarray(FEATURES, dtype=object)[f]
+    changes[position[changed], 1] = names[f, survived_changes[changed, 1]]
+    changes[position[changed], 2] = names[f, survived_changes[changed, 2]]
+    # the parent of every conceived dialect is conceived as well, and
+    # the membership of the children follows from the numbers alone
+    numbers = dialect_numbers
+    left_numbers = 2 * numbers + 1
+    right_numbers = 2 * numbers + 2
+    tree = pandas.DataFrame({
+        "did": _dialect_ids(numbers),
+        "parent": numpy.where(
+            numbers > 0,
+            _dialect_ids(numpy.maximum((numbers - 1) // 2, 0)), None,
+        ),
+        "left": numpy.where(
+            numpy.isin(left_numbers, numbers), _dialect_ids(left_numbers),
+            None,
+        ),
+        "right": numpy.where(
+            numpy.isin(right_numbers, numbers), _dialect_ids(right_numbers),
+            None,
+        ),
+        "changed_feature": changes[:, 0],
+        "source": changes[:, 1],
+        "target": changes[:, 2],
+    })
+    levels = numpy.floor(numpy.log2(survived_numbers + 1)).astype(int)
     modern_mask = levels == n_iter
     modern_numbers = survived_numbers[modern_mask]
     modern_values = survived_values[modern_mask]
@@ -1096,7 +1062,7 @@ def gen_dataset(
     cids = [f"c{i + 1}" for i in range(modern_values.shape[1])]
     if characters is None:
         characters = cids
-    dids = [_dialect_id(int(number)) for number in modern_numbers]
+    dids = _dialect_ids(modern_numbers)
     data = pandas.DataFrame({
         "did": numpy.repeat(dids, modern_values.shape[1]),
         "cid": numpy.tile(cids, len(dids)),
