@@ -1,4 +1,12 @@
-"""Command-line interfaces for SinComp."""
+"""Command-line interfaces for SinComp.
+
+The ``sincomp`` command is the only supported way to run the CLI: it is
+generated from the ``sincomp = "sincomp.cli:main"`` entry point in
+``pyproject.toml``. :func:`main` exists solely as that console-script
+entry point and is not part of the programmatic API; callers should
+import the domain subcommand modules (``sincomp.cli.align`` etc.)
+directly instead.
+"""
 
 import argparse
 import sys
@@ -20,7 +28,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Dispatch a human-friendly command to its domain CLI."""
+    """Entry point of the ``sincomp`` console script.
+
+    Dispatches a human-friendly command to its domain CLI. This function
+    is not a programmatic API; invoke the ``sincomp`` command, or import
+    the domain subcommand modules directly.
+
+    Parameters
+    ----------
+    argv : sequence of str or None, default=None
+        Command-line arguments to dispatch; the system arguments are
+        used when None. Non-None values are accepted for testability.
+
+    Returns
+    -------
+    exit_code : int
+        The process exit code, 0 on success.
+    """
 
     if argv is None:
         argv = sys.argv[1:]
