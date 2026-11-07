@@ -14,7 +14,7 @@ import os
 import pandas
 import unittest
 
-from sincomp._internal import compare, datasets, preprocess
+from sincomp._internal import compare, dataset, preprocess
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -25,7 +25,7 @@ class TestCompare(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = datasets.FileDataset(
+        cls.data = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data[['did', 'cid', 'initial', 'final', 'tone']]
         cls.rules = pandas.read_json(

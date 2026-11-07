@@ -17,7 +17,7 @@ import numpy
 import os
 import unittest
 
-from sincomp._internal import datasets, factorize
+from sincomp._internal import dataset, factorize
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -28,7 +28,7 @@ class TestFactorize(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = datasets.FileDataset(
+        cls.data = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data[['did', 'cid', 'initial', 'final', 'tone']]
 
@@ -106,7 +106,7 @@ class TestFactorizeSVD(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = datasets.FileDataset(
+        cls.data = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data[['did', 'cid', 'initial', 'final', 'tone']]
 

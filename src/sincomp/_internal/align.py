@@ -29,7 +29,9 @@ import sklearn.model_selection
 import sklearn.pipeline
 import typing
 
-from . import datasets, factorize, preprocess
+from . import dataset, factorize, preprocess
+# get() and the predefined dataset singletons live in the public facade
+from .. import datasets as _datasets
 
 
 logger = logging.getLogger(__name__)
@@ -514,7 +516,7 @@ def main(args: argparse.Namespace) -> None:
     withcid = []
     nocid = []
     for name in args.datasets:
-        data = datasets.get(name)
+        data = _datasets.get(name)
         if data is None:
             continue
 
@@ -686,7 +688,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, float] | None:
     计算对齐结果相对于真实的准确率。
     """
 
-    if (dataset := datasets.get(args.datasets[0])) is None:
+    if (dataset := _datasets.get(args.datasets[0])) is None:
         return
 
     logger.info(f'evaluating alignment accuracy of polyphones for {dataset.name} ...')

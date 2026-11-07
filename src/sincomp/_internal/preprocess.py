@@ -32,7 +32,7 @@ except ImportError:
     logger.warning('''sklearn_crfsuite not found, CRF based parser is disabled. Run following command to install sklearn_crfsuite:
         pip install sklearn-crfsuite''')
 
-from . import datasets
+from . import dataset
 
 
 # 把读音中不规范的字符映射成规范 IPA 字符的映射表
@@ -704,7 +704,7 @@ def transform(
         output: 转换格式得到的数据宽表
     """
 
-    if isinstance(data, datasets.Dataset):
+    if isinstance(data, dataset.Dataset):
         data = data.data
 
     output = data.pivot_table(

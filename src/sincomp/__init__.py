@@ -111,7 +111,7 @@ from ._internal.align import align, align_no_cid
 from ._internal.compare import compliance, load_rules
 
 # datasets: dialect pronunciation datasets
-from ._internal.datasets import Dataset, FileDataset
+from ._internal.dataset import Dataset, FileDataset
 
 # embedding: pronunciation embeddings
 from ._internal.embedding import (

@@ -18,7 +18,7 @@ import numpy
 import pandas
 from pandas.testing import assert_frame_equal
 
-from sincomp._internal import datasets
+from sincomp._internal import dataset
 from sincomp._internal.simulation import (
     _generate,
     _mutate,
@@ -627,9 +627,9 @@ class SampleCharsTest(unittest.TestCase):
 
 class GenDatasetTest(unittest.TestCase):
     def test_returns_dataset_and_tree(self):
-        dataset, tree = small()
+        result, tree = small()
 
-        self.assertIsInstance(dataset, datasets.Dataset)
+        self.assertIsInstance(result, dataset.Dataset)
         self.assertIsInstance(tree, pandas.DataFrame)
         self.assertListEqual(list(tree.columns), TREE_COLUMNS)
 
