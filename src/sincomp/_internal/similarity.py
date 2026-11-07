@@ -18,7 +18,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 import joblib
 
-from . import datasets
+from . import dataset
 from . import preprocess
 
 
@@ -135,8 +135,8 @@ def chi2_block(
     return (chisq - dof) / numpy.sqrt(2 * dof)
 
 def chi2(
-    src: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str],
-    dest: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
+    src: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str],
+    dest: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
     feature_num: int = 3,
     blocksize: tuple[int, int] = (100, 100),
     parallel: int = 1
@@ -171,7 +171,7 @@ def chi2(
     if dest is None:
         dest = src
 
-    if isinstance(src, datasets.Dataset | pandas.DataFrame):
+    if isinstance(src, dataset.Dataset | pandas.DataFrame):
         # 从传入的 DataFrame 推导方言数和特征数，要求方言按顺序排列，且特征数量和顺序都相同
         index = src.columns.get_level_values(0).drop_duplicates()
         src_num = index.shape[0]
@@ -181,7 +181,7 @@ def chi2(
         index = None
         src_num = src.shape[1] // feature_num
 
-    if isinstance(dest, datasets.Dataset | pandas.DataFrame):
+    if isinstance(dest, dataset.Dataset | pandas.DataFrame):
         columns = dest.columns.get_level_values(0).drop_duplicates()
         dest_num = columns.shape[0]
         dest = dest.values
@@ -344,8 +344,8 @@ def _entropy(
     return entropy
 
 def entropy(
-    src: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str],
-    dest: datasets.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
+    src: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str],
+    dest: dataset.Dataset | pandas.DataFrame | numpy.ndarray[str] | None = None,
     feature_num: int = 3,
     blocksize: tuple[int, int] = (100, 100),
     parallel: int = 1
@@ -369,7 +369,7 @@ def entropy(
     if dest is None:
         dest = src
 
-    if isinstance(src, datasets.Dataset | pandas.DataFrame):
+    if isinstance(src, dataset.Dataset | pandas.DataFrame):
         index = src.columns.get_level_values(0).drop_duplicates()
         src_num = index.shape[0]
         feature_num = src.shape[1] // src_num
@@ -378,7 +378,7 @@ def entropy(
         index = None
         src_num = src.shape[1] // feature_num
 
-    if isinstance(dest, datasets.Dataset | pandas.DataFrame):
+    if isinstance(dest, dataset.Dataset | pandas.DataFrame):
         columns = dest.columns.get_level_values(0).drop_duplicates()
         dest_num = columns.shape[0]
         dest = dest.values

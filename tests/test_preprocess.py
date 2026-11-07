@@ -12,7 +12,7 @@ import os
 import pandas
 import unittest
 
-from sincomp._internal import datasets, preprocess
+from sincomp._internal import dataset, preprocess
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -23,7 +23,7 @@ class TestPreprocess(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = datasets.FileDataset(
+        cls.data = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
 

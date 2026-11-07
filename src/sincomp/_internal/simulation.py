@@ -80,7 +80,7 @@ import logging
 import numpy
 import pandas
 
-from . import datasets
+from . import dataset
 
 
 logger = logging.getLogger(__name__)
@@ -828,7 +828,7 @@ def gen_dataset(
     sample_beta_beta: float = 5.0,
     sample_dirichlet_alpha: float = 1.0,
     seed: int | numpy.random.Generator | None = None,
-) -> tuple[datasets.Dataset, pandas.DataFrame]:
+) -> tuple[dataset.Dataset, pandas.DataFrame]:
     """Simulate dialects with the initial, final and tone features.
 
     A thin wrapper of :func:`gen_dialects` and :func:`sample_chars`
@@ -904,7 +904,7 @@ def gen_dataset(
 
     Returns
     -------
-    tuple[datasets.Dataset, pandas.DataFrame]
+    tuple[dataset.Dataset, pandas.DataFrame]
         The sampled records of the modern dialects as a dataset of
         long-form rows with the ``did``, ``cid``, ``character``,
         ``initial``, ``final`` and ``tone`` columns, and the
@@ -1083,10 +1083,10 @@ def gen_dataset(
         for dialect_index, character_indices in enumerate(sampled_indices)
     ])
     data = data.iloc[flat_indices].reset_index(drop=True)
-    dataset = datasets.Dataset(
+    output = dataset.Dataset(
         data=data,
         name="simulated",
         description="Simulated dialects descended from a common "
                     "ancestor.",
     )
-    return dataset, tree
+    return output, tree

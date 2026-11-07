@@ -12,7 +12,7 @@ import os
 import pandas
 import unittest
 
-from sincomp._internal import align, datasets
+from sincomp._internal import align, dataset
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -23,10 +23,10 @@ class TestAlign(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data1 = datasets.FileDataset(
+        cls.data1 = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
-        cls.data2 = datasets.FileDataset(
+        cls.data2 = dataset.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset2')
         )
 

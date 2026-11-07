@@ -11,7 +11,7 @@ import unittest
 import os
 import numpy
 
-from sincomp._internal import datasets, preprocess, similarity
+from sincomp._internal import dataset, preprocess, similarity
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -23,7 +23,7 @@ class TestSimilarity(unittest.TestCase):
         super().setUpClass()
 
         cls.data = preprocess.transform(
-            datasets.FileDataset(
+            dataset.FileDataset(
                 data_dir=os.path.join(data_dir, 'custom_dataset1')
             ),
             index='cid',

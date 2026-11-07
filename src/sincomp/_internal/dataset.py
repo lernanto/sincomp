@@ -24,7 +24,6 @@ import operator
 import os
 import pandas
 import retry
-import sys
 import threading
 import time
 import urllib.error
@@ -2115,83 +2114,3 @@ class ZhongguoyuyanDataset(Dataset):
         return pandas.json_normalize(standard['words']) \
             .rename(columns={'item': 'character', 'memo': 'note'}) \
             .set_index('cid')[['character', 'note']]
-
-
-cache_dir = os.getenv(
-    'SINCOMP_CACHE',
-    os.path.join(
-        os.getenv(
-            'LOCALAPPDATA',
-            os.path.expanduser('~')) if sys.platform.startswith('win') \
-            else os.getenv(
-                'XDG_DATA_HOME',
-                os.path.join(os.path.expanduser('~'), '.local', 'share')
-            ),
-        'sincomp'
-    )
-)
-dataset_dir = os.path.join(cache_dir, 'datasets')
-
-ccr = CCRDataset(os.path.join(dataset_dir, 'ccr'))
-mcpdict = MCPDictDataset(os.path.join(dataset_dir, 'mcpdict'))
-beidazihui = BeidazihuiDataset(os.path.join(dataset_dir, 'beidazihui'))
-zhongguoyuyan = ZhongguoyuyanDataset(os.path.join(dataset_dir, 'zhongguoyuyan'))
-_datasets = [beidazihui, ccr, mcpdict, zhongguoyuyan]
-_dataset_mapping = {
-    'beidazihui': beidazihui,
-    'CCR': ccr,
-    'ccr': ccr,
-    'xiaoxue': ccr,
-    'MCPDict': mcpdict,
-    'mcpdict': mcpdict,
-    'zhongguoyuyan': zhongguoyuyan,
-    'yubao': zhongguoyuyan
-}
-
-
-def predefined() -> list[Dataset]:
-    """
-    List all predefined datasets.
-
-    Returns
-    -------
-    datasets : list of Dataset
-        List of all predefined dataset objects.
-    """
-
-    return _datasets.copy()
-
-
-def get(name: str) -> Dataset | None:
-    """
-    获取或加载数据集
-
-    Parameters:
-        name: 预定义数据集的名字，或本地数据集的路径
-
-    Returns:
-        dataset: 预定义或创建的数据集对象
-
-    优先把 `name` 当作预定义数据集的名字查询，如果不成功，当作本地路径创建数据集。
-    """
-
-    try:
-        return _dataset_mapping[name]
-
-    except KeyError:
-        # 不是预定义数据集，尝试把入参作为路径从本地加载
-        logger.info(f'{name} is not a predefined dataset, try loading data from files.')
-
-        if os.path.isdir(name):
-            # name 是目录，使用目录下的数据创建数据集
-            return FileDataset(data_dir=name)
-
-        elif os.path.isfile(name):
-            # name 是文件，直接加载数据后包装成数据集
-            return Dataset(
-                pandas.read_csv(name, dtype=str, encoding='utf-8'),
-                name=os.path.splitext(os.path.basename(name))[0]
-            )
-
-        else:
-            logger.warning(f'{name} not found!')
