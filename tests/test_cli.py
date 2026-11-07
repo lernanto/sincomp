@@ -125,7 +125,7 @@ class TestCli(unittest.TestCase):
             self.assertTrue(os.path.isfile(output))
 
     @mock.patch(
-        "sincomp.cli.align.alignment.evaluate",
+        "sincomp.cli.align.evaluate_cmd",
         return_value={
             "cid_accuracy": 0.9,
             "cid_std": 0.1,
@@ -140,7 +140,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["cid_accuracy"], 0.9)
         evaluate.assert_called_once()
 
-    @mock.patch("sincomp.cli.align.alignment.evaluate", return_value={
+    @mock.patch("sincomp.cli.align.evaluate_cmd", return_value={
         "cid_accuracy": 0.9,
         "cid_std": 0.1,
         "no_cid_accuracy": 0.8,
