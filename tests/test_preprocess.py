@@ -12,8 +12,7 @@ import os
 import pandas
 import unittest
 
-import sincomp.datasets
-import sincomp.preprocess
+from sincomp._internal import datasets, preprocess
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -24,28 +23,28 @@ class TestPreprocess(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = sincomp.datasets.FileDataset(
+        cls.data = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
 
     def test_clean_ipa(self):
-        clean = sincomp.preprocess.clean_ipa(self.data.loc[:, 'initial'])
+        clean = preprocess.clean_ipa(self.data.loc[:, 'initial'])
         self.assertEqual(clean.shape, self.data.loc[:, 'initial'].shape)
 
     def test_clean_initial(self):
-        clean = sincomp.preprocess.clean_initial(self.data.loc[:, 'initial'])
+        clean = preprocess.clean_initial(self.data.loc[:, 'initial'])
         self.assertEqual(clean.shape, self.data.loc[:, 'initial'].shape)
 
     def test_clean_final(self):
-        clean = sincomp.preprocess.clean_final(self.data.loc[:, 'final'])
+        clean = preprocess.clean_final(self.data.loc[:, 'final'])
         self.assertEqual(clean.shape, self.data.loc[:, 'final'].shape)
 
     def test_clean_tone(self):
-        clean = sincomp.preprocess.clean_tone(self.data.loc[:, 'tone'])
+        clean = preprocess.clean_tone(self.data.loc[:, 'tone'])
         self.assertEqual(clean.shape, self.data.loc[:, 'tone'].shape)
 
     def test_transform(self):
-        output = sincomp.preprocess.transform(
+        output = preprocess.transform(
             self.data,
             index='cid',
             columns='did'
@@ -58,7 +57,7 @@ class TestPreprocess(unittest.TestCase):
 
     def test_get_romanization_type(self):
         self.assertIn(
-            sincomp.preprocess.get_romanization_type(
+            preprocess.get_romanization_type(
                 ''.join(
                     self.data.loc[:, ['initial', 'final']].fillna('') \
                         .apply(''.join, axis=1)
@@ -77,13 +76,13 @@ class TestPreprocess(unittest.TestCase):
         )
 
     def test_parse_str(self):
-        initial, final, tone = sincomp.preprocess.parse('xu533')
+        initial, final, tone = preprocess.parse('xu533')
         self.assertEqual(initial, 'x')
         self.assertEqual(final, 'u')
         self.assertEqual(tone, '533')
 
     def test_parse_array(self):
-        segments = sincomp.preprocess.parse(['xu533', 'pu533'])
+        segments = preprocess.parse(['xu533', 'pu533'])
         self.assertIsInstance(segments, numpy.ndarray)
         self.assertListEqual(
             segments.tolist(),
@@ -94,14 +93,14 @@ class TestPreprocess(unittest.TestCase):
         )
 
     def test_impute(self):
-        data = sincomp.preprocess.transform(
+        data = preprocess.transform(
             self.data.data.sample(frac=0.7),
             index='cid',
             columns='did',
             values=['initial', 'final', 'tone'],
             aggfunc=lambda x: ' '.join(x.dropna())
         ).replace('', pandas.NA)
-        imputed = sincomp.preprocess.impute(data)
+        imputed = preprocess.impute(data)
 
         self.assertListEqual(data.index.to_list(), imputed.index.to_list())
         self.assertListEqual(data.columns.to_list(), imputed.columns.to_list())

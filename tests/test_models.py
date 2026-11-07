@@ -15,8 +15,7 @@ import pandas
 import tempfile
 import tensorflow as tf
 
-import sincomp.datasets
-import sincomp.models
+from sincomp._internal import datasets, models
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -28,14 +27,14 @@ class TestProcessor(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = sincomp.datasets.FileDataset(
+        cls.data = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data
 
     def setUp(self):
         super().setUp()
 
-        self.processor = sincomp.models.Processor(
+        self.processor = models.Processor(
             [self.data['did'].drop_duplicates()],
             [self.data['cid'].drop_duplicates()],
             [
@@ -77,10 +76,10 @@ class TestBilinearEncoder(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        data = sincomp.datasets.FileDataset(
+        data = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         ).data
-        cls.processor = sincomp.models.Processor(
+        cls.processor = models.Processor(
             [data['did'].drop_duplicates()],
             [
                 data['cid'].drop_duplicates(),
@@ -105,7 +104,7 @@ class TestBilinearEncoder(unittest.TestCase):
     def setUp(self):
         super().setUp()
 
-        self.model = sincomp.models.BilinearEncoder(
+        self.model = models.BilinearEncoder(
             self.processor.dialect_vocab_sizes,
             self.processor.char_vocab_sizes,
             self.processor.target_vocab_sizes,

@@ -16,7 +16,8 @@ import sklearn.impute
 import sklearn.linear_model
 import sklearn.pipeline
 
-from sincomp import cli, embedding
+from sincomp import cli
+from sincomp._internal import embedding
 from sincomp.cli import align as align_cli
 from sincomp.cli import compare as compare_cli
 from sincomp.cli import classifier as classifier_cli
@@ -100,8 +101,8 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cli.main(["similarity", "ccr"]), 0)
         main.assert_called_once_with(["ccr"])
 
-    @mock.patch("sincomp.cli.similarity.similarity.chi2")
-    @mock.patch("sincomp.cli.similarity.preprocess.transform")
+    @mock.patch("sincomp.cli.similarity.chi2")
+    @mock.patch("sincomp.cli.similarity.transform")
     @mock.patch("sincomp.cli.similarity._load_dataset")
     def test_similarity_creates_output_parent_directories(
         self, load_dataset, transform, chi2

@@ -59,7 +59,13 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeClassifier
 
-from .. import datasets, embedding, preprocess
+from .. import (
+    CharacterEmbedding,
+    CharacterVectorizer,
+    Dataset,
+    datasets,
+    transform,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -75,14 +81,14 @@ class _HelpFormatter(
 
 
 def select_dialects(
-    dataset: datasets.Dataset,
+    dataset: Dataset,
     dialect_ids: Sequence[str]
 ) -> numpy.ndarray:
     """Validate and return the requested dialect IDs.
 
     Parameters
     ----------
-    dataset : sincomp.datasets.Dataset
+    dataset : Dataset
         Dataset containing the available dialect metadata.
     dialect_ids : Sequence[str]
         Requested dialect identifiers.
@@ -130,8 +136,8 @@ def fit_encoder(
     """
 
     encoder = make_pipeline(
-        embedding.CharacterVectorizer(),
-        embedding.CharacterEmbedding(embedding_size=embedding_size)
+        CharacterVectorizer(),
+        CharacterEmbedding(embedding_size=embedding_size)
     )
     encoder.fit(wide)
     return encoder
@@ -1197,7 +1203,7 @@ def cluster(
     # with one "<dialect>_<feature>" column per dialect and segment,
     # joining the phones of each character in each dialect.
     valid = data.dropna(subset=["did", "cid"])
-    wide = preprocess.transform(
+    wide = transform(
         valid,
         index="cid",
         columns="did",

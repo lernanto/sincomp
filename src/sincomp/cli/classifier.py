@@ -4,7 +4,7 @@ The classifier distinguishes the classes of dialects either by their
 compliance with a set of pronunciation rules or by their dialect
 vectors — the pairwise pronunciation similarities of the characters
 embedded into dense vectors with
-:class:`~sincomp.embedding.DialectEmbedding`.
+:class:`~sincomp.DialectEmbedding`.
 
 train
     Train a dialect classifier on the annotated samples and save it
@@ -71,7 +71,15 @@ import sklearn.metrics
 import sklearn.model_selection
 import sklearn.pipeline
 
-from .. import compare, datasets, embedding, preprocess
+from .. import (
+    Dataset,
+    DialectEmbedding,
+    DialectVectorizer,
+    compliance,
+    datasets,
+    load_rules,
+    transform,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -118,7 +126,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
 
     One row per dialect and one ``cid_feature`` column per character
     and segment feature, as expected by
-    :class:`~sincomp.embedding.DialectVectorizer`.
+    :class:`~sincomp.DialectVectorizer`.
 
     Parameters
     ----------
@@ -132,7 +140,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
         The wide table with flattened ``cid_feature`` columns.
     """
 
-    wide = preprocess.transform(
+    wide = transform(
         data,
         index="did",
         columns="cid",
@@ -146,7 +154,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
 
 
 def resample_data(
-    dataset: datasets.Dataset,
+    dataset: Dataset,
     annotation: pandas.DataFrame,
     resample: int,
     samples: int = 1000,
@@ -164,7 +172,7 @@ def resample_data(
 
     Parameters
     ----------
-    dataset : datasets.Dataset
+    dataset : Dataset
         Dataset containing the dialect pronunciations.
     annotation : pandas.DataFrame
         The annotated samples of the dialects to resample.
@@ -272,27 +280,27 @@ def train_rule(
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        transformed = preprocess.transform(
+        transformed = transform(
             data,
             index="cid",
             columns="did",
             values=feature_names,
             aggfunc=lambda values: " ".join(values.dropna()),
         )
-        compliances.append(compare.compliance(transformed, rules))
+        compliances.append(compliance(transformed, rules))
         indices.extend(annotation.index)
 
         for round_data, round_indices in resample_data(
             dataset, annotation, resample, samples, min_rate, max_rate
         ):
-            transformed = preprocess.transform(
+            transformed = transform(
                 round_data,
                 index="cid",
                 columns="did",
                 values=feature_names,
                 aggfunc=lambda values: " ".join(values.dropna()),
             )
-            compliances.append(compare.compliance(transformed, rules))
+            compliances.append(compliance(transformed, rules))
             indices.extend(round_indices)
 
     compliances = pandas.concat(compliances, axis=0)
@@ -353,9 +361,9 @@ def train_embedding(
 
     The characters whose dialect coverage reaches ``min_coverage`` are
     kept, the pairwise pronunciation similarity of the kept characters
-    is vectorized with :class:`~sincomp.embedding.DialectVectorizer`
+    is vectorized with :class:`~sincomp.DialectVectorizer`
     and embedded into dense dialect vectors with
-    :class:`~sincomp.embedding.DialectEmbedding`, and the best model
+    :class:`~sincomp.DialectEmbedding`, and the best model
     hyperparameters are selected by cross-validation. Every dialect
     may be resampled for augmentation; a resampled copy holds the
     sampled characters only, and the pairs involving the characters
@@ -409,10 +417,10 @@ def train_embedding(
     data = filter_coverage(data, min_coverage)
     wide = build_wide(data)
 
-    vectorizer = embedding.DialectVectorizer(
+    vectorizer = DialectVectorizer(
         column_selectors=list(FEATURES)
     )
-    dialect_embedding = embedding.DialectEmbedding(
+    dialect_embedding = DialectEmbedding(
         embedding_size=embedding_size
     )
     feature_pipeline = sklearn.pipeline.make_pipeline(
@@ -515,7 +523,7 @@ def train(args: argparse.Namespace) -> None:
         f"resample = {args.resample}"
     )
 
-    rules = compare.load_rules(args.rule_file) if args.rule_file else None
+    rules = load_rules(args.rule_file) if args.rule_file else None
     annotations = load_annotations(args.annotation_file)
 
     if rules is None:
@@ -582,7 +590,7 @@ def evaluate(args: argparse.Namespace) -> None:
         f"resample = {args.resample}"
     )
 
-    rules = compare.load_rules(args.rule_file) if args.rule_file else None
+    rules = load_rules(args.rule_file) if args.rule_file else None
     annotations = load_annotations(args.annotation_file)
 
     splitter = sklearn.model_selection.StratifiedGroupKFold()
@@ -696,7 +704,7 @@ def predict_rule(
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        transformed = preprocess.transform(
+        transformed = transform(
             data,
             index="cid",
             columns="did",
@@ -704,7 +712,7 @@ def predict_rule(
             aggfunc=lambda values: " ".join(values.dropna()),
         )
         compliances.append(
-            compare.compliance(transformed, rules).set_index(items.index)
+            compliance(transformed, rules).set_index(items.index)
         )
     features = pandas.concat(compliances, axis=0).loc[annotations.index]
     probabilities = pandas.DataFrame(
@@ -785,7 +793,7 @@ def predict(args: argparse.Namespace) -> None:
         comment="#",
         encoding="utf-8",
     )
-    if isinstance(classifier.steps[0][1], embedding.DialectVectorizer):
+    if isinstance(classifier.steps[0][1], DialectVectorizer):
         probabilities = predict_embedding(classifier, samples)
     else:
         if args.precomputed:
@@ -805,7 +813,7 @@ def predict(args: argparse.Namespace) -> None:
                     "a rule file is required to compute the rule "
                     "compliance features of the raw data"
                 )
-            rules = compare.load_rules(args.rule_file)
+            rules = load_rules(args.rule_file)
             samples, probabilities = predict_rule(
                 classifier, samples, rules
             )

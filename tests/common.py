@@ -52,8 +52,8 @@ def setUpModule():
     urlopen_patcher.start()
 
     import importlib
-    import sincomp.datasets
-    importlib.reload(sincomp.datasets)
+    from sincomp._internal import datasets
+    importlib.reload(datasets)
 
 
 def tearDownModule():
@@ -61,5 +61,5 @@ def tearDownModule():
     env_patcher.stop()
 
     import importlib
-    import sincomp.datasets
-    importlib.reload(sincomp.datasets)
+    from sincomp._internal import datasets
+    importlib.reload(datasets)

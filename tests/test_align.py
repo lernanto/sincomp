@@ -12,8 +12,7 @@ import os
 import pandas
 import unittest
 
-import sincomp.align
-import sincomp.datasets
+from sincomp._internal import align, datasets
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -24,15 +23,15 @@ class TestAlign(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data1 = sincomp.datasets.FileDataset(
+        cls.data1 = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
-        cls.data2 = sincomp.datasets.FileDataset(
+        cls.data2 = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset2')
         )
 
     def test_align_svd(self):
-        chars, (charmap1, charmap2) = sincomp.align.align(
+        chars, (charmap1, charmap2) = align.align(
             (self.data1, None),
             (self.data2, None),
             encoder='svd',
@@ -42,7 +41,7 @@ class TestAlign(unittest.TestCase):
         self.assertEqual(charmap2.nunique(), charmap2.shape[0])
 
     def test_align_fm(self):
-        chars, (charmap1, charmap2) = sincomp.align.align(
+        chars, (charmap1, charmap2) = align.align(
             (self.data1, None),
             (self.data2, None),
             encoder='fm'
@@ -54,7 +53,7 @@ class TestAlign(unittest.TestCase):
         chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 
-        result = sincomp.align.align_no_cid(
+        result = align.align_no_cid(
             self.data1,
             chars1,
             None,
@@ -73,7 +72,7 @@ class TestAlign(unittest.TestCase):
         chars1 = self.data1.loc[:, ['cid', 'character']].drop_duplicates() \
             .dropna(subset='cid').set_index('cid')['character']
 
-        result = sincomp.align.align_no_cid(
+        result = align.align_no_cid(
             self.data1,
             chars1,
             None,

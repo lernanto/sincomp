@@ -11,9 +11,7 @@ import unittest
 import os
 import numpy
 
-import sincomp.datasets
-import sincomp.similarity
-import sincomp.preprocess
+from sincomp._internal import datasets, preprocess, similarity
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -24,8 +22,8 @@ class TestSimilarity(unittest.TestCase):
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = sincomp.preprocess.transform(
-            sincomp.datasets.FileDataset(
+        cls.data = preprocess.transform(
+            datasets.FileDataset(
                 data_dir=os.path.join(data_dir, 'custom_dataset1')
             ),
             index='cid',
@@ -35,11 +33,11 @@ class TestSimilarity(unittest.TestCase):
         ).fillna('')
 
     def test_chi2(self):
-        sim = sincomp.similarity.chi2(self.data)
+        sim = similarity.chi2(self.data)
         self.assertEqual(sim.shape, (self.data.columns.levels[0].shape[0],) * 2)
         self.assertTrue(numpy.all(numpy.isfinite(sim)))
 
     def test_entropy(self):
-        sim = sincomp.similarity.entropy(self.data)
+        sim = similarity.entropy(self.data)
         self.assertEqual(sim.shape, (self.data.columns.levels[0].shape[0],) * 2)
         self.assertTrue(numpy.all(numpy.isfinite(sim)))

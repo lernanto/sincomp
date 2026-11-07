@@ -60,7 +60,7 @@ binary-tree index.
 
 Usage::
 
-    from sincomp.simulation import gen_dataset, gen_dialects
+    from sincomp import gen_dataset, gen_dialects
 
     dataset, tree = gen_dataset(seed=42)
     dataset.get_data("d4_3")
@@ -80,7 +80,7 @@ import logging
 import numpy
 import pandas
 
-from sincomp import datasets
+from . import datasets
 
 
 logger = logging.getLogger(__name__)

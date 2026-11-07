@@ -16,7 +16,7 @@ import unittest
 import unittest.mock
 import urllib
 
-import sincomp.datasets
+from sincomp._internal import datasets
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
@@ -105,16 +105,16 @@ def setUpModule():
     chrome_patcher.start()
 
     import importlib
-    import sincomp.datasets
-    importlib.reload(sincomp.datasets)
+    from sincomp._internal import datasets
+    importlib.reload(datasets)
 
 def tearDownModule():
     chrome_patcher.stop()
     urlopen_patcher.stop()
 
     import importlib
-    import sincomp.datasets
-    importlib.reload(sincomp.datasets)
+    from sincomp._internal import datasets
+    importlib.reload(datasets)
 
 
 class TestDataset(unittest.TestCase):
@@ -130,7 +130,7 @@ class TestDataset(unittest.TestCase):
                 dtype=str
             ))
 
-        self.dataset = sincomp.datasets.Dataset(
+        self.dataset = datasets.Dataset(
             pandas.concat(data, axis=0, ignore_index=True)
         )
 
@@ -195,7 +195,7 @@ class TestDataset(unittest.TestCase):
 
     def test_select(self):
         other = self.dataset.select(['08533'])
-        self.assertIsInstance(other, sincomp.datasets.LinkDataset)
+        self.assertIsInstance(other, datasets.LinkDataset)
         self.assertListEqual(other.dialect_ids, ['08533'])
 
         data = other.data
@@ -208,7 +208,7 @@ class TestDataset(unittest.TestCase):
 
     def test_sample(self):
         other = self.dataset.sample(n=1)
-        self.assertIsInstance(other, sincomp.datasets.LinkDataset)
+        self.assertIsInstance(other, datasets.LinkDataset)
         self.assertEqual(len(other), 1)
         self.assertIn(other.dialect_ids[0], self.dataset.dialect_ids)
 
@@ -221,7 +221,7 @@ class TestDataset(unittest.TestCase):
 
     def test_shuffle(self):
         other = self.dataset.shuffle()
-        self.assertIsInstance(other, sincomp.datasets.LinkDataset)
+        self.assertIsInstance(other, datasets.LinkDataset)
         self.assertSetEqual(set(self.dataset.dialect_ids), set(other.dialect_ids))
 
         data1 = self.dataset.data
@@ -265,12 +265,12 @@ class TestDataset(unittest.TestCase):
         )
 
     def test_add(self):
-        other = sincomp.datasets.FileDataset(
+        other = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset2')
         )
         output = self.dataset + other
 
-        self.assertIsInstance(output, sincomp.datasets.LinkDataset)
+        self.assertIsInstance(output, datasets.LinkDataset)
         self.assertEqual(len(output), len(self.dataset) + len(other))
 
         data = output.data
@@ -289,10 +289,10 @@ class TestLinkDataset(unittest.TestCase):
         super().setUp()
 
         self.dataset = \
-            sincomp.datasets.FileDataset(
+            datasets.FileDataset(
                 data_dir=os.path.join(data_dir, 'custom_dataset1')
             ) \
-            + sincomp.datasets.FileDataset(
+            + datasets.FileDataset(
                 data_dir=os.path.join(data_dir, 'custom_dataset2')
             )
 
@@ -327,7 +327,7 @@ class TestLinkDataset(unittest.TestCase):
 
     def test_select(self):
         other = self.dataset.select(['08533', '28E71'])
-        self.assertIsInstance(other, sincomp.datasets.LinkDataset)
+        self.assertIsInstance(other, datasets.LinkDataset)
         self.assertListEqual(other.dialect_ids, ['08533', '28E71'])
 
         data = other.data
@@ -368,7 +368,7 @@ class TestFileDataset(unittest.TestCase):
     def setUp(self):
         super().setUp()
 
-        self.dataset = sincomp.datasets.FileDataset(
+        self.dataset = datasets.FileDataset(
             data_dir=os.path.join(data_dir, 'custom_dataset1')
         )
 
@@ -414,7 +414,7 @@ class TestCCRDataset(unittest.TestCase):
         super().setUp()
 
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.dataset = sincomp.datasets.CCRDataset(
+        self.dataset = datasets.CCRDataset(
             self.tmp_dir.name,
             dialect_file=os.path.join(data_dir, 'ccr_dialects.csv')
         )
@@ -497,7 +497,7 @@ class TestMCPDictDataset(unittest.TestCase):
         super().setUp()
 
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.dataset = sincomp.datasets.MCPDictDataset(self.tmp_dir.name)
+        self.dataset = datasets.MCPDictDataset(self.tmp_dir.name)
 
     def tearDown(self):
         super().tearDown()
@@ -581,7 +581,7 @@ class TestBeidazihuiDataset(unittest.TestCase):
         super().setUp()
 
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.dataset = sincomp.datasets.BeidazihuiDataset(self.tmp_dir.name)
+        self.dataset = datasets.BeidazihuiDataset(self.tmp_dir.name)
 
     def tearDown(self):
         super().tearDown()
@@ -678,7 +678,7 @@ class TestBeidazihuiDataset(unittest.TestCase):
 class TestZhongguoyuyanDownloader(unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.downloader = sincomp.datasets.ZhongguoyuyanDownloader(delay=None)
+        self.downloader = datasets.ZhongguoyuyanDownloader(delay=None)
 
     def test_get_survey(self):
         data = self.downloader.get_survey()
@@ -701,7 +701,7 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
         super().setUp()
 
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.dataset = sincomp.datasets.ZhongguoyuyanDataset(
+        self.dataset = datasets.ZhongguoyuyanDataset(
             self.tmp_dir.name,
             downloader_kwargs={'delay': None}
         )
@@ -786,35 +786,35 @@ class TestZhongguoyuyanDataset(unittest.TestCase):
 
 class TestDatasets(unittest.TestCase):
     def test_predefined(self):
-        datasets = sincomp.datasets.predefined()
+        predefined = datasets.predefined()
         self.assertListEqual(
-            [d.name for d in datasets],
+            [d.name for d in predefined],
             ["beidazihui", "CCR", "MCPDict", "zhongguoyuyan"]
         )
-        for d in datasets:
-            self.assertIsInstance(d, sincomp.datasets.Dataset)
+        for d in predefined:
+            self.assertIsInstance(d, datasets.Dataset)
 
     def test_get(self):
         self.assertIsInstance(
-            sincomp.datasets.get(
+            datasets.get(
                 os.path.join(data_dir, 'custom_dataset1', '23C57.csv')
             ),
-            sincomp.datasets.Dataset
+            datasets.Dataset
         )
         self.assertIsInstance(
-            sincomp.datasets.get(os.path.join(data_dir, 'custom_dataset1')),
-            sincomp.datasets.FileDataset
+            datasets.get(os.path.join(data_dir, 'custom_dataset1')),
+            datasets.FileDataset
         )
         self.assertIsInstance(
-            sincomp.datasets.get('CCR'),
-            sincomp.datasets.CCRDataset
+            datasets.get('CCR'),
+            datasets.CCRDataset
         )
         self.assertIsInstance(
-            sincomp.datasets.get('MCPDict'),
-            sincomp.datasets.MCPDictDataset
+            datasets.get('MCPDict'),
+            datasets.MCPDictDataset
         )
         self.assertIsInstance(
-            sincomp.datasets.get('zhongguoyuyan'),
-            sincomp.datasets.ZhongguoyuyanDataset
+            datasets.get('zhongguoyuyan'),
+            datasets.ZhongguoyuyanDataset
         )
-        self.assertIs(sincomp.datasets.get('foo'), None)
+        self.assertIs(datasets.get('foo'), None)

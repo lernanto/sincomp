@@ -6,7 +6,9 @@ from typing import Sequence
 
 import sklearn.preprocessing
 
-from .. import compare, datasets, preprocess
+from .. import compliance, datasets, load_rules, transform
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,7 +29,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the rule comparison command-line interface."""
 
     args = build_parser().parse_args(argv)
-    compare.logger.setLevel(getattr(logging, args.log_level.upper()))
+    logger.setLevel(getattr(logging, args.log_level.upper()))
 
     dataset = datasets.get(args.dataset)
     if dataset is None:
@@ -38,14 +40,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.output is None
         else args.output
     )
-    rules = compare.load_rules(args.rule_file)
+    rules = load_rules(args.rule_file)
     encoder = sklearn.preprocessing.LabelEncoder()
     rules["feature_id"] = encoder.fit_transform(rules["feature"])
 
     data = dataset.data
     if "cid" not in data.columns:
         data = data.rename(columns={"character": "cid"}).dropna(subset="cid")
-    data = preprocess.transform(
+    data = transform(
         data,
         index="cid",
         columns="did",
@@ -53,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         aggfunc=lambda values: " ".join(values.dropna()),
     )
 
-    result = compare.compliance(data, rules, norm=args.norm if args.norm > 0 else None)
+    result = compliance(data, rules, norm=args.norm if args.norm > 0 else None)
     result.insert(0, "dataset", dataset.name)
     result.insert(1, "did", result.index)
     result.to_csv(output, index=False, encoding="utf-8", lineterminator="\n")
