@@ -6,7 +6,7 @@ from typing import Sequence
 
 import pandas
 
-from .. import datasets, preprocess, similarity
+from .. import chi2, datasets, entropy, transform
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,7 +40,7 @@ def _load_dataset(value: str):
         return getattr(datasets, value), value
     except AttributeError:
         if os.path.isdir(value):
-            return datasets.FileDataset(path=value), os.path.basename(value)
+            return datasets.get(value), os.path.basename(value)
         return pandas.read_csv(value, dtype=str), os.path.splitext(os.path.basename(value))[0]
 
 
@@ -52,7 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for value in args.dataset:
         data, name = _load_dataset(value)
-        data = preprocess.transform(
+        data = transform(
             data,
             index="cid",
             columns="did",
@@ -75,7 +75,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             print(f"compute {method} between {name} dialects -> {output}")
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-            result = getattr(similarity, method)(data, parallel=4)
+            if method == "chi2":
+                result = chi2(data, parallel=4)
+            else:
+                result = entropy(data, parallel=4)
             result.to_csv(output, lineterminator="\n")
     return 0
 

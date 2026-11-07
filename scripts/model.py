@@ -17,13 +17,12 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 
+from sincomp import Dataset
+from sincomp._internal import auxiliary, models
 import sincomp.datasets
-import sincomp.models
-import sincomp.auxiliary
-import sincomp.preprocess
 
 
-def load_data(config: dict) -> sincomp.datasets.Dataset:
+def load_data(config: dict) -> Dataset:
     """
     加载数据集
 
@@ -98,7 +97,7 @@ def split_data(
     return train_data, val_data, test_data
 
 def encode_data(
-    processor: sincomp.models.Processor,
+    processor: models.Processor,
     dialects: np.ndarray[str],
     chars: np.ndarray[str],
     targets: np.ndarray[str]
@@ -139,7 +138,7 @@ def get_model(config: dict) -> tuple[type, dict, tf.optimizers.Optimizer]:
 
     # 获取模型类型和参数
     model_config = config.pop('model').copy()
-    model_class = getattr(sincomp.models, model_config.pop('class'))
+    model_class = getattr(models, model_config.pop('class'))
 
     # 创建优化器
     optimizer_config = config.pop('optimizer').copy()
@@ -176,7 +175,7 @@ def prepare(args: argparse.Namespace, config: dict) -> None:
     for name, columns in config['columns'].items():
         voc = []
         for c in columns:
-            dic = sincomp.auxiliary.make_dict(
+            dic = auxiliary.make_dict(
                 data[c],
                 # 当 minfreq, maxcat 为字典时，可以为不同列指定不同的值
                 min_frequency=minfreq.get(name) if isinstance(minfreq, dict) \
@@ -238,7 +237,7 @@ def compare(args: argparse.Namespace, config: dict) -> None:
     with open(config.get('vocab_file', 'vocabs.json'), encoding='utf-8') as f:
         vocabs = json.load(f)
 
-    processor = sincomp.models.Processor(**vocabs)
+    processor = models.Processor(**vocabs)
 
     dialect_col = config['columns']['dialect']
     char_col = config['columns']['char']
@@ -336,7 +335,7 @@ def train(args: argparse.Namespace, config: dict) -> None:
     with open(config.get('vocab_file', 'vocabs.json'), encoding='utf-8') as f:
         vocabs = json.load(f)
 
-    processor = sincomp.models.Processor(**vocabs)
+    processor = models.Processor(**vocabs)
 
     data = load_data(config['datasets'])
     data = encode_data(

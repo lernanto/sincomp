@@ -20,7 +20,7 @@ import scipy.interpolate
 import shapely
 from sklearn.preprocessing import OneHotEncoder
 
-from .. import auxiliary
+from .._internal import auxiliary
 
 logger = logging.getLogger(__name__)
 if not logger.hasHandlers():

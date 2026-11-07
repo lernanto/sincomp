@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Sequence
 
-from .. import align as alignment
+from .._internal import align as alignment
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:

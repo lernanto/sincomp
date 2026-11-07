@@ -18,8 +18,8 @@ import numpy
 import pandas
 from pandas.testing import assert_frame_equal
 
-from sincomp import datasets
-from sincomp.simulation import (
+from sincomp._internal import datasets
+from sincomp._internal.simulation import (
     _generate,
     _mutate,
     gen_dialects,
@@ -515,7 +515,7 @@ class GenDialectsTest(unittest.TestCase):
     def test_matrix_diagonal_warns_and_rejects_source_draw(self):
         # a non-zero diagonal warns, and a rule change that draws the
         # source itself as its target is rejected with an error
-        with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
+        with self.assertLogs("sincomp._internal.simulation", level="WARNING") as seen:
             with self.assertRaises(ValueError):
                 gen_dialects(
                     100, 2, n_categories=[5, 4],
@@ -560,7 +560,7 @@ class GenDialectsTest(unittest.TestCase):
     def test_merge_down_to_one_value_warns(self):
         # a rule change may merge a feature down to a single value,
         # which is logged instead of raising
-        with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
+        with self.assertLogs("sincomp._internal.simulation", level="WARNING") as seen:
             gen_dialects(
                 100, 2, n_categories=[2, 4],
                 n_iter=3, max_dialects=4, seed=0,
@@ -572,7 +572,7 @@ class GenDialectsTest(unittest.TestCase):
 
     def test_parameter_warnings(self):
         # most characters lose their ancestral values
-        with self.assertLogs("sincomp.simulation", level="WARNING") as seen:
+        with self.assertLogs("sincomp._internal.simulation", level="WARNING") as seen:
             gen_dialects(
                 100, 2, n_categories=[5, 4],
                 n_iter=2, mutation_rate=0.3, seed=42,
@@ -619,7 +619,7 @@ class SampleCharsTest(unittest.TestCase):
 
     def test_parameter_warnings(self):
         # the expected coverage of the beta distribution is very low
-        with self.assertLogs("sincomp.simulation", level="WARNING"):
+        with self.assertLogs("sincomp._internal.simulation", level="WARNING"):
             sample_chars(
                 200, 4, beta_alpha=0.1, beta_beta=1.0, seed=7,
             )
@@ -781,7 +781,7 @@ class GenDatasetTest(unittest.TestCase):
     def test_n_dialects_exceeds_generated_dialects(self):
         # a draw larger than the generated dialects keeps them all
         # with a logged warning
-        with self.assertLogs("sincomp.simulation", level="WARNING"):
+        with self.assertLogs("sincomp._internal.simulation", level="WARNING"):
             dataset, tree = small(n_dialects=10_000)
 
         self.assertEqual(len(tree), 15)
