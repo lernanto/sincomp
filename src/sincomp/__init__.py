@@ -47,6 +47,14 @@ Feature extraction
     from their phone distributions, and score the compliance of every
     dialect with sets of sound-change rules.
 
+Decomposition
+    The decomposition estimators learn vector representations from
+    the feature tables: they derive phone similarities from the
+    distributional behavior of phones, embed dialects and characters
+    into continuous spaces, and decompose dialect-by-feature matrices
+    into latent components with alternating least squares, e.g. to
+    recover the areal structure behind the reading correspondences.
+
 Neural models
     :mod:`sincomp.nn` exposes scikit-learn compatible neural
     building blocks on top of TensorFlow (:class:`~sincomp.nn.Processor`,
@@ -94,18 +102,6 @@ from ._internal.align import align, align_no_cid
 
 # datasets: dialect pronunciation datasets
 from ._internal.dataset import Dataset, FileDataset
-
-# embedding: pronunciation embeddings
-from ._internal.embedding import (
-    CharacterEmbedding,
-    CharacterVectorizer,
-    DialectEmbedding,
-    DialectVectorizer,
-    PhoneSimilarity,
-)
-
-# factorize: feature factorization
-from ._internal.factorize import factorize, factorize_svd
 
 # similarity: dialect similarity
 from ._internal.similarity import chi2, entropy

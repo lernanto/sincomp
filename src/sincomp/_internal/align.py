@@ -299,7 +299,7 @@ def align(
         data = pandas.concat(data, axis=0, ignore_index=True).dropna()
 
         # 矩阵分解计算多音字向量
-        embs, _, cids, _, _ = factorize.factorize(
+        embs, _, cids, _, _ = factorize.als(
             data,
             embedding_size=embedding_size
         )
@@ -451,7 +451,7 @@ def align_no_cid(
     assert simplified is not None
 
     # 把基础数据集编码成字向量
-    fac = factorize.factorize_svd if encoder == 'svd' else factorize.factorize
+    fac = factorize.factorize_svd if encoder == 'svd' else factorize.als
     char_embs, _, cids, _, _ = fac(
         base.loc[:, ['did', 'cid', 'initial', 'final', 'tone']],
         embedding_size=embedding_size
