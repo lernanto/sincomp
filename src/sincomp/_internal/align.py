@@ -20,13 +20,14 @@ import scipy.sparse
 import scipy.sparse.linalg
 import sklearn.cluster
 import sklearn.compose
+import sklearn.decomposition
 import sklearn.feature_extraction.text
 import sklearn.linear_model
 import sklearn.metrics
 import sklearn.pipeline
 import typing
 
-from . import factorize, preprocess
+from . import factorize, preprocessing
 
 
 logger = logging.getLogger(__name__)
@@ -177,7 +178,7 @@ def polyphone_embs_svd(
     assert len(data) == len(polyphones)
 
     # 把每个数据集长表转换成宽表
-    data = [preprocess.transform(
+    data = [preprocessing.transform(
         d,
         index='cid',
         columns='did',
@@ -299,10 +300,19 @@ def align(
         data = pandas.concat(data, axis=0, ignore_index=True).dropna()
 
         # 矩阵分解计算多音字向量
-        embs, _, cids, _, _ = factorize.als(
+        wide = preprocessing.transform(
             data,
-            embedding_size=embedding_size
+            index="cid",
+            columns="did",
+            values=["initial", "final", "tone"],
+            aggfunc=lambda x: " ".join(x.dropna())
         )
+        vectors, _ = preprocessing.features_to_vectors(wide.fillna(""))
+        embs, _, _ = factorize.als(
+            vectors,
+            n_components=embedding_size
+        )
+        cids = numpy.asarray(wide.index)
         # 极少数多音字可能因为数据残缺而算不出向量
         idx = pandas.Series(range(len(cids)), index=cids) \
             .reindex(charmap.index[monophones.shape[0]:], fill_value=-1)
@@ -450,12 +460,62 @@ def align_no_cid(
 
     assert simplified is not None
 
-    # 把基础数据集编码成字向量
-    fac = factorize.factorize_svd if encoder == 'svd' else factorize.als
-    char_embs, _, cids, _, _ = fac(
-        base.loc[:, ['did', 'cid', 'initial', 'final', 'tone']],
-        embedding_size=embedding_size
+    # Pivot the base dataset into a wide table holding one cell per
+    # dialect component; polyphones hold multiple values in one cell
+    wide = preprocessing.transform(
+        base,
+        index="cid",
+        columns="did",
+        values=["initial", "final", "tone"],
+        aggfunc=lambda x: " ".join(x.dropna())
     )
+
+    # Encode the base dataset into character vectors
+    if encoder == "svd":
+        # Exclude characters whose coverage is below 10% from encoding
+        mask = wide.count(axis=1) >= wide.shape[1] * 0.1
+        wide = wide.loc[:, wide[mask].count(axis=0) > 0].fillna("")
+
+        pipeline = sklearn.pipeline.make_pipeline(
+            sklearn.compose.ColumnTransformer(
+                [
+                    (
+                        str(c),
+                        sklearn.feature_extraction.text.CountVectorizer(
+                            lowercase=False,
+                            tokenizer=str.split,
+                            token_pattern=None,
+                            stop_words=None,
+                            binary=True,
+                            dtype=numpy.int32
+                        ),
+                        c
+                    )
+                    for c in range(wide.shape[1])
+                ],
+                remainder="drop",
+                sparse_threshold=1.0
+            ),
+            sklearn.decomposition.TruncatedSVD(embedding_size)
+        )
+        # Fit on the characters above the coverage threshold, then
+        # project the remaining ones; char_embs keeps the row order of
+        # wide
+        embs = pipeline.fit_transform(wide[mask])
+        char_embs = numpy.empty((wide.shape[0], embs.shape[1]))
+        char_embs[mask.to_numpy()] = embs
+        remainder = wide[~mask]
+        if remainder.shape[0] > 0:
+            char_embs[~mask.to_numpy()] = pipeline.transform(remainder)
+
+        cids = numpy.asarray(wide.index)
+    else:
+        vectors, _ = preprocessing.features_to_vectors(wide.fillna(""))
+        char_embs, _, _ = factorize.als(
+            vectors,
+            n_components=embedding_size
+        )
+        cids = numpy.asarray(wide.index)
 
     simplified = simplified.reindex(cids)
     if traditional is not None:
