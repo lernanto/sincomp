@@ -992,6 +992,70 @@ parse = RegexParser(
 )
 
 
+def features_to_vectors(features, dtype=numpy.int32):
+    """Encode a wide table of whitespace-separated feature values.
+
+    Each column of `features` holds whitespace-separated feature values
+    per row, e.g. the initial, final or tone of one dialect; empty
+    strings mark missing values. Every column is encoded into one binary
+    multi-hot CSR matrix through a
+    :class:`~sklearn.feature_extraction.text.CountVectorizer`. Neither
+    rows nor columns are filtered, this is the responsibility of the
+    caller.
+
+    Parameters
+    ----------
+    features : numpy.ndarray
+        String array of shape (n_rows, n_columns) holding the feature
+        values; empty strings mark missing values.
+    dtype : type, default=numpy.int32
+        Data type of the encoded output.
+
+    Returns
+    -------
+    vectors : list of scipy.sparse.csr_matrix
+        One multi-hot code matrix of shape (n_rows, vocab_size) per
+        column, in the order of the columns of `features`.
+    vocabularies : list of dict
+        Feature-value-to-index vocabulary of each column, in the order
+        of the columns of `features`; the indices are local to each
+        column.
+
+    Raises
+    ------
+    ValueError
+        If `features` is not a non-empty 2-dimensional table or one of
+        its columns contains no observed feature value.
+    """
+
+    features = numpy.asarray(features, dtype=object)
+    if features.ndim != 2 or features.shape[1] == 0:
+        raise ValueError(
+            "features must be a 2-dimensional table with at least one column."
+        )
+    if features.shape[0] == 0:
+        raise ValueError("features must contain at least one row.")
+
+    vectorizer = sklearn.feature_extraction.text.CountVectorizer(
+        lowercase=False,
+        tokenizer=str.split,
+        token_pattern=None,
+        stop_words=None,
+        binary=True,
+        dtype=dtype
+    )
+
+    vectors = []
+    vocabularies = []
+    for j in range(features.shape[1]):
+        vector = vectorizer.fit_transform(features[:, j]).tocsr()
+        vector.sort_indices()
+        vectors.append(vector)
+        vocabularies.append(dict(vectorizer.vocabulary_))
+
+    return vectors, vocabularies
+
+
 def character_distances(
     data1: numpy.ndarray[str],
     data2: numpy.ndarray[str] | None = None,

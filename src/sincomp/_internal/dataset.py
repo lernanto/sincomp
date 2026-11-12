@@ -32,7 +32,7 @@ import zipfile
 
 from sklearn.neighbors import KNeighborsClassifier
 
-from . import preprocess
+from . import preprocessing
 
 
 logger = logging.getLogger(__name__)
@@ -713,8 +713,8 @@ class BeidazihuiDataset(Dataset):
         data["final"] = segments.str[1:-1].str.join("")
 
         # clean the initial and final separately
-        data["initial"] = preprocess.clean_ipa(data["initial"], force=True)
-        data["final"] = preprocess.clean_ipa(data["final"], force=True)
+        data["initial"] = preprocessing.clean_ipa(data["initial"], force=True)
+        data["final"] = preprocessing.clean_ipa(data["final"], force=True)
 
         data.replace("", pandas.NA, inplace=True)
 
@@ -981,13 +981,13 @@ class CCRDataset(Dataset):
             })
 
         # 清洗读音数据。一个格子可能记录了多个音，用点分隔，只取第一个
-        data['initial'] = preprocess.clean_initial(
-            preprocess.clean_ipa(data['initial'].str.split('.').str[0])
+        data['initial'] = preprocessing.clean_initial(
+            preprocessing.clean_ipa(data['initial'].str.split('.').str[0])
         )
-        data['final'] = preprocess.clean_final(
-            preprocess.clean_ipa(data['final'].str.split('.').str[0])
+        data['final'] = preprocessing.clean_final(
+            preprocessing.clean_ipa(data['final'].str.split('.').str[0])
         )
-        data['tone'] = preprocess.clean_tone(
+        data['tone'] = preprocessing.clean_tone(
             data['tone'].str.split('.').str[0].str.translate({
                 0x0030: 0x2205, # DIGIT ZERO -> EMPTY SET
             })
@@ -1157,7 +1157,7 @@ class MCPDictDataset(Dataset):
         tm = pandas.concat(tm, axis=0, keys=info.index)
         # 少数连读声调有特殊符号，暂时去除
         tm['tone'] = tm['tone'].str.replace(
-            f'[^{"".join(preprocess._TONES)}]',
+            f'[^{"".join(preprocessing._TONES)}]',
             '',
             regex=True
         )
@@ -1230,7 +1230,7 @@ class MCPDictDataset(Dataset):
                     logger.warning(f'skip {did} with no tone')
 
                 # 只取用国际音标注音的数据，使用分类器根据读音字符串判断
-                elif (rt := preprocess.get_romanization_type(
+                elif (rt := preprocessing.get_romanization_type(
                     ''.join(segments.iloc[:, 0].dropna())
                 )) != 'IPA':
                     logger.warning(f'skip {did} with romanization type {rt}')
@@ -1355,8 +1355,8 @@ class MCPDictDataset(Dataset):
 
         # 把原始读音切分成声母、韵母、声调
         seg = data.pop('ipa').str.extract(r'([^0-9]*)([0-9][0-9a-z]*)?')
-        data[['initial', 'final']] = preprocess.parse(
-            preprocess.clean_ipa(seg.iloc[:, 0], force=True)
+        data[['initial', 'final']] = preprocessing.parse(
+            preprocessing.clean_ipa(seg.iloc[:, 0], force=True)
         ).iloc[:, :2]
 
         if did == '郎溪':
@@ -2058,18 +2058,18 @@ class ZhongguoyuyanDataset(Dataset):
         data['tone'] = data['tone'].str.replace(r'\.0$', '', regex=True)
 
         # 清洗读音 IPA
-        data['initial'] = preprocess.clean_initial(
-            preprocess.clean_ipa(data['initial']).str.translate({
+        data['initial'] = preprocessing.clean_initial(
+            preprocessing.clean_ipa(data['initial']).str.translate({
                 0x00a4: 0x0272, # CURRENCY SIGN -> LATIN SMALL LETTER N WITH LEFT HOOK
                 0x00f8: 0x2205, # LATIN SMALL LETTER O WITH STROKE -> EMPTY SET
             })
         )
-        data['final'] = preprocess.clean_final(
-            preprocess.clean_ipa(data['final']).str.translate({
+        data['final'] = preprocessing.clean_final(
+            preprocessing.clean_ipa(data['final']).str.translate({
                 0xf20d: 0x0264, # -> LATIN SMALL LETTER RAMS HORN
             })
         )
-        data['tone'] = preprocess.clean_tone(data['tone'])
+        data['tone'] = preprocessing.clean_tone(data['tone'])
 
         # 删除声韵调均为空的记录
         data.replace('', pandas.NA, inplace=True)
