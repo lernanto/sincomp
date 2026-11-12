@@ -27,13 +27,10 @@ Datasets
     of CSV files or a single CSV file works as a custom dataset.
 
 Preprocessing
-    :func:`clean_ipa`, :func:`clean_initial`, :func:`clean_final` and
-    :func:`clean_tone` normalize raw phone transcriptions;
-    :func:`transform` converts a long-form table into the wide-form
-    feature matrices used by the estimators; :func:`impute` fills in
-    the missing readings; :func:`parse` and
-    :func:`get_romanization_type` recognize and parse romanization
-    schemes.
+    The preprocessing functions clean up raw phone transcriptions,
+    recognize and parse romanization schemes, convert long-form
+    pronunciation records into the wide-form feature matrices used by
+    the estimators, and fill in the missing readings.
 
 Alignment
     :func:`align` aligns the characters of two dialects through their
@@ -124,18 +121,6 @@ from ._internal.embedding import (
 
 # factorize: feature factorization
 from ._internal.factorize import factorize, factorize_svd
-
-# preprocess: data preprocessing
-from ._internal.preprocess import (
-    clean_final,
-    clean_initial,
-    clean_ipa,
-    clean_tone,
-    get_romanization_type,
-    impute,
-    parse,
-    transform,
-)
 
 # similarity: dialect similarity
 from ._internal.similarity import chi2, entropy
