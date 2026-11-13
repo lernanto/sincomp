@@ -13,10 +13,56 @@ import os
 import tempfile
 import urllib.parse
 import urllib.request
+import numpy
+import pandas
 
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
 tmp_dir = tempfile.TemporaryDirectory().name
+
+
+def make_wide():
+    """Build a small (dialect, feature) wide pronunciation table."""
+    cells = [
+        ["b", "ei", "51", "p", "ei", "24"],
+        ["p", "ɔ", "213", "p", "ɔ", "53"],
+        ["b", "ɔ", "24", "b", "ei", "51"],
+        ["m", "ei", "51", "", "", ""],
+    ]
+    columns = pandas.MultiIndex.from_tuples([
+        ("beijing", "initial"),
+        ("beijing", "final"),
+        ("beijing", "tone"),
+        ("guangzhou", "initial"),
+        ("guangzhou", "final"),
+        ("guangzhou", "tone"),
+    ])
+    return pandas.DataFrame(
+        cells,
+        columns=columns,
+        index=["char1", "char2", "char3", "char4"],
+    )
+
+
+def make_rules():
+    """Build a small sound-change rule table."""
+    rules = pandas.DataFrame([
+        {
+            "id": "r1",
+            "feature": "initial",
+            "cid1": ["char1", "char3"],
+            "cid2": ["char2"],
+        },
+        {
+            "id": "r2",
+            "feature": "tone",
+            "cid1": ["char1"],
+            "cid2": ["char2", "char3"],
+        },
+    ])
+    return rules.set_index("id")
+
+
 
 
 def mock_urlopen(url, *args, **kwargs):
