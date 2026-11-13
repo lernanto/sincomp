@@ -6,7 +6,9 @@ from typing import Sequence
 
 import pandas
 
-from .. import chi2, datasets, entropy, transform
+from .. import datasets
+from ..metrics import dialect_similarities
+from ..preprocessing import transform
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,10 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             print(f"compute {method} between {name} dialects -> {output}")
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-            if method == "chi2":
-                result = chi2(data, parallel=4)
-            else:
-                result = entropy(data, parallel=4)
+            result = dialect_similarities(data, metric=method, n_jobs=4)
             result.to_csv(output, lineterminator="\n")
     return 0
 

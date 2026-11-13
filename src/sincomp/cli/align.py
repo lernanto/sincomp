@@ -28,8 +28,7 @@ import numpy
 import pandas
 import sklearn.model_selection
 
-from .. import datasets
-from .._internal.align import align, align_no_cid
+from .. import align, align_no_cid, datasets
 
 
 logger = logging.getLogger(__name__)

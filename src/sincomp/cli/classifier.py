@@ -4,7 +4,7 @@ The classifier distinguishes the classes of dialects either by their
 compliance with a set of pronunciation rules or by their dialect
 vectors — the pairwise pronunciation similarities of the characters
 embedded into dense vectors with
-:class:`~sincomp.DialectEmbedding`.
+:class:`~sincomp.decomposition.DialectEmbedding`.
 
 train
     Train a dialect classifier on the annotated samples and save it
@@ -71,15 +71,11 @@ import sklearn.metrics
 import sklearn.model_selection
 import sklearn.pipeline
 
-from .. import (
-    Dataset,
-    DialectEmbedding,
-    DialectVectorizer,
-    compliance,
-    datasets,
-    load_rules,
-    transform,
-)
+from .. import datasets
+from ..decomposition import DialectEmbedding
+from ..feature_extraction import DialectCompliance, DialectVectorizer
+from ..preprocessing import transform
+from .utils import load_rules
 
 
 logger = logging.getLogger(__name__)
@@ -126,7 +122,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
 
     One row per dialect and one ``cid_feature`` column per character
     and segment feature, as expected by
-    :class:`~sincomp.DialectVectorizer`.
+    :class:`~sincomp.feature_extraction.DialectVectorizer`.
 
     Parameters
     ----------
@@ -154,7 +150,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
 
 
 def resample_data(
-    dataset: Dataset,
+    dataset,
     annotation: pandas.DataFrame,
     resample: int,
     samples: int = 1000,
@@ -172,8 +168,9 @@ def resample_data(
 
     Parameters
     ----------
-    dataset : Dataset
-        Dataset containing the dialect pronunciations.
+    dataset
+        Dataset containing the dialect pronunciations, as returned by
+        :func:`sincomp.datasets.get`.
     annotation : pandas.DataFrame
         The annotated samples of the dialects to resample.
     resample : int
@@ -287,7 +284,9 @@ def train_rule(
             values=feature_names,
             aggfunc=lambda values: " ".join(values.dropna()),
         )
-        compliances.append(compliance(transformed, rules))
+        compliances.append(
+            DialectCompliance(rules).fit_transform(transformed)
+        )
         indices.extend(annotation.index)
 
         for round_data, round_indices in resample_data(
@@ -300,7 +299,9 @@ def train_rule(
                 values=feature_names,
                 aggfunc=lambda values: " ".join(values.dropna()),
             )
-            compliances.append(compliance(transformed, rules))
+            compliances.append(
+                DialectCompliance(rules).fit_transform(transformed)
+            )
             indices.extend(round_indices)
 
     compliances = pandas.concat(compliances, axis=0)
@@ -361,9 +362,10 @@ def train_embedding(
 
     The characters whose dialect coverage reaches ``min_coverage`` are
     kept, the pairwise pronunciation similarity of the kept characters
-    is vectorized with :class:`~sincomp.DialectVectorizer`
+    is vectorized with
+    :class:`~sincomp.feature_extraction.DialectVectorizer`
     and embedded into dense dialect vectors with
-    :class:`~sincomp.DialectEmbedding`, and the best model
+    :class:`~sincomp.decomposition.DialectEmbedding`, and the best model
     hyperparameters are selected by cross-validation. Every dialect
     may be resampled for augmentation; a resampled copy holds the
     sampled characters only, and the pairs involving the characters
@@ -712,7 +714,9 @@ def predict_rule(
             aggfunc=lambda values: " ".join(values.dropna()),
         )
         compliances.append(
-            compliance(transformed, rules).set_index(items.index)
+            DialectCompliance(rules)
+            .fit_transform(transformed)
+            .set_index(items.index)
         )
     features = pandas.concat(compliances, axis=0).loc[annotations.index]
     probabilities = pandas.DataFrame(
