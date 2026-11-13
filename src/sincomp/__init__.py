@@ -37,27 +37,15 @@ Alignment
     reading correspondences, which is the basis of most comparisons;
     :func:`align_no_cid` aligns datasets without shared character IDs.
 
-Rule comparison
-    :func:`load_rules` reads declarative sound-change rules from JSON
-    files and :func:`compliance` scores how well every dialect of a
-    dataset complies with each rule, yielding the rule-compliance
-    tables used to draw isoglosses.
-
 Similarity
     :func:`chi2` and :func:`entropy` measure the distance or
     similarity between dialects over aligned feature matrices.
 
-Embeddings
-    :class:`PhoneSimilarity` derives phone similarities from their
-    distributional behavior; :class:`DialectVectorizer` and
-    :class:`DialectEmbedding` embed dialects into continuous spaces;
-    :class:`CharacterVectorizer` and :class:`CharacterEmbedding` do
-    the same for characters.
-
-Factorization
-    :func:`factorize` and :func:`factorize_svd` decompose
-    dialect-by-feature matrices into latent components, e.g. to
-    recover the areal structure behind the correspondences.
+Feature extraction
+    The feature extraction estimators convert pronunciation tables
+    into numeric features: they vectorize dialects and characters
+    from their phone distributions, and score the compliance of every
+    dialect with sets of sound-change rules.
 
 Neural models
     :mod:`sincomp.nn` exposes scikit-learn compatible neural
@@ -103,9 +91,6 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 # align: character alignment
 from ._internal.align import align, align_no_cid
-
-# compare: sound rule comparison
-from ._internal.compare import compliance, load_rules
 
 # datasets: dialect pronunciation datasets
 from ._internal.dataset import Dataset, FileDataset
