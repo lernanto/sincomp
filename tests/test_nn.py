@@ -1,54 +1,65 @@
 # -*- coding: utf-8 -*-
 
-"""
-测试编码器模型
+"""Tests for the public neural model interface :mod:`sincomp.nn`.
+
+The tests verify the integer encoding of :class:`~sincomp.nn.Processor`
+for present and missing symbols, and the forward pass, training step,
+evaluation and fit loop of :class:`~sincomp.nn.BilinearEncoder` on a
+small local dataset.
 """
 
-__author__ = '黄艺华 <lernanto@foxmail.com>'
+__author__ = "黄艺华 <lernanto@foxmail.com>"
 
 
 import os
+import tempfile
 import unittest
 
 import numpy
 import pandas
-import tempfile
 import tensorflow as tf
 
-from sincomp._internal import dataset, models
+from sincomp import nn
+import sincomp.datasets
 
 
-data_dir = os.path.join(os.path.dirname(__file__), 'data')
+data_dir = os.path.join(os.path.dirname(__file__), "data")
 tmp_dir = tempfile.TemporaryDirectory().name
 
 
 class TestProcessor(unittest.TestCase):
+    """Test the integer encoding of the long-form pronunciation tables."""
+
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
 
-        cls.data = dataset.FileDataset(
-            data_dir=os.path.join(data_dir, 'custom_dataset1')
+        cls.data = sincomp.datasets.get(
+            os.path.join(data_dir, "custom_dataset1")
         ).data
 
     def setUp(self):
         super().setUp()
 
-        self.processor = models.Processor(
-            [self.data['did'].drop_duplicates()],
-            [self.data['cid'].drop_duplicates()],
+        self.processor = nn.Processor(
+            [self.data["did"].drop_duplicates()],
+            [self.data["cid"].drop_duplicates()],
             [
-                self.data['initial'].drop_duplicates(),
-                self.data['final'].drop_duplicates(),
-                self.data['tone'].drop_duplicates()
+                self.data["initial"].drop_duplicates(),
+                self.data["final"].drop_duplicates(),
+                self.data["tone"].drop_duplicates()
             ]
         )
 
     def test_call(self):
-        dialects = self.data[['did']]
-        chars = self.data[['cid']]
-        targets = self.data[['initial', 'final', 'tone']]
-        dialect_ids, char_ids, target_ids = self.processor(dialects, chars, targets)
+        # encoding returns one integer matrix per input part, with the
+        # same shape as the input
+        dialects = self.data[["did"]]
+        chars = self.data[["cid"]]
+        targets = self.data[["initial", "final", "tone"]]
+        dialect_ids, char_ids, target_ids = self.processor(
+            dialects, chars, targets
+        )
 
         self.assertIsInstance(dialect_ids, numpy.ndarray)
         self.assertTupleEqual(dialect_ids.shape, dialects.shape)
@@ -61,6 +72,7 @@ class TestProcessor(unittest.TestCase):
         self.assertIsInstance(target_ids[0, 0], numpy.integer)
 
     def test_call_na(self):
+        # missing symbols encode to the missing ID 0
         dialect_ids, char_ids, target_ids = self.processor(
             [[pandas.NA]],
             [[pandas.NA]],
@@ -71,30 +83,33 @@ class TestProcessor(unittest.TestCase):
         self.assertTrue(numpy.all(char_ids == 0))
         self.assertTrue(numpy.all(target_ids == 0))
 
+
 class TestBilinearEncoder(unittest.TestCase):
+    """Test the training and evaluation interface of the encoder."""
+
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
 
-        data = dataset.FileDataset(
-            data_dir=os.path.join(data_dir, 'custom_dataset1')
+        data = sincomp.datasets.get(
+            os.path.join(data_dir, "custom_dataset1")
         ).data
-        cls.processor = models.Processor(
-            [data['did'].drop_duplicates()],
+        cls.processor = nn.Processor(
+            [data["did"].drop_duplicates()],
             [
-                data['cid'].drop_duplicates(),
-                data['character'].drop_duplicates()
+                data["cid"].drop_duplicates(),
+                data["character"].drop_duplicates()
             ],
             [
-                data['initial'].drop_duplicates(),
-                data['final'].drop_duplicates(),
-                data['tone'].drop_duplicates()
+                data["initial"].drop_duplicates(),
+                data["final"].drop_duplicates(),
+                data["tone"].drop_duplicates()
             ]
         )
         dialects, chars, targets = cls.processor(
-            data[['did']],
-            data[['cid', 'character']],
-            data[['initial', 'final', 'tone']]
+            data[["did"]],
+            data[["cid", "character"]],
+            data[["initial", "final", "tone"]]
         )
         cls.dataset = tf.data.Dataset.from_tensor_slices((
             (dialects, chars),
@@ -104,7 +119,7 @@ class TestBilinearEncoder(unittest.TestCase):
     def setUp(self):
         super().setUp()
 
-        self.model = models.BilinearEncoder(
+        self.model = nn.BilinearEncoder(
             self.processor.dialect_vocab_sizes,
             self.processor.char_vocab_sizes,
             self.processor.target_vocab_sizes,
@@ -113,6 +128,7 @@ class TestBilinearEncoder(unittest.TestCase):
         self.optimizer = tf.keras.optimizers.SGD()
 
     def test_call(self):
+        # the forward pass outputs one logit vector per target feature
         outputs = self.model(
             tf.convert_to_tensor([[1]]),
             tf.convert_to_tensor([[1, 0]])
@@ -124,6 +140,8 @@ class TestBilinearEncoder(unittest.TestCase):
             self.assertListEqual(o.shape.as_list(), [1, n])
 
     def test_train(self):
+        # one training step returns the scalar loss and the accuracy
+        # vector of the target features
         loss, acc = self.model.train(self.optimizer, self.dataset.batch(10))
 
         self.assertIsInstance(loss, tf.Tensor)
@@ -146,12 +164,18 @@ class TestBilinearEncoder(unittest.TestCase):
         )
 
     def test_fit(self):
+        # fitting runs several epochs and writes the checkpoints and
+        # the training logs to the given directories
         self.model.fit(
             self.optimizer,
             self.dataset,
             self.dataset,
             epochs=2,
             batch_size=10,
-            checkpoint_dir=os.path.join(tmp_dir, 'checkpoints'),
-            log_dir=os.path.join(tmp_dir, 'log')
+            checkpoint_dir=os.path.join(tmp_dir, "checkpoints"),
+            log_dir=os.path.join(tmp_dir, "log")
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
