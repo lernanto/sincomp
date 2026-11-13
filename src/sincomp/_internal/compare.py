@@ -5,46 +5,12 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import logging
 import numpy
 import pandas
 import sklearn.compose
 import sklearn.feature_extraction.text
 import sklearn.preprocessing
 
-
-logger = logging.getLogger(__name__)
-if not logger.hasHandlers():
-    logger.addHandler(logging.StreamHandler())
-
-
-def load_rules(fname, characters=None):
-    """
-    加载语音规则.
-
-    Parameters:
-        fname (str): 语音规则文件路径
-        characters (`pandas.Series`): 字 ID 到字的映射表，用于显示
-
-    Returns:
-        rules (`pandas.DataFrame`): JSON 格式的语音规则表
-    """
-
-    rules = pandas.read_json(fname, orient='records', encoding='utf-8')
-    rules['id'] = rules.get('id')
-    rules['id'] = rules['id'].fillna(rules.index.to_series()).astype(str)
-    rules.set_index('id', inplace=True)
-    logger.debug(f'loaded {len(rules)} rules from {fname} .')
-
-    if characters is not None:
-        def cids2chars(cids):
-            chars = characters.reindex(cids)
-            return ''.join(numpy.where(chars.notna(), chars, cids))
-
-        rules['char1'] = rules['cid1'].apply(cids2chars)
-        rules['char2'] = rules['cid2'].apply(cids2chars)
-
-    return rules
 
 def compliance(
     data: pandas.DataFrame,
