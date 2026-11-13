@@ -59,13 +59,10 @@ from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeClassifier
 
-from .. import (
-    CharacterEmbedding,
-    CharacterVectorizer,
-    Dataset,
-    datasets,
-    transform,
-)
+from .. import datasets
+from ..decomposition import CharacterEmbedding
+from ..feature_extraction import CharacterVectorizer
+from ..preprocessing import transform
 
 
 logger = logging.getLogger(__name__)
@@ -81,15 +78,16 @@ class _HelpFormatter(
 
 
 def select_dialects(
-    dataset: Dataset,
+    dataset,
     dialect_ids: Sequence[str]
 ) -> numpy.ndarray:
     """Validate and return the requested dialect IDs.
 
     Parameters
     ----------
-    dataset : Dataset
-        Dataset containing the available dialect metadata.
+    dataset
+        Dataset containing the available dialect metadata, as returned
+        by :func:`sincomp.datasets.get`.
     dialect_ids : Sequence[str]
         Requested dialect identifiers.
 

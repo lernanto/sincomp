@@ -6,7 +6,10 @@ from typing import Sequence
 
 import sklearn.preprocessing
 
-from .. import compliance, datasets, load_rules, transform
+from .. import datasets
+from ..feature_extraction import DialectCompliance
+from ..preprocessing import transform
+from .utils import load_rules
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         aggfunc=lambda values: " ".join(values.dropna()),
     )
 
-    result = compliance(data, rules, norm=args.norm if args.norm > 0 else None)
+    result = DialectCompliance(
+        rules, norm=args.norm if args.norm > 0 else None
+    ).fit_transform(data)
     result.insert(0, "dataset", dataset.name)
     result.insert(1, "did", result.index)
     result.to_csv(output, index=False, encoding="utf-8", lineterminator="\n")
