@@ -37,10 +37,6 @@ Alignment
     reading correspondences, which is the basis of most comparisons;
     :func:`align_no_cid` aligns datasets without shared character IDs.
 
-Similarity
-    :func:`chi2` and :func:`entropy` measure the distance or
-    similarity between dialects over aligned feature matrices.
-
 Feature extraction
     The feature extraction estimators convert pronunciation tables
     into numeric features: they vectorize dialects and characters
@@ -54,6 +50,12 @@ Decomposition
     into continuous spaces, and decompose dialect-by-feature matrices
     into latent components with alternating least squares, e.g. to
     recover the areal structure behind the reading correspondences.
+
+Metrics
+    :func:`~sincomp.metrics.dialect_similarities` computes the pairwise
+    similarities between the dialects of a feature table, either by the
+    normalized chi-square statistic or by the conditional entropy of
+    their phone co-occurrences.
 
 Neural models
     :mod:`sincomp.nn` exposes scikit-learn compatible neural
@@ -83,16 +85,9 @@ Examples
 >>> import sincomp
 >>> dataset = sincomp.datasets.get("MCPDict")          # doctest: +SKIP
 >>> features = sincomp.transform(dataset.data)          # doctest: +SKIP
->>> similarity = sincomp.chi2(features)                 # doctest: +SKIP
-
-Package layout
---------------
-
-The implementation lives in the private package
-:mod:`sincomp._internal`; only the names imported into this module, the
-:mod:`sincomp.datasets` and :mod:`sincomp.nn` facades, together with the
-:mod:`sincomp.cli` and :mod:`sincomp.plot` packages, are public. Names
-not listed here may change at any time without notice.
+>>> similarities = sincomp.metrics.dialect_similarities(  # doctest: +SKIP
+...     features, metric="chi2"
+... )
 """
 
 __author__ = '黄艺华 <lernanto@foxmail.com>'
@@ -102,9 +97,6 @@ from ._internal.align import align, align_no_cid
 
 # datasets: dialect pronunciation datasets
 from ._internal.dataset import Dataset, FileDataset
-
-# similarity: dialect similarity
-from ._internal.similarity import chi2, entropy
 
 # simulation: phylogenetic simulation
 from ._internal.simulation import gen_dialects, gen_dataset
