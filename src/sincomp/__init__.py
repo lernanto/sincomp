@@ -16,15 +16,11 @@ Main features
 
 Datasets
     :mod:`sincomp.datasets` loads the long-form pronunciation records
-    (one row per dialect and character) from several digitized sources,
-    including the 漢語方音字彙 digitization (`Beida zihui
-    <https://github.com/lexibank/beidazihui>`_), the modern dialects of
-    the Xiaoxue archival database (`CCR
-    <https://xiaoxue.iis.sinica.edu.tw/ccrdata/>`_), the `MCPDict
-    <https://mcpdict.sourceforge.io/>`_ and the 中国语言资源保护工程
-    采录展示平台 (`zhongguoyuyan <https://zhongguoyuyan.cn/>`_).
-    Datasets may be downloaded lazily and cached locally; a directory
-    of CSV files or a single CSV file works as a custom dataset.
+    (one row per dialect and character) from several digitized
+    sources, downloading and caching them lazily; a single CSV file
+    or a directory of per-dialect CSV files works as a custom
+    dataset, and simulated datasets can be generated randomly for
+    testing and benchmarking without real data.
 
 Preprocessing
     The preprocessing functions clean up raw phone transcriptions,
@@ -64,12 +60,6 @@ Neural models
     TensorFlow is an optional dependency; the names in that module are
     importable only when it is installed.
 
-Simulation
-    :func:`gen_dialects` and :func:`gen_dataset` simulate a population
-    of dialects descending from a common ancestor along a binary
-    phylogenetic tree, under a mutation model optionally steered by
-    transition matrices learned from real data.
-
 Command line
     The ``sincomp`` command exposes the main workflows as
     human-friendly subcommands; every subcommand is also available as
@@ -94,9 +84,3 @@ __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 # align: character alignment
 from ._internal.align import align, align_no_cid
-
-# datasets: dialect pronunciation datasets
-from ._internal.dataset import Dataset, FileDataset
-
-# simulation: phylogenetic simulation
-from ._internal.simulation import gen_dialects, gen_dataset

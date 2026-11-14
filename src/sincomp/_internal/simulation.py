@@ -818,9 +818,9 @@ def gen_dataset(
     initials: list[str] | None = None,
     finals: list[str] | None = None,
     tones: list[str] | None = None,
-    max_dialects: int = 16,
     n_dialects: int | None = None,
-    n_iter: int = 4,
+    n_iter: int = 5,
+    max_dialects: int = 10,
     mutation_rate: float = 0.01,
     alpha: float = 1.0,
     transition_matrices: list[numpy.ndarray | None] | None = None,
@@ -863,8 +863,6 @@ def gen_dataset(
     tones : list[str] | None
         The phone names of the tone feature; required when
         ``n_tone`` is omitted.
-    max_dialects : int, default=16
-        Maximum number of live dialects per generation.
     n_dialects : int | None, default=None
         Number of modern dialects uniformly drawn from the dialects
         returned by :func:`gen_dialects` before the character
@@ -873,8 +871,10 @@ def gen_dataset(
         dialect formation, this parameter thins out the modern
         dialects afterwards. When it exceeds the number of modern
         dialects, all of them are kept and a warning is logged.
-    n_iter : int, default=4
+    n_iter : int, default=5
         Number of generations.
+    max_dialects : int, default=10
+        Maximum number of live dialects per generation.
     mutation_rate : float, default=0.01
         Probability that one character mutates the selected feature
         in one split; the probability that a character keeps its
