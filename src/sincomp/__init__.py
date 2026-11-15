@@ -24,9 +24,13 @@ Datasets
 
 Preprocessing
     The preprocessing functions clean up raw phone transcriptions,
-    recognize and parse romanization schemes, convert long-form
+    recognize and parse romanization schemes, and convert long-form
     pronunciation records into the wide-form feature matrices used by
-    the estimators, and fill in the missing readings.
+    the estimators.
+
+Imputation
+    :mod:`sincomp.impute` fills the missing values of the wide-form
+    feature tables with scikit-learn compatible transformers.
 
 Alignment
     :func:`align` aligns the characters of two dialects through their
