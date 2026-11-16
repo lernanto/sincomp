@@ -1,258 +1,88 @@
-# SinComp 汉语方言计算及比较工具集
+# SinComp
 
-SinComp 是一个自动化处理汉语方言读音数据的工具集，包含了一系列针对方言读音数据执行清洗、度量、比较、建模、作图的功能函数。当前支持处理汉语方音字汇、小学堂、汉字音典、语保等方言读音数据集。
+SinComp is a Python toolkit for processing and comparing Chinese dialect
+pronunciation data. It provides dataset loaders, long-to-wide
+preprocessing, dialect similarity measures, character alignment,
+feature extraction, missing-value imputation, embeddings, and neural
+models.
 
-## 安装
+## Installation
 
-推荐从 PyPI 安装，在 Linux 终端或 Windows 命令提示符下运行如下命令安装完整功能：
-
-```shell
-pip install sincomp[datasets,models,parser,plot]
-```
-
-其中括号中的扩展是可选的，建议至少包含 datasets 以使用所有的数据集。
-
-由于本工具集还在开发中，如果想从最新的代码安装，运行：
-
-```
-pip install 'sincomp[datasets,models,parser,plot] @ git+https://github.com/lernanto/sincomp.git'
-```
-
-## 命令行接口
-
-本工具集还在开发中，目前比较成型的是自动化清洗、规整方言读音数据集。本库本身不提供数据集的原始数据，使用时会自动从数据集所在的网站下载数据。安装本工具后，可以使用以下的命令：
+SinComp requires Python 3.10 or later.
 
 ```shell
-sincomp dataset list
-sincomp dataset dialects DATASET [DIALECT_FILTER]
-sincomp dataset query DATASET DIALECT_FILTER [DATA_FILTER]
-sincomp similarity [DATASET ...]
-sincomp compare DATASET [OUTPUT]
-sincomp align DATASET [DATASET ...]
-sincomp align evaluate DATASET
-sincomp classifier train --config CONFIG [OPTIONS]
-sincomp classifier evaluate --config CONFIG [OPTIONS]
-sincomp classifier predict --config CONFIG [OPTIONS]
-sincomp reconstruct --config CONFIG [OPTIONS]
+python -m pip install sincomp
 ```
 
-面向智能体或其他程序调用时，可以使用带有模块命名空间的入口，参数与人类入口一致：
+Install optional dependencies for remote datasets or TensorFlow models
+when needed:
 
 ```shell
-sincomp.cli.dataset list
-sincomp.cli.dataset dialects DATASET [DIALECT_FILTER]
-sincomp.cli.dataset query DATASET DIALECT_FILTER [DATA_FILTER]
-sincomp.cli.similarity [DATASET ...]
-sincomp.cli.compare DATASET [OUTPUT]
-sincomp.cli.align DATASET [DATASET ...]
-sincomp.cli.align evaluate DATASET
-sincomp.cli.classifier train --config CONFIG [OPTIONS]
-sincomp.cli.classifier evaluate --config CONFIG [OPTIONS]
-sincomp.cli.classifier predict --config CONFIG [OPTIONS]
-sincomp.cli.reconstruct --config CONFIG [OPTIONS]
+python -m pip install "sincomp[datasets,models]"
 ```
 
-`classifier` 和 `reconstruct` 的参数主要通过 JSON 配置文件控制：`--config`
-指定一个扁平的 JSON 文件，其键为不带前导连字符的命令行选项名，如
-`annotation_file`、`model_file`、`dialects` 等。命令行选项仍然可用且优先
-于配置文件。例如 `classifier` 的输入和输出文件既可通过配置文件的
-`model_file` 键指定，也可用 `--model-file` 选项覆盖；`predict` 命令使用
-`input_file` 和 `prediction_file` 键指定预测结果文件，默认分别从标准输入
-读取并写入标准输出。
+See the [installation guide](docs/installation.md) for all extras and
+cache configuration.
 
-### 检索数据集
+## Quick start
 
-`dataset list` 输出所有预定义数据集的信息。`dataset dialects DATASET [DIALECT_FILTER]` 输出指定数据集的方言信息，可以使用 pandas `query` 表达式对方言进行筛选，包括按方言 ID `did` 或任意列值筛选，不支持输出到文件。目前没有清空缓存并重新下载数据集的命令。
-
-`dataset query` 使用 pandas `query` 表达式筛选数据。数据集名称和方言筛选条件是必选的位置参数，读音数据筛选条件可选：
-
-```shell
-sincomp dataset query CCR "group == '官话'" "tone_category == '平'"
-sincomp.cli.dataset query CCR "group == '官话'" "tone_category == '平'"
-```
-
-### 计算方言相似度
-
-在 Linux 终端或 Windows PowerShell 运行如下命令计算小学堂语料集所有方言两两之间的相似度：
-
-```shell
-sincomp similarity
-```
-
-视机器性能运行时间可能较久，完成后会在当前目录生成两个文件：
-
-| 文件 | 说明 |
-|:-|:-|
-| CCR_chi2.csv | 使用卡方方法计算的相似度 |
-| CCR_entropy.csv | 使用条件熵计算的相似度 |
-
-## Python 接口
-
-### 使用数据集
+This example generates a small synthetic dataset, pivots it to a wide
+table, and computes a pairwise dialect similarity matrix without
+downloading external data:
 
 ```python
 import sincomp.datasets
+import sincomp.metrics
+import sincomp.preprocessing
 
-ccr = sincomp.datasets.get('CCR')
-print(ccr.dialects)
-# 采用延迟加载方式，在使用时才下载实际数据并缓存到本地文件，数据集对外表现如同 pandas.DataFrame
-print(ccr.sample(1))
-```
-
-### 计算方言相似度
-
-`sincomp similarity` 命令实际上在内部调用了相似度函数，其用法如下所示：
-
-```python
-import sincomp.datasets
-import sincomp.preprocess
-import sincomp.similarity
-
-# 把原始数据集转成宽表，每个字为一行，如果一个字有多个读音，以空格分隔
-data = sincomp.preprocess.transform(
-    sincomp.datasets.get('CCR'),
-    index='cid',
-    columns='did',
-    values=['initial', 'final', 'tone'],
-    aggfunc='first',
-    fill_value=''
+dataset = sincomp.datasets.make_dataset(
+    initials=["p", "t", "k"],
+    finals=["a", "i", "u"],
+    tones=["1", "2", "3"],
+    n_characters=27,
+    n_dialects=5,
+    n_iter=3,
+    seed=0,
 )
-# 使用卡方计算方言之间相似度
-sim = sincomp.similarity.chi2(data)
+
+wide = sincomp.preprocessing.long_to_wide(
+    dataset,
+    index="cid",
+    columns="did",
+    values=["initial", "final", "tone"],
+    aggfunc=lambda values: " ".join(values.dropna()),
+    fill_value="",
+)
+
+similarities = sincomp.metrics.dialect_similarities(
+    wide.to_numpy(dtype=object),
+    feature_num=3,
+)
+print(similarities.shape)  # (5, 5)
 ```
 
-更多使用方法参考该模块的帮助及注释。
+For a real corpus, use `sincomp.datasets.get("MCPDict")`; accessing the
+dataset's records may download and cache source files. See the
+[getting-started guide](docs/getting-started.md) and
+[dataset guide](docs/datasets.md).
 
-## 模块
+## User guide
 
-本库包含以下主要模块：
+- [Guide index and learning paths](docs/index.md)
+- [Command-line interface](docs/cli.md)
+- [Concepts and terminology](docs/concepts.md)
+- [Installation](docs/installation.md)
+- [Getting started](docs/getting-started.md)
+- [Datasets and data formats](docs/datasets.md)
+- [Preprocessing](docs/preprocessing.md)
+- [Dialect similarity](docs/similarity.md)
+- [Feature extraction](docs/feature-extraction.md)
+- [Sound-change rules](docs/rules.md)
+- [Character alignment](docs/alignment.md)
+- [Missing-value imputation](docs/imputation.md)
+- [Embeddings and decomposition](docs/decomposition.md)
+- [Neural models](docs/models.md)
 
-| 模块 | 说明 |
-|:-|:-|
-| datasets | 提供加载数据集的通用接口 |
-| preprocess | 预处理，包括把音节切分成声韵调、填充缺失读音等 |
-| align | 对齐不同数据集之间的字 ID |
-| similarity | 提供若干无监督的方法计算方言之间的相似度 |
-| compare | 支持手工设定的规则来计算方言对规则的符合程度 |
-| models | 为方言读音建模，当前主要是基于浅层神经网络的编解码器模型 |
-| plot | 提供制作方言统计图、方言地图等的工具函数 |
-| cli | 提供统一的面向人类和智能体的命令行入口 |
-
-其中部分功能的应用在如下几篇文章中有简要的介绍：
-- [基于矩阵分解的方言字音对齐](https://zhuanlan.zhihu.com/p/20230566259)
-- [基于方言之间的预测相似度进行方言聚类](https://zhuanlan.zhihu.com/p/464735745)
-- [什么是官话？——兼及方言分类的概率模型](https://zhuanlan.zhihu.com/p/629007299)
-- [使用双线性编码建模多方言音系](https://zhuanlan.zhihu.com/p/659731592)
-
-更详细的使用方法见各模块代码注释。
-
-## 数据集
-
-本库当前支持处理如下方言读音数据集：
-
-| 代号 | 说明 | 简称 | 链接 | 别名 |
-|:-|:-|:-|:-|:-|
-| beidazihui | 《汉语方音字汇》方言字音 | 汉语方音字汇 | [GitHub](https://github.com/lexibank/beidazihui) | |
-| CCR | 小学堂汉字古今音资料库现代音 | 小学堂 | [小学堂汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/) | ccr、xiaoxue |
-| MCPDict | 汉字音典方言字音 | 汉字音典 | [音典网页版](https://nk2028.shn.hk/yindian/) | mcpdict |
-| zhongguoyuyan | 中国语言资源保护工程汉语方言单字音 | 语保 | [中国语言资源保护工程采录展示平台](https://zhongguoyuyan.cn/) | yubao |
-
-如下为以上数据集的版权声明：
-
-### 汉语方音字汇
-
-为北京大学中国语言文学系语言学教研室编《汉语方音字汇》（文字改革出版社，1962 年）收录的方言字音数据，由 lexibank 项目数字化，以 CC-BY-4.0 许可在 [GitHub](https://github.com/lexibank/beidazihui) 发布，详情见其[许可声明](https://github.com/lexibank/beidazihui?tab=CC-BY-4.0-1-ov-file)。
-
-### 小学堂
-
-小学堂在网站上提供所有方言读音数据下载，对于这部分数据声明：
-
-> ……提供獨立下載之聲韻資料檔案，視為事實性紀錄之整理，編輯者為其指認採「公眾領域標章（PDM，Public Domain Mark)」進行發布，在法律許可的範圍內，該等事實性勘驗記錄不復受到著作權利的保障，使用者得將其視為無著作權利限制之資訊，使用上毋須另洽編輯者申請著作權及著作相關權利之授權。
-
-详情见[汉字古今音资料库](https://xiaoxue.iis.sinica.edu.tw/ccrdata/)的“授权方式”节。
-
-### 汉字音典
-
-汉字音典为开源的汉字读音查询工具，并随代码发布了互联网方言爱好者收集整理的多种历史和方言读音数据。数据随代码以 MIT 许可在 [GitHub](https://github.com/osfans/MCPDict) 发布，详情见其[版权声明](https://github.com/osfans/MCPDict?tab=License-1-ov-file)。
-
-### 语保
-
-语保的数据根据其版权声明
-
-> ……视用户为其在中国语言资源保护工程采录展示平台网站上载或发布的内容的版权所有人。用户在中国语言资源保护工程采录展示平台上载或发布内容即视为其同意授予中国语言资源保护工程采录展示平台所有上述内容的在全球范围内的免费、不可撤销的无限期的并且可转让的非独家使用权许可……
-
-详情见其[版权声明](https://zhongguoyuyan.cn/declaration)。
-
-使用语保数据集时，会自动调用本地浏览器访问语保网站，需用户自行在浏览器上登录，然后会遵循按正常流程访问方言数据。每次只获取指定的方言点数据，并把数据缓存到本地文件。当前只支持 Chrome 浏览器。
-
-> [!warning]
-> 必须严格控制访问语保网站的频率，短时间大量访问可能会导致账号被禁用！
-
-### 缓存路径
-
-下载数据集保存在本地的目录由如下条件决定：
-
-1. 如指定了 SINCOMP_CACHE 环境变量，则创建在该环境变量指向的目录。
-2. 否则如指定了 LOCALAPPDATA 环境变量，则创建在该环境变量下的 sincomp 目录，Windows 下 LOCALAPPDATA 默认为当前用户目录下的 AppData\Local。
-3. 否则创建在当前用户目录下的 sincomp 目录。
-
-各数据集会下载到上述目录下的不同路径：
-
-| 数据集 | 资源路径 | 缓存路径 |
-|:-|:-|:-|
-| 汉语方音字汇 | raw/characters.tsv | datasets/beidazihui/characters.tsv |
-| 小学堂 | 每个方言区一个独立压缩文件 | datasets/ccr/*.xlsx |
-| 汉字音典 | tools/tables/output/*.tsv | datasets/mcpdict/*.tsv |
-| 语保 | 每个方言点对应后台一个资源链接 | datasets/zhongguoyuyan/*.json |
-
-如果由于网络或其他原因下载失败，可以手动到上文所述各数据集的网站下载数据并解压到上述目录，再运行上述命令。
-
-> [!Note]
-> 注意小学堂数据文件名中“閩語”笔误为“閔語”，手工下载时需手工改正。
-
-### 数据格式
-
-本工具集使用两种格式的数据：
-- **长表** 一个方言点的一条字音数据为一行，为数据集载入的原始格式，基于神经网络的模型如编码器使用该格式。
-- **宽表** 一个方言点所有字、或一个字在所有方言点的读音为一行，一些基于统计的方法，如计算方言相似度使用该格式。
-
-长表和宽表都实现为 pandas.DataFrame 或兼容的数据类型。其中长表至少包含如下列：
-
-| 列名 | 说明 | 备注 |
-|:-|:-|:-|
-| did | 方言 ID | |
-| cid | 字 ID | 当前汉字音典数据集没有提供字 ID，只提供了字形
-| character | 字形 | 不是必须的字段，但上述所有数据集都提供了
-| initial | 声母 | |
-| final | 韵母 | |
-| tone | 声调 | |
-
-本工具集提供了一个函数把长表转换为宽表，其用法如下所示：
-
-```python
-import sincomp.datasets
-import sincomp.preprocess
-
-# 把原始数据集的长表转成宽表，每个方言为一行，每个字的声韵调等为一列，如果一个字有多个声韵调，取第一个
-wide = sincomp.preprocess.transform(sincomp.datasets.get('CCR'))
-print(wide[:10])
-```
-
-### 自定义数据集
-
-自定义数据集只要为满足上述长表格式的 pandas.DataFrame，本库的功能函数均可处理。为方便处理自定义数据集，本库提供提供了一个基础类，该类要求数据文件以 CSV 格式存储，每个文件为一个方言，其用法如下所示：
-
-```python
-import pandas as pd
-import sincomp.datasets
-
-# 从指定目录加载数据集，该目录树下每个文件视为一个方言点，主文件名为方言 ID
-mydataset = sincomp.datasets.get('path/to/dataset/directory')
-# 自定义数据集的用法与自带数据集相同
-print(mydataset.sample(1))
-```
-
-# 开发计划
-
-- [ ] 使用 CRF 切分汉语方言音节及切分声韵调
-- [ ] 为现有的算法和模型提供兼容 scikit-learn 的接口
+Public API details are documented in the Python docstrings. For command
+options and examples, use the built-in help described in the
+[CLI guide](docs/cli.md). Plotting is not covered in this guide.
