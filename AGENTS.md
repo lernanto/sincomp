@@ -1,60 +1,68 @@
 # AGENTS.md
 
-## 适用范围
+## Scope
 
-本文件适用于 SinComp 仓库根目录及其所有子目录。除非更深层目录存在另一个 `AGENTS.md`，否则其中的约束适用于该目录下的全部源代码、测试、脚本和文档。
+This file applies to the SinComp repository root and all its subdirectories. Unless a more specific `AGENTS.md` exists in a nested directory, these requirements apply to all source code, tests, scripts, and documentation under that directory.
 
-## 项目简介
+## Project overview
 
-SinComp 是一个用于汉语方言读音数据处理与比较的 Python 工具集。项目支持方言数据集的加载、清洗、规整、字音对齐、相似度计算、规则比较、统计作图和模型训练。
+SinComp is a Python toolkit for processing and comparing Chinese dialect pronunciation data. It supports loading, cleaning, and normalizing dialect datasets; aligning character pronunciations; calculating similarities; comparing rule compliance; statistical plotting; and model training.
 
-主要目录结构如下：
+The main repository structure is:
 
 ```text
 sincomp/
+├── .github/          GitHub configuration and workflows
+├── docs/             User and API guides
 ├── src/
-│   └── sincomp/     核心 Python 包、公共 API 和 CLI
-│       └── cli/     面向人类和智能体的命令行适配层
-├── scripts/         命令行脚本、数据处理脚本和实验脚本
-├── tests/           自动化测试代码及测试数据
-├── data/            固定数据集、规则和标注等输入数据
-└── notebooks/       数据分析、实验和探索性 notebook
+│   └── sincomp/      Core Python package, public API, and CLI
+│       ├── _internal/ Internal algorithm implementations
+│       └── cli/      Human- and agent-oriented CLI adapters
+├── tests/            Automated tests and test data
+├── pyproject.toml    Project metadata and build configuration
+└── README.md         Project overview and quick start
 ```
 
-数据、实验结果和 notebook 不属于核心库接口，修改时应保持范围明确。
+Data, experiment results, and notebooks are not part of the core library interface. Keep changes to them narrowly scoped.
 
-包内 CLI 通过 `sincomp` 提供人类友好的一级子命令，也通过 `sincomp.cli.*` 提供面向智能体的稳定入口。CLI 适配层负责参数解析、输出格式和调用业务 API；算法实现仍放在 `sincomp` 的业务模块中。命令产生的 CSV 等结果文件格式属于业务接口，不应因终端输出格式调整而改变。
+The package CLI provides human-friendly top-level subcommands through `sincomp`, and stable agent-oriented entry points through `sincomp.cli.*`. CLI adapters handle argument parsing, output formatting, and calls to the business APIs; algorithm implementations belong in the relevant `sincomp` modules. Output formats such as CSV files are part of the business interface and must not change merely to adjust terminal output.
 
-项目支持小学堂、汉字音典和中国语言资源保护工程等方言数据来源。数据集可能采用延迟下载和本地缓存，测试和开发代码不得假定远程数据始终可用，应优先使用仓库内的最小测试数据或固定输入。
+Datasets may be downloaded lazily and cached locally. Tests and development code must not assume remote data is always available; prefer the smallest repository test data or fixed inputs.
 
-## 代码规范
+## Documentation
 
-### 通用原则
+Documentation is maintained in the `docs/` directory. Developers should at least read `docs/concepts.md` to understand the project's terminology and fundamental concepts.
 
-- 优先修复根本原因，保持改动范围最小，避免无关重构。
-- 遵循已有模块边界、公共 API 和命名方式；新增抽象必须能够减少实际复杂度或匹配现有模式。
-- 不在未明确要求时修改生成数据、notebook、缓存、模型文件或其他实验产物。
-- 不添加无助于理解的注释；复杂逻辑前可以添加简短的英文说明。
-- 默认使用 ASCII；只有源码已经使用相应字符集或确有必要时才加入非 ASCII 字符。
+Consult `docs/index.md` and the relevant topic guides for workflows, data conventions, and API usage. For command-line tasks, see `docs/cli.md` and the command's built-in help.
 
-### Python 风格
+## Coding standards
 
-- 使用 Python 3.10 或更高版本兼容的语法，并遵循 scikit-learn 的代码组织和命名习惯。
-- 代码遵循 PEP 8，并采用 scikit-learn 使用的 Black 风格；保持合理的行宽、缩进、空行、命名和导入分组。
-- 公共模块、类、函数和方法必须提供文档字符串。
-- 文档字符串、模板和代码示例使用英文，并采用 scikit-learn 的 NumPy 风格：包括简洁摘要，以及适用时的 `Parameters`、`Returns`、`Raises` 和 `Examples` 小节。
-- 文档字符串应准确描述实际行为、输入类型、返回值和异常；不要复制与实现不符的模板文字。示例应优先展示公开 API 和可复现的最小用法。
-- 字符串字面量遵循 scikit-learn 采用的 Black 风格，默认使用双引号；需要插值时使用双引号包围的 f-string。只有包含双引号或确实提高可读性的情况才使用单引号。
-- 导入按标准库、第三方库、本地包分组，并保持组内稳定、清晰的顺序。
-- 保持函数职责单一，避免通过隐式全局状态传递数据；对 pandas、NumPy 和 sklearn 对象优先使用其结构化 API。
-- 保留现有公共接口，除非任务明确要求修改；接口变化必须同步更新调用方和测试。
+### General principles
 
-### 编码与文件格式
+- Fix root causes and keep changes focused; avoid unrelated refactoring.
+- Follow existing module boundaries, public APIs, and naming conventions. Add abstractions only when they reduce real complexity or match an established pattern.
+- Do not modify generated data, notebooks, caches, model files, or other experimental artifacts unless explicitly requested.
+- Avoid comments that do not aid understanding. Add a brief English explanation before complex logic when needed.
+- Default to ASCII; use non-ASCII characters only when the source file already uses them or they are necessary.
 
-- Python 源文件使用 UTF-8 编码。
-- 文本文件统一使用 LF (`\\n`) 换行符，不要提交 CRLF 转换造成的无关差异。
-- Python 文件如已有文件头编码声明，应保留 `# -*- coding: utf-8 -*-`；新增 Python 文件也应在需要明确编码的项目文件中遵循该约定。
-- Python 文件头应保留或添加作者信息，例如：
+### Python style
+
+- Use syntax compatible with Python 3.10 or later and follow scikit-learn's code organization and naming conventions.
+- Follow PEP 8 and the Black style used by scikit-learn. Keep line lengths, indentation, blank lines, naming, and import groups reasonable.
+- Public modules, classes, functions, and methods must have docstrings.
+- Write docstrings, templates, and code examples in English. Use the NumPy docstring style used by scikit-learn, with a concise summary and applicable `Parameters`, `Returns`, `Raises`, and `Examples` sections.
+- Docstrings must accurately describe behavior, input types, return values, and exceptions. Do not copy boilerplate that does not match the implementation. Prefer reproducible minimal examples using the public API.
+- Format string literals in Black style as used by scikit-learn, preferring double quotes. Use double-quoted f-strings for interpolation. Use single quotes only when a string contains double quotes or when they clearly improve readability.
+- Group imports into standard library, third-party, and local package sections, keeping each group stable and clear.
+- Keep each function focused and avoid passing data through implicit global state. Prefer structured APIs when working with pandas, NumPy, and scikit-learn objects.
+- Preserve existing public interfaces unless the task explicitly requires a change. Update callers and tests alongside any interface change.
+
+### Encoding and file formats
+
+- Use UTF-8 for Python source files.
+- Use LF (`\n`) line endings for text files; do not introduce unrelated CRLF changes.
+- Preserve an existing Python encoding declaration such as `# -*- coding: utf-8 -*-`. Add one to new Python files when required by the project's conventions.
+- Preserve or add author information in Python file headers, for example:
 
   ```python
   # -*- coding: utf-8 -*-
@@ -62,30 +70,30 @@ sincomp/
   __author__ = "Name <email@example.com>"
   ```
 
-- 不新增版权或许可证头，除非任务明确要求。
-- 修改文件时保留其现有编码、换行和末尾换行；避免格式化无关内容。
+- Do not add copyright or license headers unless explicitly requested.
+- When editing a file, preserve its existing encoding, line endings, and final newline. Avoid unrelated formatting changes.
 
-## 测试要求
+## Testing requirements
 
-- 测试代码统一放在 `tests/` 目录中，不要在仓库根目录新增测试文件。
-- 使用 Python 标准库 `unittest` 编写测试；测试类继承 `unittest.TestCase`，测试方法命名为 `test_*`。
-- 新增功能和修复必须附带覆盖行为的测试；测试应优先验证公开接口和可观察结果，而不是内部实现细节。
-- 测试应使用固定、最小、可重复的输入，避免依赖网络、用户目录中的缓存或未声明的外部服务。
-- 在提交前至少运行受影响模块的测试；可用以下命令运行测试发现：
+- Put tests under `tests/`; do not add test files at the repository root.
+- Use Python's standard-library `unittest`. Test classes must inherit from `unittest.TestCase`, and test methods must be named `test_*`.
+- Add tests for new features and fixes. Prefer tests of public APIs and observable behavior over tests of implementation details.
+- Use fixed, minimal, reproducible test inputs. Avoid reliance on the network, caches in a user's home directory, or undeclared external services.
+- Before completion, run at least the tests for the affected module. Test discovery can be run with:
 
   ```shell
   python -m unittest discover -s tests -p 'test_*.py'
   ```
 
-- 测试失败时应先判断是否由本次改动引起，不要为了让测试通过而削弱断言或删除测试。
+- When a test fails, determine whether the failure is caused by the change. Do not weaken assertions or delete tests just to make them pass.
 
-## 版本管理
+## Version control
 
-- 每个提交应尽量围绕一个完整、可审查的变更，包含实现、必要的测试和相关文档，使提交独立完整。
-- 提交前检查 `git diff`、`git diff --cached` 和 `git status`，确认没有把用户未要求的文件、生成物、缓存或实验结果加入提交。
-- 提交信息使用规范的 Conventional Commits 格式：`<type>(<scope>): <imperative description>`，例如 `fix(preprocess): preserve imputed values` 或 `feat(reconstruct): add cluster pronunciation outputs`。
-- 提交信息应包含简短、准确的标题；除非改动很小，否则在标题后使用列表列出较详细的修改内容。标题与详情之间保留一个空行。
-- 常用 `<type>` 包括 `feat`、`fix`、`test`、`docs`、`refactor`、`perf`、`build` 和 `chore`；scope 应使用受影响的模块或功能名称。
-- 未获得明确的提交指示时，不自动创建 commit。
-- 未获得明确的 push 指示时，不执行 `git push`；即使已经创建 commit，也必须等待明确指示后再推送。
-- 不使用破坏性 Git 命令覆盖或删除用户已有改动；如需处理冲突或清理无关改动，应先确认范围。
+- Keep each commit focused on a complete, reviewable change, including implementation, necessary tests, and related documentation.
+- Before committing, inspect `git diff`, `git diff --cached`, and `git status` to ensure user-unrequested files, generated artifacts, caches, and experimental results are not included.
+- Use Conventional Commit messages in the format `<type>(<scope>): <imperative description>`, for example `feat(impute): add sklearn compatible imputation estimators`.
+- Keep the commit subject short and accurate. Unless the change is very small, add a list of details after a blank line.
+- Common types include `feat`, `fix`, `test`, `docs`, `refactor`, `perf`, `build`, and `chore`. Use the affected module or feature as the scope.
+- Do not create commits unless explicitly instructed.
+- Do not push unless explicitly instructed. Even after creating a commit, wait for explicit permission before pushing.
+- Do not use destructive Git commands to overwrite or remove user changes. Confirm the scope before resolving conflicts or cleaning unrelated changes.
