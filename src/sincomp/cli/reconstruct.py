@@ -62,7 +62,7 @@ from sklearn.tree import DecisionTreeClassifier
 from .. import datasets
 from ..decomposition import CharacterEmbedding
 from ..feature_extraction import CharacterVectorizer
-from ..preprocessing import transform
+from ..preprocessing import long_to_wide
 
 
 logger = logging.getLogger(__name__)
@@ -1201,7 +1201,7 @@ def cluster(
     # with one "<dialect>_<feature>" column per dialect and segment,
     # joining the phones of each character in each dialect.
     valid = data.dropna(subset=["did", "cid"])
-    wide = transform(
+    wide = long_to_wide(
         valid,
         index="cid",
         columns="did",

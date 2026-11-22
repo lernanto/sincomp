@@ -10,7 +10,6 @@
 __author__ = '黄艺华 <lernanto@foxmail.com>'
 
 
-import collections
 import logging
 import numpy
 import pandas
@@ -27,8 +26,6 @@ try:
 except ImportError:
     logger.warning('''sklearn_crfsuite not found, CRF based parser is disabled. Run following command to install sklearn_crfsuite:
         pip install sklearn-crfsuite''')
-
-from . import dataset
 
 
 # 把读音中不规范的字符映射成规范 IPA 字符的映射表
@@ -675,54 +672,6 @@ def tone2super(origin: pandas.Series) -> pandas.Series:
     """
 
     return origin.str.translate(_TONE_TO_SUPERSCRIPT)
-
-
-def transform(
-    data: pandas.DataFrame,
-    index: str = 'did',
-    columns: str = 'cid',
-    values: list[str] | None = None,
-    aggfunc: str | collections.abc.Callable = 'first',
-    **kwargs
-) -> pandas.DataFrame:
-    """
-    把方言读音数据长表转换为宽表
-
-    Parameters:
-        data: 待转换的读音数据长表
-        index: 指明以原始表的哪一列为行
-        columns: 指明以原始表的哪一列为一级列
-        values: 用于变换的列，变换后成为二级列，为空保留所有列
-        aggfunc: 相同的行列有多个记录的，使用 aggfunc 函数合并
-        kwargs: 透传给 pandas.DataFrame.pivot_table
-
-    Returns:
-        output: 转换格式得到的数据宽表
-    """
-
-    if isinstance(data, dataset.Dataset):
-        data = data.data
-
-    output = data.pivot_table(
-        values,
-        index=index,
-        columns=columns,
-        aggfunc=aggfunc,
-        sort=False,
-        **kwargs
-    )
-
-    # 如果列名为多层级，把指定的列名上移到最高层级
-    if output.columns.nlevels > 1:
-        output = output.swaplevel(axis=1).reindex(
-            pandas.MultiIndex.from_product((
-                output.columns.levels[1],
-                output.columns.levels[0]
-            )),
-            axis=1
-        )
-
-    return output
 
 
 class RomanizationClassifier:
