@@ -78,7 +78,7 @@ Examples
 --------
 >>> import sincomp
 >>> dataset = sincomp.datasets.get("MCPDict")          # doctest: +SKIP
->>> features = sincomp.transform(dataset.data)          # doctest: +SKIP
+>>> features = sincomp.preprocessing.long_to_wide(dataset.data)  # doctest: +SKIP
 >>> similarities = sincomp.metrics.dialect_similarities(  # doctest: +SKIP
 ...     features, metric="chi2"
 ... )

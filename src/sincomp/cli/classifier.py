@@ -74,7 +74,7 @@ import sklearn.pipeline
 from .. import datasets
 from ..decomposition import DialectEmbedding
 from ..feature_extraction import DialectCompliance, DialectVectorizer
-from ..preprocessing import transform
+from ..preprocessing import long_to_wide
 from .utils import load_rules
 
 
@@ -136,7 +136,7 @@ def build_wide(data: pandas.DataFrame) -> pandas.DataFrame:
         The wide table with flattened ``cid_feature`` columns.
     """
 
-    wide = transform(
+    wide = long_to_wide(
         data,
         index="did",
         columns="cid",
@@ -277,7 +277,7 @@ def train_rule(
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        transformed = transform(
+        transformed = long_to_wide(
             data,
             index="cid",
             columns="did",
@@ -292,7 +292,7 @@ def train_rule(
         for round_data, round_indices in resample_data(
             dataset, annotation, resample, samples, min_rate, max_rate
         ):
-            transformed = transform(
+            transformed = long_to_wide(
                 round_data,
                 index="cid",
                 columns="did",
@@ -706,7 +706,7 @@ def predict_rule(
             data = data.rename(columns={"character": "cid"})
             data.dropna(subset="cid", inplace=True)
 
-        transformed = transform(
+        transformed = long_to_wide(
             data,
             index="cid",
             columns="did",

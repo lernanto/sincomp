@@ -8,7 +8,7 @@ import sklearn.preprocessing
 
 from .. import datasets
 from ..feature_extraction import DialectCompliance
-from ..preprocessing import transform
+from ..preprocessing import long_to_wide
 from .utils import load_rules
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     data = dataset.data
     if "cid" not in data.columns:
         data = data.rename(columns={"character": "cid"}).dropna(subset="cid")
-    data = transform(
+    data = long_to_wide(
         data,
         index="cid",
         columns="did",

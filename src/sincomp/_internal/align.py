@@ -178,12 +178,12 @@ def polyphone_embs_svd(
     assert len(data) == len(polyphones)
 
     # 把每个数据集长表转换成宽表
-    data = [preprocessing.transform(
-        d,
+    data = [d.pivot_table(
+        ["initial", "final", "tone"],
         index='cid',
         columns='did',
-        values=['initial', 'final', 'tone'],
-        aggfunc=lambda x: ' '.join(x.dropna())
+        aggfunc=lambda x: ' '.join(x.dropna()),
+        sort=False,
     ) for d in data]
 
     # 先用对齐的单音字构造包含所有数据集的读音编码矩阵
@@ -300,12 +300,12 @@ def align(
         data = pandas.concat(data, axis=0, ignore_index=True).dropna()
 
         # 矩阵分解计算多音字向量
-        wide = preprocessing.transform(
-            data,
+        wide = data.pivot_table(
+            ["initial", "final", "tone"],
             index="cid",
             columns="did",
-            values=["initial", "final", "tone"],
-            aggfunc=lambda x: " ".join(x.dropna())
+            aggfunc=lambda x: " ".join(x.dropna()),
+            sort=False,
         )
         vectors, _ = preprocessing.features_to_vectors(wide.fillna(""))
         embs, _, _ = factorize.als(
@@ -462,12 +462,12 @@ def align_no_cid(
 
     # Pivot the base dataset into a wide table holding one cell per
     # dialect component; polyphones hold multiple values in one cell
-    wide = preprocessing.transform(
-        base,
+    wide = base.pivot_table(
+        ["initial", "final", "tone"],
         index="cid",
         columns="did",
-        values=["initial", "final", "tone"],
-        aggfunc=lambda x: " ".join(x.dropna())
+        aggfunc=lambda x: " ".join(x.dropna()),
+        sort=False,
     )
 
     # Encode the base dataset into character vectors

@@ -8,7 +8,7 @@ import pandas
 
 from .. import datasets
 from ..metrics import dialect_similarities
-from ..preprocessing import transform
+from ..preprocessing import long_to_wide
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,7 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for value in args.dataset:
         data, name = _load_dataset(value)
-        data = transform(
+        data = long_to_wide(
             data,
             index="cid",
             columns="did",

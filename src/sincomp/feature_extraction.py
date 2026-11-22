@@ -18,7 +18,8 @@ feature matrices. The public interface consists of:
   of the two character sets of the rule.
 
 All the estimators are scikit-learn compatible and consume the wide
-feature tables produced by :func:`sincomp.transform`.
+feature tables produced by
+:func:`sincomp.preprocessing.long_to_wide`.
 """
 
 __author__ = "黄艺华 <lernanto@foxmail.com>"
@@ -614,7 +615,8 @@ class DialectCompliance(sklearn.base.BaseEstimator, sklearn.base.TransformerMixi
 
     The input is a wide table with one row per character, a
     ``(dialect, feature)`` MultiIndex over the columns and character IDs
-    as the row index, as produced by :func:`sincomp.transform`. The
+    as the row index, as produced by
+    :func:`sincomp.preprocessing.long_to_wide`. The
     output is a DataFrame with one row per dialect and one column per
     rule.
 
